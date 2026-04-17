@@ -1,0 +1,16 @@
+{
+  "name": "claws-cli",
+  "version": "0.1.0",
+  "description": "Claws — Terminal Control Bridge for VS Code. One command to install.",
+  "bin": {
+    "claws": "./cli.js",
+    "claws-install": "./cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/neunaha/claws"
+  },
+  "keywords": ["claude-code", "terminal", "orchestration", "ai", "vscode", "mcp"],
+  "author": "Anish Neunaha",
+  "license": "MIT"
+}
