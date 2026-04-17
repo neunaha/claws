@@ -12,7 +12,18 @@ if [[ $- == *i* ]] && [[ -z "${CLAWS_BANNER_SHOWN:-}" ]]; then
   CLAWS_SOCK="${CLAWS_SOCKET:-.claws/claws.sock}"
   if [ -S "$CLAWS_SOCK" ] 2>/dev/null; then
     _CLAWS_STATUS="\033[32m● connected\033[0m"
-    _CLAWS_TERMS=$(echo '{"id":0,"cmd":"list"}' | nc -U "$CLAWS_SOCK" 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('terminals',[])))" 2>/dev/null || echo "?")
+    _CLAWS_TERMS=$(python3 -c "
+import json, socket
+s = socket.socket(socket.AF_UNIX); s.settimeout(2)
+try:
+    s.connect('$CLAWS_SOCK')
+    s.sendall(b'{\"id\":0,\"cmd\":\"list\"}\n')
+    buf = b''
+    while b'\n' not in buf: buf += s.recv(65536)
+    print(len(json.loads(buf.split(b'\n',1)[0]).get('terminals',[])))
+except: print('?')
+finally: s.close()
+" 2>/dev/null || echo "?")
   else
     _CLAWS_STATUS="\033[33m○ socket not found\033[0m"
     _CLAWS_TERMS="-"
@@ -53,27 +64,42 @@ fi
 
 claws-ls() {
   local sock="${CLAWS_SOCKET:-.claws/claws.sock}"
-  echo '{"id":1,"cmd":"list"}' | nc -U "$sock" 2>/dev/null | python3 -c "
-import sys, json
+  python3 -c "
+import json, socket
+s = socket.socket(socket.AF_UNIX); s.settimeout(5)
 try:
-    d = json.load(sys.stdin)
+    s.connect('$sock')
+    s.sendall(b'{\"id\":1,\"cmd\":\"list\"}\n')
+    buf = b''
+    while b'\n' not in buf: buf += s.recv(65536)
+    d = json.loads(buf.split(b'\n',1)[0])
     for t in d.get('terminals', []):
         w = 'WRAPPED' if t.get('logPath') else '       '
         a = '*' if t.get('active') else ' '
         print(f\"{a} {t['id']:>3}  {t.get('name',''):<25} pid={t.get('pid')}  [{w}]\")
-except: print('error: is the Claws extension running?')
-" 2>/dev/null || echo "error: cannot connect to $sock"
+except Exception as e: print(f'error: {e} — is the Claws extension running?')
+finally: s.close()
+" 2>/dev/null || echo "error: python3 not available"
 }
 
 claws-new() {
   local name="${1:-claws}"
   local sock="${CLAWS_SOCKET:-.claws/claws.sock}"
-  echo "{\"id\":1,\"cmd\":\"create\",\"name\":\"$name\",\"wrapped\":true}" | nc -U "$sock" 2>/dev/null | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-if d.get('ok'): print(f\"created terminal {d['id']} — log: {d.get('logPath','')}\")
-else: print(f\"error: {d.get('error')}\")
-" 2>/dev/null || echo "error: cannot connect to $sock"
+  python3 -c "
+import json, socket
+s = socket.socket(socket.AF_UNIX); s.settimeout(5)
+try:
+    s.connect('$sock')
+    req = json.dumps({'id':1,'cmd':'create','name':'$name','wrapped':True})
+    s.sendall((req + '\n').encode())
+    buf = b''
+    while b'\n' not in buf: buf += s.recv(65536)
+    d = json.loads(buf.split(b'\n',1)[0])
+    if d.get('ok'): print(f\"created terminal {d['id']} — log: {d.get('logPath','')}\")
+    else: print(f\"error: {d.get('error')}\")
+except Exception as e: print(f'error: {e}')
+finally: s.close()
+" 2>/dev/null || echo "error: python3 not available"
 }
 
 claws-run() {
@@ -115,13 +141,21 @@ claws-log() {
     return 1
   fi
   local sock="${CLAWS_SOCKET:-.claws/claws.sock}"
-  echo "{\"id\":1,\"cmd\":\"readLog\",\"id\":\"$id\",\"strip\":true}" | nc -U "$sock" 2>/dev/null | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-if d.get('ok'):
-    lines = d.get('bytes','').splitlines()
-    for l in lines[-$lines:]: print(l)
-    print(f'\n[{d.get(\"totalSize\",0)} bytes total]')
-else: print(f\"error: {d.get('error')}\")
-" 2>/dev/null || echo "error: cannot connect to $sock"
+  python3 -c "
+import json, socket
+s = socket.socket(socket.AF_UNIX); s.settimeout(10)
+try:
+    s.connect('$sock')
+    s.sendall((json.dumps({'id':1,'cmd':'readLog','id':'$id','strip':True}) + '\n').encode())
+    buf = b''
+    while b'\n' not in buf: buf += s.recv(524288)
+    d = json.loads(buf.split(b'\n',1)[0])
+    if d.get('ok'):
+        lines = d.get('bytes','').splitlines()
+        for l in lines[-$lines:]: print(l)
+        print(f'\n[{d.get(\"totalSize\",0)} bytes total]')
+    else: print(f\"error: {d.get('error')}\")
+except Exception as e: print(f'error: {e}')
+finally: s.close()
+" 2>/dev/null || echo "error: python3 not available"
 }
