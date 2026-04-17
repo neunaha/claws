@@ -1,0 +1,216 @@
+# Claws Terminal Lifecycle Protocol
+# Every terminal operation follows this lifecycle. No exceptions.
+# RULE: all terminals are VISIBLE. headless mode is banned.
+
+version: "1.0"
+engine: "claws-orchestration-engine"
+powered_by: "Claude Opus"
+
+# ═══════════════════════════════════════════════════════════════
+# GLOBAL RULES — enforced on every operation
+# ═══════════════════════════════════════════════════════════════
+
+rules:
+  visibility:
+    enforce: always
+    description: "Every terminal MUST be visible in VS Code's terminal panel. The user watches everything."
+    banned:
+      - "claude -p (headless mode)"
+      - "nohup ... &>/dev/null"
+      - "any process redirected to /dev/null"
+    required:
+      - "claws_create with show=true (default)"
+      - "interactive claude --dangerously-skip-permissions (not claude -p)"
+      - "user can see the terminal tab at all times"
+
+  cleanup:
+    enforce: always
+    description: "Every terminal you create MUST be closed when done."
+    trigger: "MISSION_COMPLETE detected OR task finished OR error unrecoverable"
+    action: "claws_close immediately after reading final state"
+    audit: "at end of every orchestration, run claws_list and close any terminals you own"
+
+  ownership:
+    enforce: always
+    description: "Never touch terminals you didn't create."
+    rule: "only close/send/exec terminals whose name you set via claws_create"
+
+  wrapped_default:
+    enforce: always
+    description: "All worker terminals are wrapped. No exceptions."
+    reason: "without wrapping, you cannot observe what happened — blind orchestration is banned"
+
+# ═══════════════════════════════════════════════════════════════
+# LIFECYCLE PHASES
+# ═══════════════════════════════════════════════════════════════
+
+lifecycle:
+
+  # ─── Phase 1: PLAN ──────────────────────────────────────────
+  plan:
+    description: "Decompose the user's request into terminal operations"
+    steps:
+      - assess: "what does the user want done?"
+      - decompose: "can this be split into parallel independent tasks?"
+      - estimate: "how many terminals needed? (prefer fewer)"
+      - declare: "tell the user what you're about to do before doing it"
+    human_checkpoint: true
+    checkpoint_prompt: "I'm going to spawn {N} terminal(s) for {task description}. Proceed?"
+
+  # ─── Phase 2: SPAWN ─────────────────────────────────────────
+  spawn:
+    description: "Create terminals and prepare them for work"
+    steps:
+      - create: "claws_create name={slug} wrapped=true"
+      - wait_init: "sleep 1.5s for shell initialization"
+      - verify: "claws_read_log to confirm shell prompt appeared"
+    on_failure:
+      - retry: "close and recreate once"
+      - escalate: "report to user if second attempt fails"
+
+  # ─── Phase 3: DEPLOY ────────────────────────────────────────
+  deploy:
+    description: "Send the mission into the terminal"
+    steps:
+      - compose_prompt: "single line, constraints, MISSION_COMPLETE marker"
+      - send: "claws_send id={id} text={prompt}"
+      - submit: "claws_send id={id} text='\\r' newline=false (for TUI sessions)"
+      - attach_monitor: "set up observation (read_log polling or external tail)"
+    rules:
+      - "prompt must be single line (no embedded newlines)"
+      - "prompt must end with 'go.' or similar imperative"
+      - "prompt must include MISSION_COMPLETE as completion marker"
+      - "prompt must include explicit constraints (do NOT...)"
+
+  # ─── Phase 4: OBSERVE ───────────────────────────────────────
+  observe:
+    description: "Watch the terminal and react to events"
+    methods:
+      primary: "claws_read_log at cadence matching the work speed"
+      preferred: "Monitor tool with tail -F + grep filter"
+    cadence:
+      active_work: "every 10-15 seconds"
+      waiting: "every 30-60 seconds"
+      idle: "every 2-5 minutes"
+    watch_for:
+      success: ["MISSION_COMPLETE", "DONE", "Tests passed", "exit 0"]
+      failure: ["Error:", "Traceback", "FAILED", "permission denied", "MISSION_FAILED"]
+      progress: ["Read(", "Write(", "Bash(", "Edit("]
+      budget: ["rate limit", "weekly limit", "budget", "cap"]
+    on_event:
+      success: "proceed to HARVEST phase"
+      failure: "proceed to RECOVER phase"
+      progress: "narrate to user, continue observing"
+      budget: "warn user, consider pausing"
+      silence_2min: "check if stuck, consider intervention"
+
+  # ─── Phase 5: RECOVER (conditional) ─────────────────────────
+  recover:
+    description: "Handle errors in worker terminals"
+    steps:
+      - diagnose: "claws_read_log last 30 lines, identify root cause"
+      - classify: "recoverable (retry/adjust) vs fatal (wrong approach)"
+      - act:
+          recoverable: "send follow-up prompt with fix instruction"
+          fatal: "close terminal, report to user, suggest alternative"
+    max_retries: 3
+    on_max_retries: "close terminal, write failure report, escalate to user"
+
+  # ─── Phase 6: HARVEST ───────────────────────────────────────
+  harvest:
+    description: "Collect results from completed terminals"
+    steps:
+      - read_final: "claws_read_log full output OR read output files"
+      - verify: "check that deliverables exist (git log, file exists, test passes)"
+      - summarize: "prepare a concise report for the user"
+
+  # ─── Phase 7: CLEANUP ───────────────────────────────────────
+  cleanup:
+    description: "Close all terminals and report"
+    steps:
+      - close_all: "claws_close for every terminal you created"
+      - verify_closed: "claws_list — confirm your terminals are gone"
+      - report: "tell the user what was accomplished"
+    enforce: "MANDATORY — never skip cleanup, never leave stale terminals"
+
+  # ─── Phase 8: REFLECT ───────────────────────────────────────
+  reflect:
+    description: "Learn from the orchestration run"
+    steps:
+      - cost_check: "how many terminals, how long, was it efficient?"
+      - pattern_match: "which pattern worked? would a different one be better?"
+      - user_feedback: "did the user intervene? what triggered it?"
+    output: "internal reasoning, not reported unless user asks"
+
+# ═══════════════════════════════════════════════════════════════
+# HUMAN-IN-THE-LOOP PROTOCOL
+# ═══════════════════════════════════════════════════════════════
+
+human_in_loop:
+  description: >
+    The user is always the pilot. Claws is the co-pilot.
+    The user sees everything, can intervene at any time,
+    and makes the final call on ambiguous decisions.
+
+  checkpoints:
+    before_spawn:
+      trigger: "about to create terminals"
+      action: "declare intent to user, proceed unless redirected"
+      blocking: false
+      example: "spawning 3 workers for parallel audit — lint, test, build"
+
+    before_risky_send:
+      trigger: "about to send into a terminal running a TUI"
+      action: "warn user, proceed unless they say stop"
+      blocking: false
+      example: "sending mission prompt into Claude Code session in terminal 5"
+
+    on_error:
+      trigger: "worker hit a non-trivial error"
+      action: "report error, propose fix, wait for user decision if ambiguous"
+      blocking: true
+      example: "worker-a hit a merge conflict — should I resolve with ours or theirs?"
+
+    before_commit:
+      trigger: "worker is about to git commit"
+      action: "show the diff summary, proceed only if user approves"
+      blocking: true
+      example: "worker wants to commit 3 files — committee.py, 2 runbooks. approve?"
+
+    on_completion:
+      trigger: "all workers done"
+      action: "summarize results, ask if user wants to review details"
+      blocking: false
+
+  intervention:
+    user_says_stop: "immediately close all worker terminals, report state"
+    user_says_pause: "stop sending new commands, keep terminals open for inspection"
+    user_says_redirect: "close current workers, spawn new ones with updated mission"
+    user_types_in_terminal: "detect via readLog, pause orchestration, let user drive"
+
+# ═══════════════════════════════════════════════════════════════
+# FLEET PROTOCOLS
+# ═══════════════════════════════════════════════════════════════
+
+fleet:
+  max_parallel: 5
+  naming: "worker-{slug} where slug is descriptive (lint, test, audit-a)"
+  stagger: "0.5s between terminal creations to avoid shell init races"
+
+  dispatch:
+    strategy: "fire all commands within 2 seconds of all terminals being ready"
+    order: "doesn't matter — tasks are independent by definition"
+
+  monitoring:
+    strategy: "round-robin read_log across all workers"
+    interval: "15s per worker in a 3-worker fleet = each worker checked every 45s"
+
+  completion:
+    detection: "MISSION_COMPLETE in read_log output"
+    partial_success: "close completed workers immediately, keep running ones"
+    all_done: "aggregate results, cleanup all, report"
+
+  failure_handling:
+    one_fails: "close failed worker, report error, other workers continue"
+    majority_fail: "close all, report, ask user for guidance"
+    all_fail: "close all, report, suggest alternative approach"

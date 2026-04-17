@@ -249,18 +249,21 @@ TOOLS = [
     {
         "name": "claws_worker",
         "description": (
-            "Spawn a complete worker terminal pattern: create a wrapped terminal, wait for shell init, "
-            "send a command or mission prompt into it, and return the terminal ID + log path for monitoring. "
-            "This is the production pattern for autonomous AI worker tasks. After spawning, use "
+            "Spawn a complete VISIBLE worker terminal with full autonomy. Creates a wrapped terminal, "
+            "launches interactive Claude Code with --dangerously-skip-permissions (full tool access), "
+            "waits for boot, then sends the mission prompt. The worker runs visibly in VS Code's "
+            "terminal panel — the user watches everything. NEVER headless. After spawning, use "
             "claws_read_log to monitor progress and claws_close to clean up when done."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Worker name (used as terminal tab name)"},
-                "command": {"type": "string", "description": "Command or mission prompt to send after shell init"},
+                "name": {"type": "string", "description": "Worker name (appears as terminal tab name in VS Code)"},
+                "mission": {"type": "string", "description": "Mission prompt to send to Claude Code. Single line. Must include MISSION_COMPLETE marker and constraints."},
+                "launch_claude": {"type": "boolean", "description": "Auto-launch 'claude --dangerously-skip-permissions' before sending mission (default true)"},
+                "command": {"type": "string", "description": "Alternative: raw shell command instead of Claude mission. Set launch_claude=false when using this."},
             },
-            "required": ["name", "command"],
+            "required": ["name"],
         },
     },
 ]
@@ -361,7 +364,10 @@ def handle_tool(name: str, args: dict) -> list[dict]:
         return [{"type": "text", "text": f"closed terminal {args['id']}"}]
 
     if name == "claws_worker":
-        # Step 1: create wrapped terminal
+        launch_claude = args.get("launch_claude", True)
+        mission = args.get("mission", args.get("command", ""))
+
+        # Step 1: create visible wrapped terminal
         create_resp = claws_rpc(sock, {
             "cmd": "create",
             "name": args["name"],
@@ -376,17 +382,42 @@ def handle_tool(name: str, args: dict) -> list[dict]:
         # Step 2: wait for shell init
         time.sleep(1.5)
 
-        # Step 3: send the command
-        claws_rpc(sock, {"cmd": "send", "id": term_id, "text": args["command"], "newline": True})
+        if launch_claude:
+            # Step 3a: launch interactive Claude Code with full permissions
+            claws_rpc(sock, {"cmd": "send", "id": term_id, "text": "claude --dangerously-skip-permissions", "newline": True})
+            # Wait for Claude to boot (renders welcome banner)
+            time.sleep(5)
 
-        return [{"type": "text", "text": (
-            f"worker '{args['name']}' spawned\n"
-            f"  terminal: {term_id}\n"
-            f"  log: {log_path}\n"
-            f"  command sent: {args['command'][:100]}\n"
-            f"use claws_read_log id={term_id} to monitor progress\n"
-            f"use claws_close id={term_id} when done"
-        )}]
+            if mission:
+                # Step 4: send the mission prompt
+                claws_rpc(sock, {"cmd": "send", "id": term_id, "text": mission, "newline": True})
+                # Submit with raw CR (Claude TUI needs explicit Enter)
+                time.sleep(0.3)
+                claws_rpc(sock, {"cmd": "send", "id": term_id, "text": "\r", "newline": False})
+
+            return [{"type": "text", "text": (
+                f"worker '{args['name']}' spawned with Claude Code (full permissions)\n"
+                f"  terminal: {term_id}\n"
+                f"  log: {log_path}\n"
+                f"  claude: interactive, --dangerously-skip-permissions\n"
+                + (f"  mission sent: {mission[:100]}...\n" if mission else "  no mission sent — waiting for prompt\n")
+                + f"\nuse claws_read_log id={term_id} to monitor\n"
+                f"use claws_send id={term_id} to send follow-up prompts\n"
+                f"use claws_close id={term_id} when done"
+            )}]
+        else:
+            # Step 3b: raw shell command (no Claude)
+            if mission:
+                claws_rpc(sock, {"cmd": "send", "id": term_id, "text": mission, "newline": True})
+
+            return [{"type": "text", "text": (
+                f"worker '{args['name']}' spawned (shell mode)\n"
+                f"  terminal: {term_id}\n"
+                f"  log: {log_path}\n"
+                + (f"  command sent: {mission[:100]}\n" if mission else "  idle shell — send commands via claws_send\n")
+                + f"\nuse claws_read_log id={term_id} to monitor\n"
+                f"use claws_close id={term_id} when done"
+            )}]
 
     return [{"type": "text", "text": f"unknown tool: {name}"}]
 
