@@ -351,49 +351,66 @@ client.close(worker.id)</pre>
   <p>The terminal looks and behaves identically to a regular one. The <code>script(1)</code> layer is invisible. Create one from the dropdown: <strong>Claws Wrapped Terminal</strong>.</p>
 </section>
 
-<!-- Features -->
+<!-- Capabilities Carousel -->
 <section class="alt" id="features">
-  <div class="inner">
-    <div class="section-label">Capabilities</div>
-    <h2>Everything you can do</h2>
-    <div class="features">
-      <div class="feature-card">
-        <div class="icon">&#9654;</div>
-        <h3>Terminal Management</h3>
-        <p>List all terminals with PID, name, and status. Create new ones with custom names and working directories. Focus, show, or close any terminal programmatically.</p>
-        <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/architecture.png" alt="Architecture" style="width:100%; border-radius:8px; margin-top:12px; border: 1px solid var(--border);">
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#128196;</div>
-        <h3>Full Pty Capture</h3>
-        <p>Wrapped terminals log everything via <code>script(1)</code>. Read back Claude Code conversations, vim sessions, build logs, REPL outputs — all as clean text.</p>
-        <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/wrapped-terminal.png" alt="Wrapped Terminal" style="width:100%; border-radius:8px; margin-top:12px; border: 1px solid var(--border);">
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#9881;</div>
-        <h3>Command Execution</h3>
-        <p>Run commands with captured stdout + stderr + exit code. File-based capture works in every terminal type without depending on shell integration.</p>
-        <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/protocol-flow.png" alt="Protocol Flow" style="width:100%; border-radius:8px; margin-top:12px; border: 1px solid var(--border);">
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#128274;</div>
-        <h3>Safety Gate</h3>
-        <p>Detects when a terminal runs a TUI (vim, claude, less). Warns before sending text that would land as TUI input. Non-blocking by default; strict mode available.</p>
-        <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/safety-gate.png" alt="Safety Gate Flow" style="width:100%; border-radius:8px; margin-top:12px; border: 1px solid var(--border);">
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#128203;</div>
-        <h3>Bracketed Paste</h3>
-        <p>Multi-line text is auto-wrapped in bracketed paste mode so terminals receive it as one atomic input — no line-by-line fragmentation.</p>
-        <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/social-preview.png" alt="Claws" style="width:100%; border-radius:8px; margin-top:12px; border: 1px solid var(--border);">
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#127760;</div>
-        <h3>Cross-Device (planned)</h3>
-        <p>WebSocket transport with token auth + TLS for controlling terminals across machines. SSH tunnel pattern works today as an interim.</p>
-        <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cross-device.png" alt="Cross-Device" style="width:100%; border-radius:8px; margin-top:12px; border: 1px solid var(--border);">
+  <div class="inner reveal">
+    <div class="section-label" style="text-align:center;">Capabilities</div>
+    <h2 style="text-align:center;">Everything you can do</h2>
+    <p style="text-align:center; max-width:600px; margin:0 auto 32px;">Each capability is a building block. Compose them to orchestrate any terminal workflow — from a single command to a fleet of autonomous AI workers.</p>
+
+    <div class="carousel" id="capCarousel" style="border:none; box-shadow:none; background:transparent;">
+      <div class="carousel-track" id="capTrack">
+        <!-- Slide 1 -->
+        <div style="min-width:100%; padding:0 24px;">
+          <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-terminal-mgmt.png" alt="Terminal Management" style="width:100%; border-radius:12px; border:1px solid var(--border); box-shadow: 0 8px 40px rgba(0,0,0,0.5);">
+          <div style="text-align:center; margin-top:20px;">
+            <h3 style="margin-top:0; font-size:24px;">Terminal Management</h3>
+            <p style="max-width:500px; margin:8px auto 0;">List every terminal with PID, name, and status. Create new ones with custom names and working directories. Focus, show, or close any terminal programmatically. Stable numeric IDs that persist for the session.</p>
+          </div>
+        </div>
+        <!-- Slide 2 -->
+        <div style="min-width:100%; padding:0 24px;">
+          <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-pty-capture.png" alt="Full Pty Capture" style="width:100%; border-radius:12px; border:1px solid var(--border); box-shadow: 0 8px 40px rgba(0,0,0,0.5);">
+          <div style="text-align:center; margin-top:20px;">
+            <h3 style="margin-top:0; font-size:24px;">Full Pty Capture</h3>
+            <p style="max-width:500px; margin:8px auto 0;">Wrapped terminals log every pty byte via <code>script(1)</code>. Read back Claude Code conversations, vim sessions, build logs, REPL outputs — all as clean ANSI-stripped text. The terminal looks and feels completely normal.</p>
+          </div>
+        </div>
+        <!-- Slide 3 -->
+        <div style="min-width:100%; padding:0 24px;">
+          <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-exec.png" alt="Command Execution" style="width:100%; border-radius:12px; border:1px solid var(--border); box-shadow: 0 8px 40px rgba(0,0,0,0.5);">
+          <div style="text-align:center; margin-top:20px;">
+            <h3 style="margin-top:0; font-size:24px;">Command Execution</h3>
+            <p style="max-width:500px; margin:8px auto 0;">Run commands and get structured results: stdout, stderr, and exit code. File-based capture that works in every terminal type — no shell integration dependency. Configurable timeouts for long-running processes.</p>
+          </div>
+        </div>
+        <!-- Slide 4 -->
+        <div style="min-width:100%; padding:0 24px;">
+          <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-safety.png" alt="Safety Gate" style="width:100%; border-radius:12px; border:1px solid var(--border); box-shadow: 0 8px 40px rgba(0,0,0,0.5);">
+          <div style="text-align:center; margin-top:20px;">
+            <h3 style="margin-top:0; font-size:24px;">Safety Gate</h3>
+            <p style="max-width:500px; margin:8px auto 0;">Detects when a terminal is running a TUI (vim, claude, less, htop). Warns before sending text that would land as TUI input instead of a shell command. Non-blocking by default. Strict mode available for hard-block.</p>
+          </div>
+        </div>
+        <!-- Slide 5 -->
+        <div style="min-width:100%; padding:0 24px;">
+          <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-mcp.png" alt="MCP Server" style="width:100%; border-radius:12px; border:1px solid var(--border); box-shadow: 0 8px 40px rgba(0,0,0,0.5);">
+          <div style="text-align:center; margin-top:20px;">
+            <h3 style="margin-top:0; font-size:24px;">MCP Server — Native AI Integration</h3>
+            <p style="max-width:500px; margin:8px auto 0;">Register one JSON block in any project's settings. Claude Code instantly gets 8 terminal control tools as native MCP calls. No imports, no client library, no socket code. Your AI gets terminal superpowers in one line.</p>
+          </div>
+        </div>
+        <!-- Slide 6 -->
+        <div style="min-width:100%; padding:0 24px;">
+          <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-crossdevice.png" alt="Cross-Device Control" style="width:100%; border-radius:12px; border:1px solid var(--border); box-shadow: 0 8px 40px rgba(0,0,0,0.5);">
+          <div style="text-align:center; margin-top:20px;">
+            <h3 style="margin-top:0; font-size:24px;">Cross-Device Control</h3>
+            <p style="max-width:500px; margin:8px auto 0;">Control terminals on remote machines via WebSocket with token auth + TLS. Team configuration with per-device access control. SSH tunnel pattern works today. WebSocket transport coming in v0.3.</p>
+          </div>
+        </div>
       </div>
     </div>
+    <div class="carousel-dots" id="capDots"></div>
   </div>
 </section>
 
@@ -634,6 +651,33 @@ client = ClawsClient("/tmp/forwarded.sock")</pre>
 
   // Auto-advance every 4s
   setInterval(() => goTo((current + 1) % n), 4000);
+})();
+
+// Capabilities carousel
+(function() {
+  const track = document.getElementById('capTrack');
+  const dotsContainer = document.getElementById('capDots');
+  if (!track || !dotsContainer) return;
+  const slides = track.children;
+  const n = slides.length;
+  let current = 0;
+
+  for (let i = 0; i < n; i++) {
+    const dot = document.createElement('button');
+    dot.className = 'carousel-dot' + (i === 0 ? ' active' : '');
+    dot.onclick = () => goTo(i);
+    dotsContainer.appendChild(dot);
+  }
+
+  function goTo(idx) {
+    current = idx;
+    track.style.transform = `translateX(-${idx * 100}%)`;
+    dotsContainer.querySelectorAll('.carousel-dot').forEach((d, i) => {
+      d.className = 'carousel-dot' + (i === idx ? ' active' : '');
+    });
+  }
+
+  setInterval(() => goTo((current + 1) % n), 5000);
 })();
 
 // Scroll reveal
