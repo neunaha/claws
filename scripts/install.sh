@@ -164,8 +164,55 @@ else
   echo "[5/6] Skipping MCP config (CLAWS_SKIP_MCP=1)"
 fi
 
-# ─── Step 6: Shell hook injection ───────────────────────────────────────────
-echo "[6/7] Injecting shell hook..."
+# ─── Step 6: Global Claude Code context injection ──────────────────────────
+echo "[6/8] Injecting Claws into Claude Code globally..."
+
+# Copy orchestration engine skill
+mkdir -p "$HOME/.claude/skills"
+if [ -d "$INSTALL_DIR/.claude/skills/claws-orchestration-engine" ]; then
+  cp -r "$INSTALL_DIR/.claude/skills/claws-orchestration-engine" "$HOME/.claude/skills/" 2>/dev/null
+  echo "  ✓ Orchestration engine skill installed"
+fi
+
+# Copy prompt templates skill
+if [ -d "$INSTALL_DIR/.claude/skills/prompt-templates" ]; then
+  cp -r "$INSTALL_DIR/.claude/skills/prompt-templates" "$HOME/.claude/skills/claws-prompt-templates" 2>/dev/null
+  echo "  ✓ Prompt templates installed"
+fi
+
+# Copy slash commands
+mkdir -p "$HOME/.claude/commands"
+for cmd in claws-status claws-connect claws-create claws-send claws-exec claws-read claws-worker claws-fleet claws-update; do
+  if [ -f "$INSTALL_DIR/.claude/commands/${cmd}.md" ]; then
+    cp "$INSTALL_DIR/.claude/commands/${cmd}.md" "$HOME/.claude/commands/" 2>/dev/null
+  fi
+done
+# Always install claws-install command
+cat > "$HOME/.claude/commands/claws-install.md" << 'CLAWSCMD'
+---
+name: claws-install
+description: Install or update Claws — Terminal Control Bridge for VS Code. One command gives you multi-terminal orchestration with 8 native MCP tools.
+---
+
+# /claws-install
+
+Install or update Claws from https://github.com/neunaha/claws
+
+## What to do
+
+Run this bash command:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)
+```
+
+After the script completes, tell the user to reload VS Code: Cmd+Shift+P → Developer: Reload Window.
+CLAWSCMD
+echo "  ✓ Slash commands installed (/claws-install, /claws-update, /claws-status, /claws-worker, /claws-fleet, ...)"
+echo "  ✓ Every Claude Code session now has full Claws context + tools + commands"
+
+# ─── Step 7: Shell hook injection ───────────────────────────────────────────
+echo "[7/8] Injecting shell hook..."
 HOOK_SOURCE="source \"$INSTALL_DIR/scripts/shell-hook.sh\""
 HOOK_MARKER="# CLAWS terminal hook"
 
@@ -193,8 +240,8 @@ if [ -f "$HOME/.bash_profile" ] && ! [ -f "$HOME/.bashrc" ]; then
   inject_hook "$HOME/.bash_profile"
 fi
 
-# ─── Step 7: Verify ────────────────────────────────────────────────────────
-echo "[7/7] Verifying..."
+# ─── Step 8: Verify ────────────────────────────────────────────────────────
+echo "[8/8] Verifying..."
 CHECKS=0
 [ -L "$EXT_LINK" ] && CHECKS=$((CHECKS+1)) && echo "  ✓ Extension symlink"
 [ -x "scripts/terminal-wrapper.sh" ] && CHECKS=$((CHECKS+1)) && echo "  ✓ Wrapper executable"
