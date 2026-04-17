@@ -1,15 +1,18 @@
 const assert = require('assert');
 const vscode = require('vscode');
+const { publisher, name } = require('../../package.json');
+
+const extensionId = `${publisher}.${name}`;
 
 suite('Extension Test Suite', () => {
-  console.log('Start all tests.');
+  vscode.window.showInformationMessage('Start all tests.');
 
   test('Extension should be present', () => {
-    assert.ok(vscode.extensions.getExtension('neunaha.claws'));
+    assert.ok(vscode.extensions.getExtension(extensionId));
   });
 
   test('Extension should activate', async () => {
-    const ext = vscode.extensions.getExtension('neunaha.claws');
+    const ext = vscode.extensions.getExtension(extensionId);
     if (!ext) {
       assert.fail('Extension not found');
     }
