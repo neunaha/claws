@@ -398,14 +398,74 @@ for name, term in workers.items():
 client = ClawsClient("/tmp/forwarded.sock")</pre>
 </section>
 
+<!-- MCP Server -->
+<section class="alt">
+  <div class="inner">
+    <div class="section-label">Instant Integration</div>
+    <h2>MCP Server — Claude Code gets terminal control natively</h2>
+    <p>Register Claws as an MCP server in any project. <strong>Every Claude Code session instantly gets 8 terminal control tools</strong> — no client library, no imports, no socket code. Just register and go.</p>
+<pre>// .claude/settings.json (add to ANY project)
+{
+  "mcpServers": {
+    "claws": {
+      "command": "python3",
+      "args": ["/path/to/claws/mcp_server.py"],
+      "env": { "CLAWS_SOCKET": ".claws/claws.sock" }
+    }
+  }
+}</pre>
+    <p>Tools injected: <code>claws_list</code> <code>claws_create</code> <code>claws_send</code> <code>claws_exec</code> <code>claws_read_log</code> <code>claws_poll</code> <code>claws_close</code> <code>claws_worker</code></p>
+    <p>Zero dependencies. Stdlib Python. Works on macOS and Linux. Your AI writes code in one terminal, tests in another, deploys in a third — all through native MCP tool calls.</p>
+  </div>
+</section>
+
+<!-- Documentation Hub -->
+<section id="docs">
+  <div class="section-label">Documentation</div>
+  <h2>Everything you need to master Claws</h2>
+  <div class="features">
+    <div class="feature-card">
+      <div class="icon">&#128218;</div>
+      <h3><a href="https://github.com/neunaha/claws/blob/main/docs/guide.md">The Complete Guide</a></h3>
+      <p>12-chapter course from first install to production fleet orchestration. Every feature, pattern, and edge case. 830 lines of detailed walkthroughs.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">&#128295;</div>
+      <h3><a href="https://github.com/neunaha/claws/blob/main/docs/features.md">Feature Reference</a></h3>
+      <p>Every command, parameter, response field, and edge case. The API reference for builders integrating Claws.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">&#128225;</div>
+      <h3><a href="https://github.com/neunaha/claws/blob/main/docs/protocol.md">Protocol Spec</a></h3>
+      <p>Full JSON socket protocol — 8 commands, request/response schemas, error codes, interactive session transcript.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">&#128161;</div>
+      <h3><a href="https://github.com/neunaha/claws/blob/main/.claude/skills/prompt-templates/SKILL.md">Prompt Templates</a></h3>
+      <p>7 battle-tested mission prompt templates for AI orchestration: workers, fleets, pair programming, debugging.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">&#128640;</div>
+      <h3><a href="https://github.com/neunaha/claws/blob/main/CONTRIBUTING.md">Contributing</a></h3>
+      <p>Dev setup, workflow, code style, protocol change process. High-priority: TypeScript rewrite, Windows support, Node client.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">&#128272;</div>
+      <h3><a href="https://github.com/neunaha/claws/blob/main/SECURITY.md">Security</a></h3>
+      <p>Socket permissions, pty log sensitivity, trust model, planned WebSocket auth. Read before shared deployments.</p>
+    </div>
+  </div>
+</section>
+
 <!-- CTA -->
 <section class="alt">
   <div class="inner" style="text-align: center; padding: 60px 24px;">
-    <h2>Start controlling your terminals</h2>
-    <p style="max-width: 500px; margin: 0 auto 24px;">Clone the repo, symlink the extension, reload VS Code. You're up in 30 seconds.</p>
+    <h2>Your AI deserves better than copy-paste.</h2>
+    <p style="max-width: 600px; margin: 0 auto 24px; color: var(--text-muted);">Stop manually running commands your AI asks you to run. Stop pasting output back into chat. Give your AI direct terminal control — it reads, writes, monitors, and reacts on its own.</p>
     <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
-      <a href="https://github.com/neunaha/claws#install" class="btn btn-primary">Install Now</a>
+      <a href="https://github.com/neunaha/claws#install" class="btn btn-primary">Install Claws — 30 seconds</a>
       <a href="https://github.com/neunaha/claws" class="btn btn-ghost">Star on GitHub</a>
+      <a href="https://github.com/neunaha/claws/blob/main/docs/guide.md" class="btn btn-ghost">Read the Guide</a>
     </div>
   </div>
 </section>

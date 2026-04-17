@@ -155,6 +155,29 @@ WebSocket transport with token auth + TLS for controlling terminals across machi
 
 ---
 
+## MCP Server — instant Claude Code integration
+
+Register Claws as an MCP server and every Claude Code session gets native terminal control tools — no client library needed.
+
+```json
+// .claude/settings.json (in any project)
+{
+  "mcpServers": {
+    "claws": {
+      "command": "python3",
+      "args": ["/path/to/claws/mcp_server.py"],
+      "env": { "CLAWS_SOCKET": ".claws/claws.sock" }
+    }
+  }
+}
+```
+
+Claude Code immediately gets: `claws_list`, `claws_create`, `claws_send`, `claws_exec`, `claws_read_log`, `claws_poll`, `claws_close`, `claws_worker`.
+
+No imports. No client code. Just register the server and your AI can control terminals.
+
+---
+
 ## Deep Dives
 
 - **[Complete Feature Reference](docs/features.md)** — every feature explained in depth with parameters, examples, and internals

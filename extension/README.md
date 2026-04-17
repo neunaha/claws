@@ -9,6 +9,14 @@
 </p>
 
 <p align="center">
+  <a href="#install">Install</a> &middot;
+  <a href="#usage">Usage</a> &middot;
+  <a href="#features">Features</a> &middot;
+  <a href="docs/protocol.md">Protocol</a> &middot;
+  <a href="#configuration">Config</a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/VS%20Code-1.93+-007ACC.svg" alt="VS Code">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Zero Deps">
@@ -81,6 +89,50 @@ echo '{"id":1,"cmd":"list"}' | nc -U .claws/claws.sock
 
 ---
 
+## Features
+
+**Terminal Control** — list, create, focus, send text, close. Stable numeric IDs. Custom names and working directories.
+
+**Wrapped Terminals** — create terminals under `script(1)` that log every pty byte to disk. Read back any session — shells, TUIs, REPLs, AI agents — with ANSI escapes stripped to clean text. Available from the terminal dropdown or via API.
+
+**Command Execution** — run commands with captured stdout + stderr + exit code. File-based capture that works in any terminal, no shell integration dependency.
+
+**Multi-line Paste** — auto-wraps multi-line text in bracketed paste mode so terminals receive it as one atomic input, not line-by-line.
+
+**Safety Gate** — detects when a terminal is running a TUI (vim, claude, less) and warns before sending text that would land as TUI input instead of a shell command.
+
+**Event Streaming** — poll for finished-command events across all terminals, or tail pty logs in real-time for wrapped terminals.
+
+**Zero Dependencies** — the extension is pure JavaScript with no npm packages. The Python client is stdlib-only.
+
+---
+
+## Configuration
+
+| Setting | Default | What it does |
+|---|---|---|
+| `claws.socketPath` | `.claws/claws.sock` | Socket location (relative to workspace) |
+| `claws.logDirectory` | `.claws/terminals` | Where wrapped terminal logs go |
+| `claws.defaultWrapped` | `false` | Make all new terminals wrapped by default |
+| `claws.maxOutputBytes` | `262144` | Max output per command event (256KB) |
+| `claws.maxHistory` | `500` | Command events retained in ring buffer |
+
+---
+
+## Protocol
+
+Newline-delimited JSON over Unix socket. [Full spec →](docs/protocol.md)
+
+```
+{"id":1, "cmd":"list"}                                    → terminals
+{"id":2, "cmd":"create", "name":"w", "wrapped":true}      → id + logPath
+{"id":3, "cmd":"send", "id":"2", "text":"ls -la"}         → ok
+{"id":4, "cmd":"readLog", "id":"2"}                        → clean text
+{"id":5, "cmd":"close", "id":"2"}                          → ok
+```
+
+---
+
 ## How It Works
 
 <p align="center">
@@ -89,186 +141,57 @@ echo '{"id":1,"cmd":"list"}' | nc -U .claws/claws.sock
 
 Claws runs a socket server inside VS Code. Clients connect and control terminals via JSON commands. Wrapped terminals capture full pty output via `script(1)` — readable even for TUI sessions.
 
----
-
-## Wrapped Terminals — Full Pty Capture
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/wrapped-terminal.png" alt="Wrapped Terminal Data Flow" width="720">
 </p>
 
-The killer feature. A wrapped terminal runs your shell inside `script(1)`, which logs every byte that flows through the pty to a file. Claws reads that file back with ANSI escapes stripped — giving you **clean, readable text of everything that happened**.
-
-What you can read:
-- Interactive TUI sessions (Claude Code, vim, nano, htop)
-- REPL outputs (Python, Node, irb, ghci)
-- Build logs, test runners, server output
-- Full conversation transcripts from AI coding assistants
-
-The terminal looks and behaves identically to a regular terminal. The `script(1)` layer is invisible to the user.
-
-**Create from the UI**: Click the dropdown arrow next to `+` → **"Claws Wrapped Terminal"**
-
-**Create from code**: `client.create("name", wrapped=True)`
-
-```python
-# Read the last 50 lines of a wrapped terminal
-log = client.read_log(terminal_id, lines=50)
-print(log)
-# Output (clean text, ANSI stripped):
-#   $ npm test
-#   PASS src/utils.test.ts (3.421s)
-#     ✓ should parse JSON correctly (5ms)
-#   Tests: 2 passed, 2 total
-```
-
----
-
-## Command Execution with Output Capture
-
-Two modes:
-
-### `send` — Raw Text Injection
-
-Send text into any terminal. Supports single-line, multi-line (auto bracketed paste), and raw keystrokes (`\r`, `\x03` for Ctrl+C).
-
-```python
-client.send(terminal_id, "git status")
-client.send(terminal_id, "\x03")  # Ctrl+C to interrupt
-```
-
-### `exec` — Structured Output Capture
-
-Run a command, wait for it to finish, get stdout + stderr + exit code:
-
-```python
-result = client.exec(terminal_id, "python3 -c 'print(2+2)'")
-# result.output = "4\n"
-# result.exit_code = 0
-```
-
-Uses file-based capture under the hood — works in every terminal type without depending on shell integration.
-
----
-
-## Safety Gate
-
-Before sending text into a terminal, Claws checks the foreground process. If the terminal is running a TUI (claude, vim, less, top), it warns you — because your text will land as TUI input, not a shell command.
-
-```
-[warning: foreground is 'vim' (not a shell)] sent
-```
-
-Default: warn and proceed (non-blocking). Set `strict: true` to hard-block. The warning prevents accidental sends while still allowing intentional AI orchestration of TUI sessions.
-
----
-
-## Event Streaming
-
-### `poll` — Shell Integration Events
-
-Stream finished-command events across all terminals:
-
-```python
-events, cursor = client.poll(since=0)
-for e in events:
-    print(f"[{e['terminalName']}] $ {e['commandLine']} → exit {e['exitCode']}")
-```
-
-### `readLog` — Pty Log Tailing
-
-Tail a wrapped terminal's log with ANSI stripping. Supports offset-based incremental reads:
-
-```python
-log = client.read_log(terminal_id, lines=100)
-```
-
----
-
-## Cross-Device Control (planned)
+### Cross-Device Control (planned)
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cross-device.png" alt="Cross-Device Architecture" width="720">
 </p>
 
-WebSocket transport with token auth + TLS for controlling terminals across machines. SSH tunnel pattern works today:
+WebSocket transport with token auth + TLS for controlling terminals across machines. SSH tunnel pattern works today as an interim solution.
 
-```bash
-ssh -L 9999:/remote/workspace/.claws/claws.sock user@remote
+---
+
+## MCP Server — instant Claude Code integration
+
+Register Claws as an MCP server and every Claude Code session gets native terminal control tools — no client library needed.
+
+```json
+// .claude/settings.json (in any project)
+{
+  "mcpServers": {
+    "claws": {
+      "command": "python3",
+      "args": ["/path/to/claws/mcp_server.py"],
+      "env": { "CLAWS_SOCKET": ".claws/claws.sock" }
+    }
+  }
+}
 ```
 
----
+Claude Code immediately gets: `claws_list`, `claws_create`, `claws_send`, `claws_exec`, `claws_read_log`, `claws_poll`, `claws_close`, `claws_worker`.
 
-## Protocol
-
-Newline-delimited JSON over Unix socket.
-
-```
-{"id":1, "cmd":"list"}                                    → terminals
-{"id":2, "cmd":"create", "name":"w", "wrapped":true}      → id + logPath
-{"id":3, "cmd":"send", "id":"2", "text":"ls -la"}         → ok
-{"id":4, "cmd":"readLog", "id":"2"}                        → clean text
-{"id":5, "cmd":"exec", "id":"2", "command":"npm test"}     → output + exitCode
-{"id":6, "cmd":"close", "id":"2"}                          → ok
-```
+No imports. No client code. Just register the server and your AI can control terminals.
 
 ---
 
-## Configuration
+## Deep Dives
 
-| Setting | Default | Description |
-|---|---|---|
-| `claws.socketPath` | `.claws/claws.sock` | Socket location relative to workspace |
-| `claws.logDirectory` | `.claws/terminals` | Wrapped terminal log directory |
-| `claws.defaultWrapped` | `false` | Make all new terminals wrapped |
-| `claws.maxOutputBytes` | `262144` | Max output per event (256KB) |
-| `claws.maxHistory` | `500` | Event ring buffer size |
-
----
-
-## AI Orchestration Patterns
-
-Claws ships with 7 production-grade prompt templates for terminal orchestration:
-
-**Single Mission Worker** — scoped task, one terminal, one deliverable
-
-**Parallel Fleet** — N workers, N terminals, aggregated results
-
-**Interactive Pair Programming** — ongoing conversation, send follow-ups based on observed output
-
-**Graphify-Driven Exploration** — use a knowledge graph as the primary reasoning surface
-
-**Error Recovery** — diagnose + fix with minimal diffs and verification
-
-See the full [Prompt Templates](https://github.com/neunaha/claws/blob/main/.claude/skills/prompt-templates/SKILL.md) reference.
-
----
-
-## Slash Commands
-
-When using Claude Code in the Claws project, these commands are available:
-
-| Command | Description |
-|---|---|
-| `/claws-connect` | Verify the bridge is live |
-| `/claws-status` | Full health check |
-| `/claws-create <name>` | Create a wrapped terminal |
-| `/claws-send <id> <text>` | Send text to a terminal |
-| `/claws-exec <id> <cmd>` | Execute with captured output |
-| `/claws-read <id>` | Read wrapped terminal log |
-| `/claws-worker <name> <cmd>` | Full worker pattern with monitoring |
-| `/claws-fleet <tasks>` | Parallel fleet dispatch |
-
----
+- **[Complete Feature Reference](docs/features.md)** — every feature explained in depth with parameters, examples, and internals
+- **[Protocol Specification](docs/protocol.md)** — full socket protocol spec with all commands, fields, and error codes
+- **[Prompt Templates](/.claude/skills/prompt-templates/SKILL.md)** — 7 production-grade templates for worker missions, fleet dispatch, pair-programming, debugging, and graphify-driven exploration
 
 ## Roadmap
 
-- **v0.2** — TypeScript rewrite, Marketplace publish, status bar, tests
-- **v0.3** — WebSocket transport, token auth, TLS, cross-device control
+- **v0.2** — TypeScript rewrite, VS Code Marketplace publish, status bar, tests
+- **v0.3** — WebSocket transport for cross-device control, token auth, TLS
 - **v0.4** — Team config, device discovery, CLI tool, web dashboard
 
 ---
 
 ## License
 
-[MIT](https://github.com/neunaha/claws/blob/main/LICENSE) &copy; Anish Neunaha
+[MIT](LICENSE) &copy; Anish Neunaha
