@@ -168,35 +168,55 @@
   </div>
 </nav>
 
-<!-- Hero Banner -->
-<div style="padding-top: 60px;">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/hero-cinematic.png" alt="Claws — Terminal Orchestration" style="width: 100%; display: block;">
+<!-- Hero -->
+<div style="position: relative; padding-top: 60px; overflow: hidden;">
+  <!-- Cinematic background -->
+  <div style="position: relative;">
+    <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/hero-cinematic.png" alt="Claws — Terminal Orchestration" style="width: 100%; display: block; opacity: 0.6;">
+    <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 60%; background: linear-gradient(transparent, var(--bg));"></div>
+  </div>
+
+  <!-- Hero content overlaid -->
+  <div style="position: relative; text-align: center; max-width: 900px; margin: -200px auto 0; padding: 0 24px 60px; z-index: 2;">
+    <img src="https://raw.githubusercontent.com/neunaha/claws/main/extension/icon.png" alt="Claws" style="width: 72px; height: 72px; border-radius: 16px; margin-bottom: 20px; box-shadow: 0 0 40px rgba(200,90,62,0.4);">
+    <h1 style="font-size: 56px; font-weight: 800; letter-spacing: -2px; margin-bottom: 12px; line-height: 1.1;">
+      Your AI just got<br><span style="color: var(--accent);">terminal superpowers</span>.
+    </h1>
+    <p style="font-size: 20px; color: var(--text-muted); max-width: 650px; margin: 0 auto 12px; line-height: 1.6;">
+      One extension. One socket. Full control over every VS Code terminal from the outside. Your AI writes code in one terminal, tests in another, deploys in a third — while you watch.
+    </p>
+    <p style="font-size: 15px; color: var(--accent); font-family: var(--mono); margin-bottom: 28px;">
+      pip install claws-client &nbsp;&middot;&nbsp; 5 lines of Python &nbsp;&middot;&nbsp; zero dependencies
+    </p>
+    <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
+      <a href="https://github.com/neunaha/claws#install" class="btn btn-primary" style="padding: 14px 32px; font-size: 16px;">Get Started — 30 seconds</a>
+      <a href="https://github.com/neunaha/claws" class="btn btn-ghost" style="padding: 14px 32px; font-size: 16px;">Star on GitHub</a>
+    </div>
+    <div style="margin-top: 20px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+      <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT">
+      <img src="https://img.shields.io/badge/VS%20Code-1.93+-007ACC.svg" alt="VS Code">
+      <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Zero deps">
+      <img src="https://img.shields.io/github/stars/neunaha/claws?style=social" alt="Stars">
+    </div>
+  </div>
 </div>
 
-<!-- Hero -->
-<div class="hero" style="padding-top: 40px;">
-  <img class="logo-img" src="https://raw.githubusercontent.com/neunaha/claws/main/extension/icon.png" alt="Claws">
-  <h1>One socket. Every <span>terminal</span>. Total control.</h1>
-  <p class="sub">Your AI writes code in one terminal. Runs tests in another. Deploys in a third. Monitors all of them. Reacts when things break. You just watch.</p>
-  <div class="buttons">
-    <a href="https://github.com/neunaha/claws#install" class="btn btn-primary">Clone and install in 30 seconds</a>
-    <a href="https://github.com/neunaha/claws" class="btn btn-ghost">Star on GitHub</a>
-    <a href="https://github.com/neunaha/claws/blob/main/docs/guide.md" class="btn btn-ghost">Read the full guide</a>
-  </div>
-  <div class="badge-row">
-    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT">
-    <img src="https://img.shields.io/badge/VS%20Code-1.93+-007ACC.svg" alt="VS Code">
-    <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Zero deps">
-    <img src="https://img.shields.io/github/stars/neunaha/claws?style=social" alt="Stars">
-  </div>
-</div>
+<!-- The hook — what it replaces -->
+<section style="text-align: center; padding: 40px 24px 60px; max-width: 800px; margin: 0 auto;">
+  <p style="font-size: 18px; color: var(--text-muted); line-height: 1.8;">
+    <span style="text-decoration: line-through; opacity: 0.5;">Copy the command from Claude. Paste it in the terminal. Copy the output. Paste it back. Repeat 47 times.</span>
+  </p>
+  <p style="font-size: 22px; color: var(--text); font-weight: 600; margin-top: 16px;">
+    That loop is over. Claws gives your AI direct terminal access.
+  </p>
+</section>
 
 <!-- Problem/Solution -->
 <section>
-  <div class="section-label">The Problem</div>
-  <h2>VS Code terminals are a black box</h2>
-  <p>You run code, builds, AI agents, and servers inside VS Code terminals. But there's <strong>no API to control them from the outside</strong>. You can't list what's running. You can't send a command from a script. You can't read the output of an interactive session.</p>
-  <p><strong>Claws adds the missing API.</strong> A lightweight socket server inside VS Code accepts JSON commands from any external process — Python scripts, AI orchestrators, CI runners, or other machines on your network.</p>
+  <div class="section-label">Before Claws vs After</div>
+  <h2>VS Code terminals were a black box. Not anymore.</h2>
+  <p>Every developer runs code, builds, AI agents, and servers inside VS Code terminals. But there was <strong>no programmatic API to control them from the outside</strong>. You couldn't list what's running. Couldn't send a command from a script. Couldn't read the output of an interactive TUI session.</p>
+  <p><strong>Claws changes that with one extension and 5 lines of code.</strong> A socket server inside VS Code accepts JSON commands from any external process — Python scripts, AI orchestrators, CI runners, or other machines on your network.</p>
 <pre>from claws import ClawsClient
 
 client = ClawsClient(".claws/claws.sock")
