@@ -164,8 +164,37 @@ else
   echo "[5/6] Skipping MCP config (CLAWS_SKIP_MCP=1)"
 fi
 
-# ─── Step 6: Verify ────────────────────────────────────────────────────────
-echo "[6/6] Verifying..."
+# ─── Step 6: Shell hook injection ───────────────────────────────────────────
+echo "[6/7] Injecting shell hook..."
+HOOK_SOURCE="source \"$INSTALL_DIR/scripts/shell-hook.sh\""
+HOOK_MARKER="# CLAWS terminal hook"
+
+inject_hook() {
+  local rcfile="$1"
+  if [ -f "$rcfile" ]; then
+    if grep -q "CLAWS terminal hook" "$rcfile" 2>/dev/null; then
+      echo "  ✓ Shell hook already in $rcfile"
+    else
+      printf "\n%s\n%s\n" "$HOOK_MARKER" "$HOOK_SOURCE" >> "$rcfile"
+      echo "  ✓ Shell hook added to $rcfile"
+    fi
+  fi
+}
+
+# Detect shell and inject
+if [ -n "${ZSH_VERSION:-}" ] || [ -f "$HOME/.zshrc" ]; then
+  inject_hook "$HOME/.zshrc"
+fi
+if [ -n "${BASH_VERSION:-}" ] || [ -f "$HOME/.bashrc" ]; then
+  inject_hook "$HOME/.bashrc"
+fi
+# Also try .bash_profile for macOS login shells
+if [ -f "$HOME/.bash_profile" ] && ! [ -f "$HOME/.bashrc" ]; then
+  inject_hook "$HOME/.bash_profile"
+fi
+
+# ─── Step 7: Verify ────────────────────────────────────────────────────────
+echo "[7/7] Verifying..."
 CHECKS=0
 [ -L "$EXT_LINK" ] && CHECKS=$((CHECKS+1)) && echo "  ✓ Extension symlink"
 [ -x "scripts/terminal-wrapper.sh" ] && CHECKS=$((CHECKS+1)) && echo "  ✓ Wrapper executable"
