@@ -10,6 +10,8 @@
   <meta property="og:image" content="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/social-preview.png">
   <meta property="og:url" content="https://neunaha.github.io/claws">
   <meta name="twitter:card" content="summary_large_image">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg: #0A0A0B;
@@ -140,12 +142,79 @@
     .bp-card h4 { font-size: 14px; margin-bottom: 6px; }
     .bp-card p { font-size: 13px; margin-bottom: 0; }
 
+    /* Logo glow */
+    .logo-glow {
+      animation: pulse-glow 3s ease-in-out infinite;
+      border-radius: 16px;
+    }
+    @keyframes pulse-glow {
+      0%, 100% { box-shadow: 0 0 30px rgba(200,90,62,0.3); }
+      50% { box-shadow: 0 0 60px rgba(200,90,62,0.6), 0 0 100px rgba(200,90,62,0.2); }
+    }
+
+    /* Scroll reveal */
+    .reveal { opacity: 0; transform: translateY(30px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .reveal.visible { opacity: 1; transform: translateY(0); }
+
+    /* Stats bar */
+    .stats-bar {
+      display: flex; justify-content: center; gap: 48px; flex-wrap: wrap;
+      padding: 40px 24px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+      margin: 0 auto; max-width: 900px;
+    }
+    .stat { text-align: center; }
+    .stat .num { font-size: 36px; font-weight: 800; color: var(--accent); font-family: var(--mono); }
+    .stat .label { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+
+    /* Image carousel */
+    .carousel {
+      position: relative; overflow: hidden; border-radius: 12px;
+      border: 1px solid var(--border); margin: 32px 0;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+    }
+    .carousel-track {
+      display: flex; transition: transform 0.5s ease;
+    }
+    .carousel-track img {
+      min-width: 100%; height: auto; display: block;
+    }
+    .carousel-dots {
+      display: flex; justify-content: center; gap: 8px;
+      padding: 12px 0;
+    }
+    .carousel-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--border); cursor: pointer; border: none;
+      transition: background 0.3s;
+    }
+    .carousel-dot.active { background: var(--accent); }
+
+    /* Floating label badges */
+    .tech-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--bg-3); border: 1px solid var(--border);
+      border-radius: 20px; padding: 6px 14px; font-size: 13px;
+      color: var(--text-muted); margin: 4px;
+    }
+    .tech-badge svg { width: 16px; height: 16px; fill: currentColor; }
+    .tech-badge.accent { border-color: var(--accent); color: var(--accent); }
+
+    /* Feature card hover */
+    .feature-card { transition: transform 0.2s, border-color 0.2s; }
+    .feature-card:hover { transform: translateY(-4px); border-color: var(--accent); }
+
+    /* Typing animation for code */
+    .typing { border-right: 2px solid var(--accent); animation: blink 1s infinite; display: inline; }
+    @keyframes blink { 0%, 100% { border-color: var(--accent); } 50% { border-color: transparent; } }
+
     @media (max-width: 768px) {
       .hero h1 { font-size: 36px; }
       .hero p.sub { font-size: 17px; }
       .features { grid-template-columns: 1fr; }
       .bp-grid { grid-template-columns: 1fr; }
       nav .links { display: none; }
+      .stats-bar { gap: 24px; }
+      .stat .num { font-size: 28px; }
     }
   </style>
 </head>
@@ -178,7 +247,7 @@
 
   <!-- Hero content overlaid -->
   <div style="position: relative; text-align: center; max-width: 900px; margin: -200px auto 0; padding: 0 24px 60px; z-index: 2;">
-    <img src="https://raw.githubusercontent.com/neunaha/claws/main/extension/icon.png" alt="Claws" style="width: 72px; height: 72px; border-radius: 16px; margin-bottom: 20px; box-shadow: 0 0 40px rgba(200,90,62,0.4);">
+    <img class="logo-glow" src="https://raw.githubusercontent.com/neunaha/claws/main/extension/icon.png" alt="Claws" style="width: 80px; height: 80px; margin-bottom: 20px;">
     <h1 style="font-size: 56px; font-weight: 800; letter-spacing: -2px; margin-bottom: 12px; line-height: 1.1;">
       Your AI just got<br><span style="color: var(--accent);">terminal superpowers</span>.
     </h1>
@@ -211,8 +280,45 @@
   </p>
 </section>
 
+<!-- Stats bar -->
+<div class="stats-bar reveal">
+  <div class="stat"><div class="num">8</div><div class="label">Terminal Control Tools</div></div>
+  <div class="stat"><div class="num">0</div><div class="label">Dependencies</div></div>
+  <div class="stat"><div class="num">30s</div><div class="label">Install Time</div></div>
+  <div class="stat"><div class="num">5</div><div class="label">Lines to Full Control</div></div>
+</div>
+
+<!-- Tech badges -->
+<div style="text-align: center; padding: 32px 24px;" class="reveal">
+  <span class="tech-badge accent">&#9654; VS Code Extension</span>
+  <span class="tech-badge">&#128013; Python Client</span>
+  <span class="tech-badge">&#127760; MCP Server</span>
+  <span class="tech-badge">&#128274; Safety Gate</span>
+  <span class="tech-badge">&#128196; Pty Capture</span>
+  <span class="tech-badge">&#128225; JSON Protocol</span>
+  <span class="tech-badge">&#9881; File-Based Exec</span>
+  <span class="tech-badge">&#128203; Bracketed Paste</span>
+</div>
+
+<!-- Image carousel — all architecture diagrams -->
+<section style="padding-top: 20px;" class="reveal">
+  <div class="section-label" style="text-align: center;">Visual Overview</div>
+  <h2 style="text-align: center;">See the full architecture</h2>
+  <div class="carousel" id="archCarousel">
+    <div class="carousel-track" id="archTrack">
+      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/architecture.png" alt="Architecture">
+      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/wrapped-terminal.png" alt="Wrapped Terminal">
+      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/ai-orchestration.png" alt="AI Orchestration">
+      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/protocol-flow.png" alt="Protocol Flow">
+      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/safety-gate.png" alt="Safety Gate">
+      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cross-device.png" alt="Cross-Device">
+    </div>
+  </div>
+  <div class="carousel-dots" id="archDots"></div>
+</section>
+
 <!-- Problem/Solution -->
-<section>
+<section class="reveal">
   <div class="section-label">Before Claws vs After</div>
   <h2>VS Code terminals were a black box. Not anymore.</h2>
   <p>Every developer runs code, builds, AI agents, and servers inside VS Code terminals. But there was <strong>no programmatic API to control them from the outside</strong>. You couldn't list what's running. Couldn't send a command from a script. Couldn't read the output of an interactive TUI session.</p>
@@ -255,16 +361,19 @@ client.close(worker.id)</pre>
         <div class="icon">&#9654;</div>
         <h3>Terminal Management</h3>
         <p>List all terminals with PID, name, and status. Create new ones with custom names and working directories. Focus, show, or close any terminal programmatically.</p>
+        <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/architecture.png" alt="Architecture" style="width:100%; border-radius:8px; margin-top:12px; border: 1px solid var(--border);">
       </div>
       <div class="feature-card">
         <div class="icon">&#128196;</div>
         <h3>Full Pty Capture</h3>
         <p>Wrapped terminals log everything via <code>script(1)</code>. Read back Claude Code conversations, vim sessions, build logs, REPL outputs — all as clean text.</p>
+        <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/wrapped-terminal.png" alt="Wrapped Terminal" style="width:100%; border-radius:8px; margin-top:12px; border: 1px solid var(--border);">
       </div>
       <div class="feature-card">
         <div class="icon">&#9881;</div>
         <h3>Command Execution</h3>
         <p>Run commands with captured stdout + stderr + exit code. File-based capture works in every terminal type without depending on shell integration.</p>
+        <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/protocol-flow.png" alt="Protocol Flow" style="width:100%; border-radius:8px; margin-top:12px; border: 1px solid var(--border);">
       </div>
       <div class="feature-card">
         <div class="icon">&#128274;</div>
@@ -276,11 +385,13 @@ client.close(worker.id)</pre>
         <div class="icon">&#128203;</div>
         <h3>Bracketed Paste</h3>
         <p>Multi-line text is auto-wrapped in bracketed paste mode so terminals receive it as one atomic input — no line-by-line fragmentation.</p>
+        <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/social-preview.png" alt="Claws" style="width:100%; border-radius:8px; margin-top:12px; border: 1px solid var(--border);">
       </div>
       <div class="feature-card">
         <div class="icon">&#127760;</div>
         <h3>Cross-Device (planned)</h3>
         <p>WebSocket transport with token auth + TLS for controlling terminals across machines. SSH tunnel pattern works today as an interim.</p>
+        <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cross-device.png" alt="Cross-Device" style="width:100%; border-radius:8px; margin-top:12px; border: 1px solid var(--border);">
       </div>
     </div>
   </div>
@@ -495,5 +606,44 @@ client = ClawsClient("/tmp/forwarded.sock")</pre>
   <p style="margin-top: 8px;">Built by <a href="https://github.com/neunaha">Anish Neunaha</a> &middot; <a href="https://github.com/neunaha/claws">GitHub</a> &middot; <a href="https://github.com/neunaha/claws/blob/main/CONTRIBUTING.md">Contribute</a></p>
 </footer>
 
+<script>
+// Carousel
+(function() {
+  const track = document.getElementById('archTrack');
+  const dotsContainer = document.getElementById('archDots');
+  if (!track || !dotsContainer) return;
+  const imgs = track.querySelectorAll('img');
+  const n = imgs.length;
+  let current = 0;
+
+  // Create dots
+  for (let i = 0; i < n; i++) {
+    const dot = document.createElement('button');
+    dot.className = 'carousel-dot' + (i === 0 ? ' active' : '');
+    dot.onclick = () => goTo(i);
+    dotsContainer.appendChild(dot);
+  }
+
+  function goTo(idx) {
+    current = idx;
+    track.style.transform = `translateX(-${idx * 100}%)`;
+    dotsContainer.querySelectorAll('.carousel-dot').forEach((d, i) => {
+      d.className = 'carousel-dot' + (i === idx ? ' active' : '');
+    });
+  }
+
+  // Auto-advance every 4s
+  setInterval(() => goTo((current + 1) % n), 4000);
+})();
+
+// Scroll reveal
+(function() {
+  const els = document.querySelectorAll('.reveal');
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+  }, { threshold: 0.1 });
+  els.forEach(el => observer.observe(el));
+})();
+</script>
 </body>
 </html>
