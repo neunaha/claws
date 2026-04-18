@@ -181,7 +181,9 @@ if [ -f "$CLAWS_TEMPLATE" ]; then
     _dir="$(dirname "$_dir")"
   done
 
-  if [ -n "$PROJECT_ROOT" ]; then
+  # Skip injection when the project IS the Claws source repo itself —
+  # otherwise the repo's own tracked CLAUDE.md gets polluted on dev reinstalls.
+  if [ -n "$PROJECT_ROOT" ] && [ "$PROJECT_ROOT" != "$INSTALL_DIR" ]; then
     CLAUDE_MD="$PROJECT_ROOT/CLAUDE.md"
     if [ -f "$CLAUDE_MD" ]; then
       if grep -q "CLAWS — Terminal Orchestration Active" "$CLAUDE_MD" 2>/dev/null; then
@@ -224,7 +226,7 @@ fi
 
 # Copy slash commands
 mkdir -p "$HOME/.claude/commands"
-for cmd in claws claws-do claws-go claws-watch claws-learn claws-setup claws-cleanup claws-help claws-status claws-connect claws-create claws-send claws-exec claws-read claws-worker claws-fleet claws-update; do
+for cmd in claws claws-do claws-go claws-watch claws-learn claws-setup claws-cleanup claws-help claws-status claws-connect claws-create claws-send claws-exec claws-read claws-worker claws-fleet claws-update claws-doctor claws-fix; do
   if [ -f "$INSTALL_DIR/.claude/commands/${cmd}.md" ]; then
     cp "$INSTALL_DIR/.claude/commands/${cmd}.md" "$HOME/.claude/commands/" 2>/dev/null
   fi
@@ -303,43 +305,87 @@ fi
 
 # ─── Step 8: Verify ────────────────────────────────────────────────────────
 echo "[8/8] Verifying..."
-CHECKS=0
-[ -L "$EXT_LINK" ] && CHECKS=$((CHECKS+1)) && echo "  ✓ Extension symlink"
-[ -x "scripts/terminal-wrapper.sh" ] && CHECKS=$((CHECKS+1)) && echo "  ✓ Wrapper executable"
-[ -f "$MCP_PATH" ] && CHECKS=$((CHECKS+1)) && echo "  ✓ MCP server exists"
-command -v node &>/dev/null && CHECKS=$((CHECKS+1)) && echo "  ✓ Node.js available"
+CHECKS_PASSED=0
+CHECKS_TOTAL=0
+FAILED=()
 
-# Verify MCP server can actually start
-if command -v node &>/dev/null && [ -f "$MCP_PATH" ]; then
-  MCP_TEST=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | timeout 3 node "$MCP_PATH" 2>/dev/null | head -c 100)
-  if echo "$MCP_TEST" | grep -q "claws" 2>/dev/null; then
-    CHECKS=$((CHECKS+1))
-    echo "  ✓ MCP server starts and responds"
+verify() {
+  # $1 = name, $2 = condition (already evaluated as truthy/falsy via test)
+  CHECKS_TOTAL=$((CHECKS_TOTAL+1))
+  if [ "$2" = "ok" ]; then
+    CHECKS_PASSED=$((CHECKS_PASSED+1))
+    echo "  ✓ $1"
   else
-    echo "  ! MCP server exists but didn't respond — check: node $MCP_PATH"
+    echo "  ✗ $1"
+    FAILED+=("$1")
+  fi
+}
+
+# Extension symlink
+[ -L "$EXT_LINK" ] && r=ok || r=fail
+verify "Extension symlink" "$r"
+
+# Wrapper executable
+[ -x "scripts/terminal-wrapper.sh" ] && r=ok || r=fail
+verify "Wrapper executable" "$r"
+
+# MCP server file
+[ -f "$MCP_PATH" ] && r=ok || r=fail
+verify "MCP server exists" "$r"
+
+# Node.js available
+command -v node >/dev/null 2>&1 && r=ok || r=fail
+verify "Node.js available" "$r"
+
+# MCP server actually starts and responds (Content-Length-framed JSON-RPC)
+# `timeout(1)` is not portable on macOS — bound the wait inside node instead.
+r=fail
+if command -v node >/dev/null 2>&1 && [ -f "$MCP_PATH" ]; then
+  MCP_TEST=$(MCP_PATH="$MCP_PATH" node -e '
+    const cp = require("child_process");
+    const c = cp.spawn("node", [process.env.MCP_PATH], { stdio: ["pipe","pipe","ignore"] });
+    const body = JSON.stringify({jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"installer",version:"1"}}});
+    c.stdin.write("Content-Length: " + Buffer.byteLength(body) + "\r\n\r\n" + body);
+    let out = "";
+    const done = (ok) => { try { c.kill(); } catch(e){} process.stdout.write(out); process.exit(ok ? 0 : 1); };
+    c.stdout.on("data", d => { out += d.toString("utf8"); if (out.includes("\"result\"") || out.includes("serverInfo")) done(true); });
+    c.on("error", () => done(false));
+    setTimeout(() => done(false), 3000);
+  ' 2>/dev/null)
+  if printf '%s' "$MCP_TEST" | grep -q '"result"\|serverInfo'; then
+    r=ok
   fi
 fi
+verify "MCP server starts and responds" "$r"
 
-# Verify settings.json has correct absolute path
-if [ -f "$HOME/.claude/settings.json" ]; then
-  if grep -q "$MCP_PATH" "$HOME/.claude/settings.json" 2>/dev/null; then
-    echo "  ✓ MCP path in settings.json matches install"
-  else
-    echo "  ! MCP path mismatch — re-registering..."
-    node -e "
+# settings.json points at the right MCP path
+r=fail
+if [ -f "$HOME/.claude/settings.json" ] && grep -q "$MCP_PATH" "$HOME/.claude/settings.json" 2>/dev/null; then
+  r=ok
+elif [ -f "$HOME/.claude/settings.json" ]; then
+  # auto-fix mismatch silently
+  node -e "
 const fs=require('fs'),p=require('path');
 const sp=p.join('$HOME','.claude','settings.json');
 let cfg={};try{cfg=JSON.parse(fs.readFileSync(sp,'utf8'))}catch{}
 if(!cfg.mcpServers)cfg.mcpServers={};
 cfg.mcpServers.claws={command:'node',args:['$MCP_PATH']};
 fs.writeFileSync(sp,JSON.stringify(cfg,null,2));
-console.log('  ✓ MCP path fixed');
 " 2>/dev/null
-  fi
+  grep -q "$MCP_PATH" "$HOME/.claude/settings.json" 2>/dev/null && r=ok
 fi
+verify "MCP path in settings.json" "$r"
 
 echo ""
-echo "  ✓ All $CHECKS checks passed"
+if [ ${#FAILED[@]} -eq 0 ]; then
+  echo "  ✓ All $CHECKS_PASSED/$CHECKS_TOTAL checks passed"
+else
+  echo "  ✗ $CHECKS_PASSED/$CHECKS_TOTAL checks passed — ${#FAILED[@]} failed:"
+  for f in "${FAILED[@]}"; do echo "      • $f"; done
+  echo ""
+  echo "  Run the doctor for fix instructions:"
+  echo "      bash $INSTALL_DIR/scripts/doctor.sh"
+fi
 echo ""
 
 # ─── Activate immediately — transform THIS terminal right now ───────────────
@@ -350,20 +396,25 @@ source "$INSTALL_DIR/scripts/shell-hook.sh"
 echo ""
 echo "  ┌─────────────────────────────────────────────────────────────┐"
 echo "  │                                                             │"
-echo "  │  Claws is live. Your terminal has changed.                  │"
+echo "  │  Claws is installed. THREE steps to activate it:            │"
 echo "  │                                                             │"
-echo "  │  Try these right now:                                       │"
-echo "  │    claws-ls              list all VS Code terminals         │"
-echo "  │    claws-new worker-1    create a wrapped terminal          │"
-echo "  │    claws-log 2           read terminal 2's output           │"
+echo "  │  1. Reload VS Code                                          │"
+echo "  │     Cmd+Shift+P (or Ctrl+Shift+P)                           │"
+echo "  │     → 'Developer: Reload Window'                            │"
+echo "  │     This starts the extension + the bridge socket.          │"
 echo "  │                                                             │"
-echo "  │  Reload VS Code to activate the extension:                  │"
-echo "  │    Cmd+Shift+P → 'Developer: Reload Window'                │"
+echo "  │  2. Restart Claude Code                                     │"
+echo "  │     Type 'exit' in Claude Code, then 'claude' again.        │"
+echo "  │     This loads the 8 claws_* MCP tools.                     │"
 echo "  │                                                             │"
-echo "  │  Every new terminal will show the Claws banner.             │"
-echo "  │  Every Claude Code session has 8 terminal control tools.    │"
+echo "  │  3. Open a new terminal in VS Code                          │"
+echo "  │     Loads the shell hook + shows the CLAWS banner.          │"
 echo "  │                                                             │"
-echo "  │  Update anytime:  /claws-update  or re-run this script      │"
+echo "  ├─────────────────────────────────────────────────────────────┤"
+echo "  │                                                             │"
+echo "  │  Verify it worked:  /claws-doctor                           │"
+echo "  │  See the dashboard: /claws                                  │"
+echo "  │  Update anytime:    /claws-update                           │"
 echo "  │                                                             │"
 echo "  │  Docs:    https://github.com/neunaha/claws                  │"
 echo "  │  Website: https://neunaha.github.io/claws/                  │"

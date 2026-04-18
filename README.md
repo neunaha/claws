@@ -50,13 +50,21 @@ bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/i
 
 **Zero dependencies.** No Python. No pip. No brew. Just Node.js (ships with VS Code).
 
-### Step 2 — Reload VS Code
+### Step 2 — Activate (three things, in order)
 
-`Cmd+Shift+P` → `Developer: Reload Window`
+The installer copies files. Three running processes need to pick them up:
 
-### Step 3 — You're ready
+1. **Reload VS Code** — `Cmd+Shift+P` (Windows/Linux: `Ctrl+Shift+P`) → `Developer: Reload Window`. Starts the extension + the bridge socket.
+2. **Restart Claude Code** — type `exit`, then run `claude` again. Loads the 8 `claws_*` MCP tools (these can't be added mid-session).
+3. **Open a new terminal in VS Code** — sources the shell hook so `claws-ls`, `claws-new`, etc. become available, and shows the CLAWS banner.
 
-Type `/claws` to see the dashboard. Type `/claws-do run my tests` to see it work.
+### Step 3 — Verify, then go
+
+Type `/claws-doctor` first. It runs 8 health checks and prints a copy-pasteable fix for anything that didn't land cleanly.
+
+Once everything passes:
+- `/claws` — dashboard
+- `/claws-do run my tests` — natural-language task → AI picks the strategy → terminals appear, you watch.
 
 ---
 
