@@ -269,125 +269,80 @@ needs_build() {
 }
 
 if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; then
-  # ── Bundle build: only when source actually changed ──────────────────────
-  # Unchanged bundle + unchanged git HEAD = safe to skip. This is a caching
-  # optimization only; it does NOT affect node-pty, which runs unconditionally
-  # below so "update is always equivalent to fresh install".
-  if needs_build; then
-    if [ "$CURRENT_SHA" = "$LAST_BUILD_SHA" ]; then
-      info "rebuilding extension bundle (source changed locally)"
-    elif [ -z "$LAST_BUILD_SHA" ]; then
-      info "building extension bundle (first run)"
-    else
-      info "rebuilding extension bundle (git HEAD changed: ${LAST_BUILD_SHA:0:7} → ${CURRENT_SHA:0:7})"
-    fi
-    if ( cd "$INSTALL_DIR/extension" && npm install --no-audit --no-fund --loglevel=error --silent && npm run build --silent ); then
-      echo "$CURRENT_SHA" > "$BUILD_SHA_FILE" 2>/dev/null || true
-      BUILD_OK=1
-      ok "extension built ($(wc -c < "$BUNDLE" | tr -d ' ') bytes, SHA ${CURRENT_SHA:0:7})"
-    else
-      warn "extension build failed — see $CLAWS_LOG for details. Falling back to legacy JS."
-      node --no-deprecation -e "const fs=require('fs'),p='$INSTALL_DIR/extension/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.main='./src/extension.js';fs.writeFileSync(p,JSON.stringify(j,null,2));" 2>/dev/null || true
-    fi
-  else
-    BUILD_OK=1
-    ok "extension bundle up to date (SHA ${CURRENT_SHA:0:7}, $(wc -c < "$BUNDLE" | tr -d ' ') bytes)"
-    # Even if the bundle is current, make sure npm has actually fetched
-    # node-pty (optional dep). A user who cloned before node-pty was added,
-    # or whose node_modules got removed, will have no node-pty dir at all.
-    if [ ! -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
-      info "fetching missing deps (node-pty not present)"
-      ( cd "$INSTALL_DIR/extension" && npm install --no-audit --no-fund --loglevel=error --silent ) || true
-    fi
-  fi
-
-  # ── node-pty native binary: ALWAYS verified, rebuilt if ABI-wrong ────────
-  # This runs on every install AND every /claws-update, whether the bundle
-  # was rebuilt or not. That makes update equivalent to fresh install —
-  # no "I updated but the binary stayed wrong" class of bug.
+  # ── Canonical build path ─────────────────────────────────────────────────
+  # `npm run build` = esbuild (TS → dist/extension.js) + bundle-native.mjs
+  # (detects the user's VS Code Electron version, runs @electron/rebuild
+  # against node_modules/node-pty, and copies the ABI-correct binary into
+  # extension/native/node-pty/). That native/ directory is what the VSIX
+  # ships (via .vscodeignore's `!native/**`) and what claws-pty.ts loads
+  # at runtime. ONE build step owns both outputs — there is no second
+  # rebuild, and there is no fallback to a stale binary.
   #
-  # node-pty is a native module. Its NODE_MODULE_VERSION must match whatever
-  # Node runtime loads it. VS Code's extension host runs Electron-embedded
-  # Node, NOT the user's system Node. Building against system Node (what a
-  # plain `node-gyp rebuild` does) produces a binary that loads from
-  # /usr/local/bin/node but silently fails in the extension host. We use
-  # @electron/rebuild to target the exact Electron version detected from the
-  # installed VS Code.app — the binary ends up ABI-compatible with the
-  # extension host and wrapped terminals get real pty mode.
-  NPTY_BIN="$INSTALL_DIR/extension/node_modules/node-pty/build/Release/pty.node"
-  ELECTRON_ABI_FILE="$INSTALL_DIR/extension/dist/.electron-abi"
-  NPTY_JUST_COMPILED=0
-  if [ -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
-    # Detect VS Code's Electron version from the installed app.
-    ELECTRON_VERSION=""
-    case "$PLATFORM" in
-      Darwin)
-        for app in \
-          "/Applications/Visual Studio Code.app" \
-          "/Applications/Visual Studio Code - Insiders.app" \
-          "/Applications/Cursor.app" \
-          "/Applications/Windsurf.app"; do
-          plist="$app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
-          if [ -f "$plist" ]; then
-            v=$(plutil -extract CFBundleVersion raw "$plist" 2>/dev/null || true)
-            if [ -n "$v" ]; then
-              ELECTRON_VERSION="$v"
-              info "detected Electron $v from $(basename "$app")"
-              break
-            fi
-          fi
-        done
-        ;;
-    esac
-    [ -z "$ELECTRON_VERSION" ] && ELECTRON_VERSION="39.8.5" \
-      && info "couldn't detect Electron version — using fallback $ELECTRON_VERSION"
+  # If @electron/rebuild fails (missing Xcode CLT, node-gyp/Python issue,
+  # network failure while fetching Electron headers), the build fails
+  # loud and the installer aborts. A silently-broken binary would ship a
+  # VSIX that lands but can't load node-pty — the exact pipe-mode bug
+  # we're trying to kill.
+  NATIVE_PTY_BIN="$INSTALL_DIR/extension/native/node-pty/build/Release/pty.node"
 
-    LAST_ABI=$(cat "$ELECTRON_ABI_FILE" 2>/dev/null || echo "")
-    NEEDS_NPTY_BUILD=0
-    [ ! -f "$NPTY_BIN" ] && NEEDS_NPTY_BUILD=1
-    [ "$LAST_ABI" != "$ELECTRON_VERSION" ] && NEEDS_NPTY_BUILD=1
-    [ "${CLAWS_FORCE_REBUILD_NPTY:-0}" = "1" ] && NEEDS_NPTY_BUILD=1
+  # Pre-flight: on macOS, @electron/rebuild needs Xcode Command Line Tools
+  # to compile node-pty. Check up front so the error is obvious, not
+  # buried 200 lines into npm output.
+  if [ "$PLATFORM" = "Darwin" ] && ! xcode-select -p &>/dev/null; then
+    bad "Xcode Command Line Tools required to build node-pty."
+    bad "Fix: run 'xcode-select --install', wait for it to finish, then re-run this installer."
+    exit 1
+  fi
 
-    if [ "$NEEDS_NPTY_BUILD" = "1" ]; then
-      if [ "$PLATFORM" = "Darwin" ] && ! xcode-select -p &>/dev/null; then
-        warn "Xcode Command Line Tools not installed — can't compile node-pty."
-        info "Install CLT with: xcode-select --install   then re-run /claws-update"
-      else
-        if [ ! -f "$NPTY_BIN" ]; then
-          info "building node-pty for Electron $ELECTRON_VERSION (binary missing)"
-        else
-          info "rebuilding node-pty for Electron $ELECTRON_VERSION (was: ${LAST_ABI:-unknown})"
-        fi
-        # Remove stale binary + marker so the rebuild is unambiguously fresh.
-        rm -f "$NPTY_BIN" "$ELECTRON_ABI_FILE" 2>/dev/null || true
-        if ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --which=node-pty --force >/dev/null 2>&1 ) && [ -f "$NPTY_BIN" ]; then
-          echo "$ELECTRON_VERSION" > "$ELECTRON_ABI_FILE" 2>/dev/null || true
-          ok "node-pty built for Electron $ELECTRON_VERSION ($(wc -c < "$NPTY_BIN" | tr -d ' ') bytes)"
-          NPTY_JUST_COMPILED=1
-        else
-          warn "@electron/rebuild failed — wrapped terminals will fall back to pipe-mode."
-          info "TUI rendering (claude, vim, htop) will be degraded. See $CLAWS_LOG for build errors."
-          info "manual fix: bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/rebuild-node-pty.sh)"
-        fi
-      fi
+  needs_rebuild_native=0
+  [ ! -f "$NATIVE_PTY_BIN" ] && needs_rebuild_native=1
+  [ "${CLAWS_FORCE_REBUILD_NPTY:-0}" = "1" ] && needs_rebuild_native=1
+  if needs_build; then needs_rebuild_native=1; fi
+
+  if [ "$needs_rebuild_native" = "1" ]; then
+    if [ ! -f "$NATIVE_PTY_BIN" ]; then
+      info "building extension + native node-pty (binary missing)"
+    elif [ "$CURRENT_SHA" != "$LAST_BUILD_SHA" ] && [ -n "$LAST_BUILD_SHA" ]; then
+      info "rebuilding extension (git HEAD ${LAST_BUILD_SHA:0:7} → ${CURRENT_SHA:0:7})"
     else
-      ok "node-pty binary OK for Electron $ELECTRON_VERSION (ABI matches)"
+      info "building extension bundle + rebuilding node-pty for current Electron"
+    fi
+
+    # Run with visible output — the user needs to see @electron/rebuild
+    # progress and any compile errors. --silent here hides the exact
+    # diagnostic that tells them what to fix.
+    if ( cd "$INSTALL_DIR/extension" \
+         && npm install --no-audit --no-fund --loglevel=error \
+         && npm run build ); then
+      echo "$CURRENT_SHA" > "$BUILD_SHA_FILE" 2>/dev/null || true
+    else
+      bad "extension build failed — see $CLAWS_LOG for the full compile log."
+      bad "Common causes: Xcode CLT not fully installed, Python 3 missing, offline during @electron/rebuild's Electron headers fetch."
+      bad "After fixing, re-run: bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)"
+      exit 1
     fi
   else
-    # node-pty directory itself is missing even after the install attempt
-    # above. Likely means npm install failed or the optional dep was skipped
-    # (e.g. --no-optional). Don't block the install; warn and move on.
-    warn "node-pty package not installed — wrapped terminals will use pipe-mode"
-    info "to install: ( cd $INSTALL_DIR/extension && npm install node-pty )"
+    ok "extension bundle up to date (SHA ${CURRENT_SHA:0:7}, $(wc -c < "$BUNDLE" | tr -d ' ') bytes)"
   fi
-  # Explicit nudge when we just compiled the binary: any VS Code window
-  # already open needs to reload to pick up the new pty.node.
-  if [ "$NPTY_JUST_COMPILED" = "1" ]; then
-    info "reload VS Code to activate: Cmd+Shift+P → Developer: Reload Window"
+
+  # Hard verification — the VSIX in step 2c packages from extension/, and
+  # without this binary present, wrapped terminals fall back to pipe-mode.
+  # Refusing to continue is the correct behavior; a silent pipe-mode
+  # install is worse than an explicit failure the user can fix.
+  if [ ! -f "$NATIVE_PTY_BIN" ]; then
+    bad "native/node-pty/build/Release/pty.node missing after build."
+    bad "This means @electron/rebuild failed silently or bundle-native.mjs didn't copy the output."
+    bad "Diagnostic: ( cd $INSTALL_DIR/extension && npm run bundle-native )"
+    bad "See $CLAWS_LOG for the bundle-native output."
+    exit 1
   fi
+  NATIVE_PTY_SIZE=$(wc -c < "$NATIVE_PTY_BIN" | tr -d ' ')
+  NATIVE_PTY_ELECTRON=$(node -e "try{console.log(require('$INSTALL_DIR/extension/native/.metadata.json').electronVersion||'?')}catch(e){console.log('?')}" 2>/dev/null || echo '?')
+  ok "native node-pty ready (${NATIVE_PTY_SIZE} bytes, Electron $NATIVE_PTY_ELECTRON) — VSIX will ship this binary"
 else
-  warn "npm or extension/package.json missing — using legacy src/extension.js"
-  node --no-deprecation -e "const fs=require('fs'),p='$INSTALL_DIR/extension/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.main='./src/extension.js';fs.writeFileSync(p,JSON.stringify(j,null,2));" 2>/dev/null || true
+  bad "npm or extension/package.json missing — cannot build extension."
+  bad "Install Node.js 18+ and re-run: bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)"
+  exit 1
 fi
 
 # 2b. Read extension version from manifest so the symlink matches
@@ -395,8 +350,8 @@ fi
 # reports an older version, we know the working tree is stale — that was
 # the v0.5.1 bug where users saw "v0.4.0 — installed" because their
 # ~/.claws-src/ hadn't caught up with main.
-EXT_VERSION="0.5.4"
-EXPECTED_MIN_VERSION="0.5.4"
+EXT_VERSION="0.5.5"
+EXPECTED_MIN_VERSION="0.5.5"
 if command -v node &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; then
   EXT_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version||'$EXPECTED_MIN_VERSION')}catch(e){console.log('$EXPECTED_MIN_VERSION')}" 2>/dev/null || echo "$EXPECTED_MIN_VERSION")
 fi

@@ -38,7 +38,12 @@ Update complete. **Two things to activate:**
 1. **Reload VS Code** — `Cmd+Shift+P → Developer: Reload Window`
 2. **Restart Claude Code in this project** — exit this Claude session and re-open `claude` from the project root so the new project-local `.mcp.json` is picked up.
 
-**v0.5.4 — what's new after this update:**
+**v0.5.5 — what's new after this update:**
+- **Pipe-mode-after-install bug killed.** Installer now has ONE canonical node-pty build path (`npm run build` → `bundle-native.mjs` → `@electron/rebuild`). If the build fails, the installer aborts with a concrete next step instead of shipping a silently-broken VSIX. Hard-verifies `extension/native/node-pty/build/Release/pty.node` exists before packaging the VSIX.
+- Pre-flight Xcode CLT check on macOS — the installer refuses to start if `xcode-select -p` doesn't resolve, pointing at `xcode-select --install`.
+- Install-time bundle-native output is no longer silent — Electron-rebuild progress + any compile errors are visible on screen and in `$CLAWS_LOG`.
+
+**v0.5.4:**
 - **Shell hook self-heals.** The installer now strips any stale `# CLAWS terminal hook` line from `.zshrc` / `.bashrc` / `.bash_profile` before adding the fresh one. Fixes `source: no such file or directory` errors from earlier installs that pointed at different `INSTALL_DIR` paths.
 - Fish config (`~/.config/fish/conf.d/claws.fish`) is overwritten on every install instead of being skipped when present — same stale-path protection.
 - Status bar item on the right showing `$(terminal) Claws (N)`; click it to run Health Check.
