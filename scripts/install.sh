@@ -269,6 +269,10 @@ needs_build() {
 }
 
 if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; then
+  # ── Bundle build: only when source actually changed ──────────────────────
+  # Unchanged bundle + unchanged git HEAD = safe to skip. This is a caching
+  # optimization only; it does NOT affect node-pty, which runs unconditionally
+  # below so "update is always equivalent to fresh install".
   if needs_build; then
     if [ "$CURRENT_SHA" = "$LAST_BUILD_SHA" ]; then
       info "rebuilding extension bundle (source changed locally)"
@@ -277,97 +281,10 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
     else
       info "rebuilding extension bundle (git HEAD changed: ${LAST_BUILD_SHA:0:7} → ${CURRENT_SHA:0:7})"
     fi
-    # Let npm's own output flow through the log (tee'd earlier). `--silent`
-    # keeps stdout quiet on success, but real errors still print.
     if ( cd "$INSTALL_DIR/extension" && npm install --no-audit --no-fund --loglevel=error --silent && npm run build --silent ); then
       echo "$CURRENT_SHA" > "$BUILD_SHA_FILE" 2>/dev/null || true
       BUILD_OK=1
       ok "extension built ($(wc -c < "$BUNDLE" | tr -d ' ') bytes, SHA ${CURRENT_SHA:0:7})"
-
-      # Post-install: verify node-pty's native binary actually got built.
-      # node-pty@1.1.0's prebuild script exits 0 silently when no prebuild
-      # matches the current Node version (common on Node 24+ since prebuilt
-      # binaries lag new Node releases by weeks/months). When that happens
-      # the `|| node-gyp rebuild` fallback in its install script doesn't
-      # fire, the `.node` binary is missing, and the extension silently
-      # falls back to pipe-mode at runtime — rendering all TUIs (claude,
-      # vim, htop) as garbage. This is the single biggest reason installs
-      # look "fine" but wrapped terminals are broken.
-      # node-pty is a native module. It MUST be compiled against VS Code's
-      # Electron-embedded Node version, not the user's system Node. Building
-      # against system Node (what a plain `node-gyp rebuild` does) produces
-      # a binary that loads fine from /usr/local/bin/node but silently fails
-      # in VS Code's extension host with a NODE_MODULE_VERSION mismatch —
-      # which is why users kept seeing the pipe-mode warning even after
-      # "successfully" compiling from source.
-      #
-      # Fix: use @electron/rebuild, which targets the exact Electron version
-      # we detect from the installed VS Code.app's Electron Framework.
-      NPTY_BIN="$INSTALL_DIR/extension/node_modules/node-pty/build/Release/pty.node"
-      NPTY_JUST_COMPILED=0
-      if [ -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
-        # Detect VS Code's Electron version from the installed app bundle.
-        # Falls back to a known-good default if detection fails.
-        ELECTRON_VERSION=""
-        case "$PLATFORM" in
-          Darwin)
-            for app in \
-              "/Applications/Visual Studio Code.app" \
-              "/Applications/Visual Studio Code - Insiders.app" \
-              "/Applications/Cursor.app" \
-              "/Applications/Windsurf.app"; do
-              plist="$app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
-              if [ -f "$plist" ]; then
-                v=$(plutil -extract CFBundleVersion raw "$plist" 2>/dev/null || true)
-                if [ -n "$v" ]; then
-                  ELECTRON_VERSION="$v"
-                  info "detected Electron $v from $(basename "$app")"
-                  break
-                fi
-              fi
-            done
-            ;;
-        esac
-        # Known-good fallback. Update as VS Code's Electron version moves.
-        [ -z "$ELECTRON_VERSION" ] && ELECTRON_VERSION="39.8.5" \
-          && info "couldn't detect Electron version — falling back to $ELECTRON_VERSION"
-
-        # Decide if we actually need to (re)build the binary. Always rebuild
-        # if the binary is missing. Also rebuild if the user just upgraded
-        # VS Code (which may have bumped Electron → different ABI). We track
-        # the Electron version we last built against in dist/.electron-abi.
-        ELECTRON_ABI_FILE="$INSTALL_DIR/extension/dist/.electron-abi"
-        LAST_ABI=$(cat "$ELECTRON_ABI_FILE" 2>/dev/null || echo "")
-        NEEDS_NPTY_BUILD=0
-        [ ! -f "$NPTY_BIN" ] && NEEDS_NPTY_BUILD=1
-        [ "$LAST_ABI" != "$ELECTRON_VERSION" ] && NEEDS_NPTY_BUILD=1
-
-        if [ "$NEEDS_NPTY_BUILD" = "1" ]; then
-          if [ "$PLATFORM" = "Darwin" ] && ! xcode-select -p &>/dev/null; then
-            warn "Xcode Command Line Tools not installed — can't compile node-pty."
-            info "Install CLT with: xcode-select --install   then re-run /claws-fix"
-          else
-            info "rebuilding node-pty for Electron $ELECTRON_VERSION (was: ${LAST_ABI:-none})"
-            if ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --which=node-pty --force >/dev/null 2>&1 ) && [ -f "$NPTY_BIN" ]; then
-              echo "$ELECTRON_VERSION" > "$ELECTRON_ABI_FILE" 2>/dev/null || true
-              ok "node-pty rebuilt for Electron $ELECTRON_VERSION ($(wc -c < "$NPTY_BIN" | tr -d ' ') bytes)"
-              NPTY_JUST_COMPILED=1
-            else
-              warn "@electron/rebuild failed — wrapped terminals will fall back to pipe-mode."
-              info "TUI rendering (claude, vim, htop) will be degraded. See $CLAWS_LOG for build errors."
-            fi
-          fi
-        else
-          ok "node-pty binary OK for Electron $ELECTRON_VERSION"
-        fi
-      fi
-      # Explicit nudge when we just compiled the binary: any VS Code window
-      # that was open before this step needs to reload for the extension to
-      # pick up the newly-compiled pty.node.
-      if [ "$NPTY_JUST_COMPILED" = "1" ]; then
-        info "node-pty was just rebuilt — Reload VS Code (Cmd+Shift+P → Developer: Reload Window)"
-        info "to clear the pipe-mode warning in any open terminal."
-      fi
     else
       warn "extension build failed — see $CLAWS_LOG for details. Falling back to legacy JS."
       node --no-deprecation -e "const fs=require('fs'),p='$INSTALL_DIR/extension/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.main='./src/extension.js';fs.writeFileSync(p,JSON.stringify(j,null,2));" 2>/dev/null || true
@@ -375,6 +292,98 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
   else
     BUILD_OK=1
     ok "extension bundle up to date (SHA ${CURRENT_SHA:0:7}, $(wc -c < "$BUNDLE" | tr -d ' ') bytes)"
+    # Even if the bundle is current, make sure npm has actually fetched
+    # node-pty (optional dep). A user who cloned before node-pty was added,
+    # or whose node_modules got removed, will have no node-pty dir at all.
+    if [ ! -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
+      info "fetching missing deps (node-pty not present)"
+      ( cd "$INSTALL_DIR/extension" && npm install --no-audit --no-fund --loglevel=error --silent ) || true
+    fi
+  fi
+
+  # ── node-pty native binary: ALWAYS verified, rebuilt if ABI-wrong ────────
+  # This runs on every install AND every /claws-update, whether the bundle
+  # was rebuilt or not. That makes update equivalent to fresh install —
+  # no "I updated but the binary stayed wrong" class of bug.
+  #
+  # node-pty is a native module. Its NODE_MODULE_VERSION must match whatever
+  # Node runtime loads it. VS Code's extension host runs Electron-embedded
+  # Node, NOT the user's system Node. Building against system Node (what a
+  # plain `node-gyp rebuild` does) produces a binary that loads from
+  # /usr/local/bin/node but silently fails in the extension host. We use
+  # @electron/rebuild to target the exact Electron version detected from the
+  # installed VS Code.app — the binary ends up ABI-compatible with the
+  # extension host and wrapped terminals get real pty mode.
+  NPTY_BIN="$INSTALL_DIR/extension/node_modules/node-pty/build/Release/pty.node"
+  ELECTRON_ABI_FILE="$INSTALL_DIR/extension/dist/.electron-abi"
+  NPTY_JUST_COMPILED=0
+  if [ -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
+    # Detect VS Code's Electron version from the installed app.
+    ELECTRON_VERSION=""
+    case "$PLATFORM" in
+      Darwin)
+        for app in \
+          "/Applications/Visual Studio Code.app" \
+          "/Applications/Visual Studio Code - Insiders.app" \
+          "/Applications/Cursor.app" \
+          "/Applications/Windsurf.app"; do
+          plist="$app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
+          if [ -f "$plist" ]; then
+            v=$(plutil -extract CFBundleVersion raw "$plist" 2>/dev/null || true)
+            if [ -n "$v" ]; then
+              ELECTRON_VERSION="$v"
+              info "detected Electron $v from $(basename "$app")"
+              break
+            fi
+          fi
+        done
+        ;;
+    esac
+    [ -z "$ELECTRON_VERSION" ] && ELECTRON_VERSION="39.8.5" \
+      && info "couldn't detect Electron version — using fallback $ELECTRON_VERSION"
+
+    LAST_ABI=$(cat "$ELECTRON_ABI_FILE" 2>/dev/null || echo "")
+    NEEDS_NPTY_BUILD=0
+    [ ! -f "$NPTY_BIN" ] && NEEDS_NPTY_BUILD=1
+    [ "$LAST_ABI" != "$ELECTRON_VERSION" ] && NEEDS_NPTY_BUILD=1
+    [ "${CLAWS_FORCE_REBUILD_NPTY:-0}" = "1" ] && NEEDS_NPTY_BUILD=1
+
+    if [ "$NEEDS_NPTY_BUILD" = "1" ]; then
+      if [ "$PLATFORM" = "Darwin" ] && ! xcode-select -p &>/dev/null; then
+        warn "Xcode Command Line Tools not installed — can't compile node-pty."
+        info "Install CLT with: xcode-select --install   then re-run /claws-update"
+      else
+        if [ ! -f "$NPTY_BIN" ]; then
+          info "building node-pty for Electron $ELECTRON_VERSION (binary missing)"
+        else
+          info "rebuilding node-pty for Electron $ELECTRON_VERSION (was: ${LAST_ABI:-unknown})"
+        fi
+        # Remove stale binary + marker so the rebuild is unambiguously fresh.
+        rm -f "$NPTY_BIN" "$ELECTRON_ABI_FILE" 2>/dev/null || true
+        if ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --which=node-pty --force >/dev/null 2>&1 ) && [ -f "$NPTY_BIN" ]; then
+          echo "$ELECTRON_VERSION" > "$ELECTRON_ABI_FILE" 2>/dev/null || true
+          ok "node-pty built for Electron $ELECTRON_VERSION ($(wc -c < "$NPTY_BIN" | tr -d ' ') bytes)"
+          NPTY_JUST_COMPILED=1
+        else
+          warn "@electron/rebuild failed — wrapped terminals will fall back to pipe-mode."
+          info "TUI rendering (claude, vim, htop) will be degraded. See $CLAWS_LOG for build errors."
+          info "manual fix: bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/rebuild-node-pty.sh)"
+        fi
+      fi
+    else
+      ok "node-pty binary OK for Electron $ELECTRON_VERSION (ABI matches)"
+    fi
+  else
+    # node-pty directory itself is missing even after the install attempt
+    # above. Likely means npm install failed or the optional dep was skipped
+    # (e.g. --no-optional). Don't block the install; warn and move on.
+    warn "node-pty package not installed — wrapped terminals will use pipe-mode"
+    info "to install: ( cd $INSTALL_DIR/extension && npm install node-pty )"
+  fi
+  # Explicit nudge when we just compiled the binary: any VS Code window
+  # already open needs to reload to pick up the new pty.node.
+  if [ "$NPTY_JUST_COMPILED" = "1" ]; then
+    info "reload VS Code to activate: Cmd+Shift+P → Developer: Reload Window"
   fi
 else
   warn "npm or extension/package.json missing — using legacy src/extension.js"
