@@ -74,4 +74,13 @@ export class CaptureStore {
   has(id: string): boolean {
     return this.buffers.has(id);
   }
+
+  setMaxBytesPerTerminal(bytes: number): void {
+    this.maxBytesPerTerminal = bytes;
+    for (const id of this.buffers.keys()) this.trim(id);
+  }
+
+  getMaxBytesPerTerminal(): number {
+    return this.maxBytesPerTerminal;
+  }
 }

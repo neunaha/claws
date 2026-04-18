@@ -49,7 +49,8 @@
     "test:smoke": "node test/smoke.test.js",
     "test:worker": "node test/worker.test.js",
     "test:native": "node test/native-bundle.test.js",
-    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:worker && npm run test:native"
+    "test:config": "node test/config-reload.test.js",
+    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:worker && npm run test:native && npm run test:config"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

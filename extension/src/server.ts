@@ -9,6 +9,7 @@ import { stripAnsi } from './ansi-strip';
 
 const MAX_READLOG_BYTES = 512 * 1024;
 const DEFAULT_SOCKET_REL = '.claws/claws.sock';
+const MAX_LINE_BYTES = 1024 * 1024;
 
 export interface ServerOptions {
   workspaceRoot: string;
@@ -36,6 +37,15 @@ export class ClawsServer {
       let buf = '';
       socket.on('data', (data) => {
         buf += data.toString('utf8');
+        if (buf.length > MAX_LINE_BYTES) {
+          try {
+            socket.write(JSON.stringify({ ok: false, error: 'request too large' }) + '\n');
+          } catch { /* ignore */ }
+          this.opts.logger(`[socket] closing — line buffer exceeded ${MAX_LINE_BYTES} bytes`);
+          try { socket.destroy(); } catch { /* ignore */ }
+          buf = '';
+          return;
+        }
         let idx: number;
         while ((idx = buf.indexOf('\n')) !== -1) {
           const line = buf.slice(0, idx);
@@ -49,10 +59,14 @@ export class ClawsServer {
             continue;
           }
           this.handle(req).then((resp) => {
-            socket.write(JSON.stringify({ id: req.id, ...resp }) + '\n');
+            // Emit both `id` (legacy) and `rid` (disambiguated correlation id).
+            // Response fields like terminal `id` from `create` can override the
+            // legacy `id` field; `rid` is always the request id.
+            socket.write(JSON.stringify({ id: req.id, rid: req.id, ...resp }) + '\n');
           }).catch((err) => {
             socket.write(JSON.stringify({
               id: req.id,
+              rid: req.id,
               ok: false,
               error: String((err && err.message) || err),
             }) + '\n');

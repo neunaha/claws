@@ -24,7 +24,7 @@ export interface CreateOptions {
 
 export class TerminalManager {
   private readonly records = new Map<string, TerminalRecord>();
-  private readonly byTerminal = new WeakMap<vscode.Terminal, string>();
+  private readonly byTerminal = new Map<vscode.Terminal, string>();
   private nextId = 1;
 
   constructor(
@@ -142,6 +142,7 @@ export class TerminalManager {
     const rec = this.records.get(key);
     if (!rec) return false;
     try { rec.terminal.dispose(); } catch { /* ignore */ }
+    this.byTerminal.delete(rec.terminal);
     this.records.delete(key);
     this.captureStore.clear(key);
     return true;
@@ -150,6 +151,7 @@ export class TerminalManager {
   onTerminalClosed(terminal: vscode.Terminal): void {
     const id = this.byTerminal.get(terminal);
     if (!id) return;
+    this.byTerminal.delete(terminal);
     const rec = this.records.get(id);
     if (rec?.pty) rec.pty.close();
     this.records.delete(id);

@@ -21,6 +21,10 @@ function cfg<T>(key: string, fallback: T): T {
   return vscode.workspace.getConfiguration('claws').get<T>(key, fallback);
 }
 
+// Map of workspaceFolder fsPath → ClawsServer. Multi-root workspaces get one
+// server per folder. For backwards compatibility, the legacy single-server
+// `server` handle points at the first entry in `servers` (or null).
+const servers = new Map<string, ClawsServer>();
 let server: ClawsServer | null = null;
 let outputChannel: vscode.OutputChannel | null = null;
 
@@ -55,12 +59,16 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 function activateInner(context: vscode.ExtensionContext, logger: (msg: string) => void): void {
-  const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (!wsRoot) {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length === 0) {
     logger('[claws] no workspace folder; bridge disabled (open a folder to activate)');
     registerDiagnosticCommandsNoWorkspace(context, logger);
     return;
   }
+
+  // First folder is used as the "primary" for wrapped-terminal cwd and other
+  // single-folder defaults. Each folder still gets its own socket server.
+  const wsRoot = folders[0].uri.fsPath;
 
   const captureStore = new CaptureStore(cfg('maxCaptureBytes', DEFAULT_MAX_CAPTURE_BYTES));
   const terminalManager = new TerminalManager(captureStore, logger);
@@ -158,6 +166,18 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
   }
 
   const pendingProfiles: PendingProfile[] = [];
+  // Timeouts keyed by pending profile id — cleared on successful adoption,
+  // fire after 30s to dispose the orphan ClawsPty.
+  const pendingTimers = new Map<string, NodeJS.Timeout>();
+  const PENDING_TIMEOUT_MS = 30_000;
+
+  const clearPending = (id: string): void => {
+    const t = pendingTimers.get(id);
+    if (t) {
+      clearTimeout(t);
+      pendingTimers.delete(id);
+    }
+  };
 
   context.subscriptions.push(
     vscode.window.onDidOpenTerminal((t) => {
@@ -165,6 +185,7 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
       if (idx >= 0) {
         const pending = pendingProfiles[idx];
         pendingProfiles.splice(idx, 1);
+        clearPending(pending.id);
         terminalManager.linkProfileTerminal(pending.id, t, pending.pty);
         logger(`[profile] adopted ${t.name} -> id=${pending.id}`);
         return;
@@ -192,29 +213,99 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
         });
         pendingProfiles.push({ id, name, pty });
         logger(`[profile] provisioning wrapped terminal id=${id}`);
+
+        // If VS Code never opens a terminal for this profile (user cancelled
+        // or some internal error), reclaim the pending slot + dispose the pty.
+        const timer = setTimeout(() => {
+          const idx = pendingProfiles.findIndex((p) => p.id === id);
+          if (idx < 0) return; // already adopted
+          const pending = pendingProfiles[idx];
+          pendingProfiles.splice(idx, 1);
+          pendingTimers.delete(id);
+          try { pending.pty.close(); } catch { /* ignore */ }
+          logger(`[profile] expired pending id=${id} — disposed orphan pty`);
+        }, PENDING_TIMEOUT_MS);
+        pendingTimers.set(id, timer);
+
         return new vscode.TerminalProfile({ name, pty });
       },
     }),
   );
 
-  server = new ClawsServer({
-    workspaceRoot: wsRoot,
-    socketRel: cfg('socketPath', DEFAULT_SOCKET_REL),
-    captureStore,
-    terminalManager,
-    logger,
-    history,
-    execWaiters,
-  });
-  server.start();
+  const startServerFor = (folder: vscode.WorkspaceFolder): void => {
+    const root = folder.uri.fsPath;
+    if (servers.has(root)) return;
+    const srv = new ClawsServer({
+      workspaceRoot: root,
+      socketRel: cfg('socketPath', DEFAULT_SOCKET_REL),
+      captureStore,
+      terminalManager,
+      logger,
+      history,
+      execWaiters,
+    });
+    srv.start();
+    servers.set(root, srv);
+    // Keep legacy module-level handle pointing at the first-available server
+    // so existing command paths (status, healthCheck) still resolve something.
+    if (!server) server = srv;
+    logger(`[claws] server started for folder: ${root}`);
+  };
+
+  const stopServerFor = (root: string): void => {
+    const srv = servers.get(root);
+    if (!srv) return;
+    srv.stop();
+    servers.delete(root);
+    if (server === srv) server = servers.values().next().value ?? null;
+    logger(`[claws] server stopped for folder: ${root}`);
+  };
+
+  for (const folder of folders) startServerFor(folder);
+
+  if (typeof vscode.workspace.onDidChangeWorkspaceFolders === 'function') {
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeWorkspaceFolders((e) => {
+        for (const added of e.added) startServerFor(added);
+        for (const removed of e.removed) stopServerFor(removed.uri.fsPath);
+      }),
+    );
+  }
+
+  // Config hot-reload — cfg() is already live for most call sites, but
+  // construct-once state (CaptureStore cap, socket path) must be refreshed.
+  if (typeof vscode.workspace.onDidChangeConfiguration === 'function') {
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('claws.maxCaptureBytes')) {
+          const newCap = cfg('maxCaptureBytes', DEFAULT_MAX_CAPTURE_BYTES);
+          captureStore.setMaxBytesPerTerminal(newCap);
+          logger(`[config] maxCaptureBytes updated: ${newCap}`);
+        }
+        if (e.affectsConfiguration('claws.socketPath')) {
+          logger('[config] socketPath change detected — reload VS Code to activate new path');
+          vscode.window.showInformationMessage?.(
+            'Claws: socket path changed. Reload VS Code to use the new path.',
+            'Reload Now',
+          )?.then?.((c) => {
+            if (c === 'Reload Now') vscode.commands.executeCommand('workbench.action.reloadWindow');
+          });
+        }
+      }),
+    );
+  }
 
   context.subscriptions.push(
     vscode.commands.registerCommand('claws.status', () => {
       outputChannel!.show(true);
       outputChannel!.appendLine(
-        `status: socket=${server?.getSocketPath()} terminals=${vscode.window.terminals.length} ` +
+        `status: terminals=${vscode.window.terminals.length} ` +
         `history=${history.length} seq=${nextSeq}`,
       );
+      outputChannel!.appendLine(`sockets (${servers.size}):`);
+      for (const [root, srv] of servers.entries()) {
+        outputChannel!.appendLine(`  ${root} → ${srv.getSocketPath()}`);
+      }
     }),
   );
 
@@ -235,13 +326,24 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
     version: (context.extension?.packageJSON?.version as string) || '0.4.x',
     wsRoot,
     getServer: () => server,
+    getServers: () => servers,
     getTerminalCount: () => vscode.window.terminals.length,
     getHistoryCount: () => history.length,
   });
 
   context.subscriptions.push({
     dispose: () => {
-      server?.stop();
+      for (const s of servers.values()) {
+        try { s.stop(); } catch { /* ignore */ }
+      }
+      servers.clear();
+      server = null;
+      for (const timer of pendingTimers.values()) clearTimeout(timer);
+      pendingTimers.clear();
+      for (const p of pendingProfiles) {
+        try { p.pty.close(); } catch { /* ignore */ }
+      }
+      pendingProfiles.length = 0;
     },
   });
 }
@@ -255,6 +357,7 @@ interface DiagContext {
   version: string;
   wsRoot: string;
   getServer: () => ClawsServer | null;
+  getServers: () => Map<string, ClawsServer>;
   getTerminalCount: () => number;
   getHistoryCount: () => number;
 }
@@ -306,7 +409,15 @@ function runHealthCheck(diag: DiagContext): void {
   logger('──────────── Claws Health Check ────────────');
   logger(`claws version:  ${diag.version}`);
   logger(`workspace:      ${diag.wsRoot}`);
-  logger(`socket:         ${diag.getServer()?.getSocketPath() ?? '(not started)'}`);
+  const srvMap = diag.getServers();
+  if (srvMap.size === 0) {
+    logger('sockets:        (none started)');
+  } else {
+    logger(`sockets:        ${srvMap.size} active`);
+    for (const [root, srv] of srvMap.entries()) {
+      logger(`  ${root} → ${srv.getSocketPath() ?? '(not listening)'}`);
+    }
+  }
   logger(`terminals:      ${diag.getTerminalCount()}`);
   logger(`history events: ${diag.getHistoryCount()}`);
   logger('');
@@ -454,6 +565,9 @@ async function runRebuildPty(extensionPath: string): Promise<void> {
 }
 
 export function deactivate(): void {
-  server?.stop();
+  for (const s of servers.values()) {
+    try { s.stop(); } catch { /* ignore */ }
+  }
+  servers.clear();
   server = null;
 }
