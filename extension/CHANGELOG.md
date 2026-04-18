@@ -5,6 +5,16 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-04-14
+
+### Changed
+- MCP server rewritten from Python to Node.js — zero dependencies
+- Install no longer requires Python, pip, or brew
+- Shell hook commands rewritten from Python to Node.js
+
+### Removed
+- Python dependency from install path (Python client remains as optional)
+
 ## [0.2.0] - 2026-04-18
 
 ### Added
