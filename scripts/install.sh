@@ -396,93 +396,68 @@ if command -v node &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; 
   EXT_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version||'0.4.0')}catch(e){console.log('0.4.0')}" 2>/dev/null || echo "0.4.0")
 fi
 
-# 2c. Install the extension into every detected editor.
+# 2c. Install the extension via SYMLINK into every detected editor.
 #
-# This is the hero of the install: without it, nothing else matters. We
-# prefer the proper VSIX + `code --install-extension` flow because:
-#   - VS Code manages extensions.json itself (reliable activation)
-#   - Extension shows up in Extensions panel like any marketplace install
-#   - User can disable/uninstall via the UI
+# IMPORTANT: we use symlinks, NOT VSIX install.
 #
-# If vsce packaging fails OR no editor CLI is found, we fall back to a
-# symlink into the first detected extensions dir — always-works fallback.
+# VSIX install looked nicer (VS Code manages it via Extensions panel) but
+# has a fatal flaw for Claws: `vsce package` excludes node_modules/ by
+# design, so the extracted extension dir at
+#   ~/.vscode/extensions/neunaha.claws-<version>/
+# has NO node_modules. The extension's `require('node-pty')` therefore
+# can never find the native binary we compiled — pipe-mode forever.
+#
+# Symlinks point at ~/.claws-src/extension/ which has the full
+# node_modules tree including the ABI-correct node-pty. VS Code follows
+# symlinks fine; extension shows up normally in the Extensions panel.
+#
+# If you need VSIX for marketplace publishing, do it via a separate
+# `npm run package` path — not in the user-facing install.
 
-EXT_LINK=""
 INSTALLED_EDITORS=()
-VSIX_PATH=""
 
-# Build a VSIX. `vsce package` downloads via npx on first run (~10s once,
-# cached after). If it fails we continue to symlink fallback.
-if [ "${BUILD_OK:-0}" = "1" ] && command -v npx &>/dev/null; then
-  VSIX_PATH="/tmp/claws-$EXT_VERSION.vsix"
-  info "packaging VSIX for VS Code install"
-  if ( cd "$INSTALL_DIR/extension" \
-       && npx --yes @vscode/vsce package --skip-license --no-git-tag-version --no-update-package-json --out "$VSIX_PATH" ) >/dev/null 2>&1; then
-    ok "packaged $VSIX_PATH ($(wc -c < "$VSIX_PATH" | tr -d ' ') bytes)"
-  else
-    warn "vsce package failed — will fall back to symlink install"
-    VSIX_PATH=""
+# Enumerate every editor extensions dir that exists. For each, create (or
+# refresh) a symlink that resolves to the source clone. Clean up stale
+# older-version symlinks so VS Code only sees the current one.
+_link_extension_into() {
+  local label="$1"
+  local ext_dir="$2"
+  [ ! -d "$ext_dir" ] && return 1
+  local link="$ext_dir/neunaha.claws-$EXT_VERSION"
+  # Remove every claws-* entry: stale symlinks, old VSIX-extracted real
+  # dirs (which don't have node_modules and cause exactly the bug we're
+  # fixing). rm -rf handles both cases.
+  rm -rf "$ext_dir"/neunaha.claws-* 2>/dev/null \
+    || sudo rm -rf "$ext_dir"/neunaha.claws-* 2>/dev/null \
+    || true
+  if ln -sf "$INSTALL_DIR/extension" "$link" 2>/dev/null \
+     || sudo ln -sf "$INSTALL_DIR/extension" "$link" 2>/dev/null; then
+    ok "linked Claws into $label ($link)"
+    INSTALLED_EDITORS+=("$label")
+    return 0
   fi
-fi
-
-# Find every editor CLI on the system. Accepts:
-#   - CLIs in PATH (most Linux installs, macOS when user ran "Shell Command:
-#     Install 'code' command in PATH")
-#   - macOS app-bundled CLIs at their canonical locations (works even when
-#     the user never ran the shell-command installer)
-detect_editor_clis() {
-  local out=()
-  for pair in \
-    "code:/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
-    "code-insiders:/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders" \
-    "cursor:/Applications/Cursor.app/Contents/Resources/app/bin/cursor" \
-    "windsurf:/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf"; do
-    local label="${pair%%:*}"
-    local bundled="${pair#*:}"
-    local cli=""
-    if command -v "$label" &>/dev/null; then
-      cli="$(command -v "$label")"
-    elif [ -x "$bundled" ]; then
-      cli="$bundled"
-    fi
-    [ -n "$cli" ] && out+=("$label|$cli")
-  done
-  # Print one per line so the caller can loop.
-  printf '%s\n' "${out[@]}"
+  bad "could not link Claws into $label"
+  return 1
 }
 
-if [ -n "$VSIX_PATH" ]; then
-  while IFS='|' read -r label cli; do
-    [ -z "$label" ] && continue
-    info "installing into $label via $cli"
-    if "$cli" --install-extension "$VSIX_PATH" --force >/dev/null 2>&1; then
-      ok "Claws extension installed in $label"
-      INSTALLED_EDITORS+=("$label")
-    else
-      # One known failure: the extension is already loaded in a running
-      # window and VS Code refuses reinstall without restart. Still OK —
-      # next reload picks up the new bundle.
-      warn "$label refused install (likely a running window holds the old version — reload to activate)"
-    fi
-  done < <(detect_editor_clis)
+for pair in \
+  "vscode:$HOME/.vscode/extensions" \
+  "vscode-insiders:$HOME/.vscode-insiders/extensions" \
+  "cursor:$HOME/.cursor/extensions" \
+  "windsurf:$HOME/.windsurf/extensions"; do
+  label="${pair%%:*}"
+  dir="${pair#*:}"
+  [ -d "$dir" ] && _link_extension_into "$label" "$dir" || true
+done
+
+# If no editor dir existed at all, create the default one and link there.
+if [ "${#INSTALLED_EDITORS[@]}" -eq 0 ] && [ "$CLAWS_EDITOR" != "skip" ]; then
+  mkdir -p "$HOME/.vscode/extensions" 2>/dev/null
+  _link_extension_into "vscode (new)" "$HOME/.vscode/extensions" || true
 fi
 
-# Fallback symlink — always attempted, harmless if VSIX install also
-# succeeded (VS Code will prefer the official install).
-if [ "${#INSTALLED_EDITORS[@]}" -eq 0 ] && [ -n "$EXT_DIR" ]; then
-  EXT_LINK="$EXT_DIR/neunaha.claws-$EXT_VERSION"
-  info "falling back to symlink: $EXT_LINK"
-  rm -f "$EXT_DIR"/neunaha.claws-* 2>/dev/null || sudo rm -f "$EXT_DIR"/neunaha.claws-* 2>/dev/null || true
-  if ln -sf "$INSTALL_DIR/extension" "$EXT_LINK" 2>/dev/null \
-     || sudo ln -sf "$INSTALL_DIR/extension" "$EXT_LINK" 2>/dev/null; then
-    ok "extension symlinked → $EXT_LINK"
-    INSTALLED_EDITORS+=("symlink")
-  else
-    bad "could not install extension — neither VSIX nor symlink worked"
-    info "run manually: code --install-extension $VSIX_PATH  (or: ln -s $INSTALL_DIR/extension $EXT_LINK)"
-  fi
-elif [ -z "$EXT_DIR" ] && [ "${#INSTALLED_EDITORS[@]}" -eq 0 ]; then
-  warn "CLAWS_EDITOR=skip and no editor CLI detected — extension not installed"
+if [ "${#INSTALLED_EDITORS[@]}" -eq 0 ]; then
+  warn "extension not linked into any editor — check CLAWS_EDITOR env var"
 fi
 
 # ─── Step 3: Script permissions ────────────────────────────────────────────
