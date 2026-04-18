@@ -33,23 +33,36 @@ setTimeout(()=>{console.log('?');s.destroy()},2000);
     _CLAWS_WRAP="\033[90m○ unwrapped\033[0m"
   fi
 
-  # Banner
+  # Banner — ASCII art CLAWS logo matching the install-flow image
+  _T="\033[38;2;200;90;62m"  # terracotta
+  _W="\033[1;37m"             # bold white
+  _G="\033[32m"               # green
+  _D="\033[90m"               # dim
+  _R="\033[0m"                # reset
+
   printf "\n"
-  printf "  \033[38;2;200;90;62m╔═══════════════════════════════════════════╗\033[0m\n"
-  printf "  \033[38;2;200;90;62m║\033[0m                                           \033[38;2;200;90;62m║\033[0m\n"
-  printf "  \033[38;2;200;90;62m║\033[0m   \033[1;37mCLAWS\033[0m  Terminal Control Bridge         \033[38;2;200;90;62m║\033[0m\n"
-  printf "  \033[38;2;200;90;62m║\033[0m   \033[90mPowered by Claude Opus\033[0m                  \033[38;2;200;90;62m║\033[0m\n"
-  printf "  \033[38;2;200;90;62m║\033[0m                                           \033[38;2;200;90;62m║\033[0m\n"
-  printf "  \033[38;2;200;90;62m║\033[0m   Bridge:    $_CLAWS_STATUS               \n"
-  printf "  \033[38;2;200;90;62m║\033[0m   Terminals: \033[1m${_CLAWS_TERMS}\033[0m active                    \n"
-  printf "  \033[38;2;200;90;62m║\033[0m   This term: $_CLAWS_WRAP               \n"
-  printf "  \033[38;2;200;90;62m║\033[0m                                           \033[38;2;200;90;62m║\033[0m\n"
-  printf "  \033[38;2;200;90;62m║\033[0m   \033[90mclaws-ls\033[0m    list terminals               \033[38;2;200;90;62m║\033[0m\n"
-  printf "  \033[38;2;200;90;62m║\033[0m   \033[90mclaws-new\033[0m   create wrapped terminal      \033[38;2;200;90;62m║\033[0m\n"
-  printf "  \033[38;2;200;90;62m║\033[0m   \033[90mclaws-run\033[0m   exec command in terminal     \033[38;2;200;90;62m║\033[0m\n"
-  printf "  \033[38;2;200;90;62m║\033[0m   \033[90mclaws-log\033[0m   read wrapped terminal log    \033[38;2;200;90;62m║\033[0m\n"
-  printf "  \033[38;2;200;90;62m║\033[0m                                           \033[38;2;200;90;62m║\033[0m\n"
-  printf "  \033[38;2;200;90;62m╚═══════════════════════════════════════════╝\033[0m\n"
+  printf "  ${_T}╔═══════════════════════════════════════════════╗${_R}\n"
+  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_T} ██████╗██╗      █████╗ ██╗    ██╗███████╗${_R} ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_T}██╔════╝██║     ██╔══██╗██║    ██║██╔════╝${_R} ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_T}██║     ██║     ███████║██║ █╗ ██║███████╗${_R} ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_T}██║     ██║     ██╔══██║██║███╗██║╚════██║${_R} ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_T}╚██████╗███████╗██║  ██║╚███╔███╔╝███████║${_R} ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_T} ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝${_R} ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_D}Terminal Control Bridge  v0.3.0${_R}             ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_D}Powered by Claude Opus${_R}                     ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   Bridge:    $_CLAWS_STATUS                   ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   Terminals: ${_W}${_CLAWS_TERMS}${_R} active                        ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   This term: $_CLAWS_WRAP                   ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_D}claws-ls${_R}    list terminals                 ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_D}claws-new${_R}   create wrapped terminal        ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_D}claws-run${_R}   exec command in terminal       ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_D}claws-log${_R}   read wrapped terminal log      ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
+  printf "  ${_T}╚═══════════════════════════════════════════════╝${_R}\n"
   printf "\n"
 
   unset _CLAWS_STATUS _CLAWS_TERMS _CLAWS_WRAP
