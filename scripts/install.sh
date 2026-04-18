@@ -260,26 +260,45 @@ HOOK_MARKER="# CLAWS terminal hook"
 
 inject_hook() {
   local rcfile="$1"
-  if [ -f "$rcfile" ]; then
-    if grep -q "CLAWS terminal hook" "$rcfile" 2>/dev/null; then
-      echo "  ✓ Shell hook already in $rcfile"
+  # Create the file if it doesn't exist — this is the bug fix
+  touch "$rcfile" 2>/dev/null
+  if grep -q "CLAWS terminal hook" "$rcfile" 2>/dev/null; then
+    echo "  ✓ Shell hook already in $(basename $rcfile)"
+  else
+    printf "\n%s\n%s\n" "$HOOK_MARKER" "$HOOK_SOURCE" >> "$rcfile" 2>/dev/null
+    if [ $? -eq 0 ]; then
+      echo "  ✓ Shell hook added to $(basename $rcfile)"
     else
-      printf "\n%s\n%s\n" "$HOOK_MARKER" "$HOOK_SOURCE" >> "$rcfile"
-      echo "  ✓ Shell hook added to $rcfile"
+      echo "  ! Could not write to $rcfile"
     fi
   fi
 }
 
-# Detect shell and inject
-if [ -n "${ZSH_VERSION:-}" ] || [ -f "$HOME/.zshrc" ]; then
-  inject_hook "$HOME/.zshrc"
-fi
-if [ -n "${BASH_VERSION:-}" ] || [ -f "$HOME/.bashrc" ]; then
-  inject_hook "$HOME/.bashrc"
-fi
-# Also try .bash_profile for macOS login shells
-if [ -f "$HOME/.bash_profile" ] && ! [ -f "$HOME/.bashrc" ]; then
+# Aggressively inject into ALL possible rc files
+# The user's actual shell will source the right one
+
+# zsh (default on macOS)
+inject_hook "$HOME/.zshrc"
+
+# bash
+inject_hook "$HOME/.bashrc"
+
+# macOS bash login shell
+if [ "$(uname)" = "Darwin" ]; then
   inject_hook "$HOME/.bash_profile"
+fi
+
+# fish (if installed)
+if [ -d "$HOME/.config/fish" ]; then
+  FISH_CONF="$HOME/.config/fish/conf.d/claws.fish"
+  if [ ! -f "$FISH_CONF" ]; then
+    mkdir -p "$HOME/.config/fish/conf.d" 2>/dev/null
+    echo "# CLAWS terminal hook" > "$FISH_CONF"
+    echo "if status is-interactive" >> "$FISH_CONF"
+    echo "  source $INSTALL_DIR/scripts/shell-hook.sh" >> "$FISH_CONF"
+    echo "end" >> "$FISH_CONF"
+    echo "  ✓ Shell hook added to fish"
+  fi
 fi
 
 # ─── Step 8: Verify ────────────────────────────────────────────────────────

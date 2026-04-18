@@ -109,8 +109,37 @@ if (Test-Path $CLAUDE_SETTINGS) {
     Write-Host "  OK Created settings with MCP server" -ForegroundColor Green
 }
 
-# Step 4: Verify
-Write-Host "[4/4] Verifying..."
+# Step 4: Inject PowerShell profile hook
+Write-Host "[4/5] Injecting shell hook..."
+$profilePath = $PROFILE
+if (-not $profilePath) { $profilePath = "$env:USERPROFILE\Documents\PowerShell\Microsoft.PowerShell_profile.ps1" }
+$profileDir = Split-Path $profilePath -Parent
+if (-not (Test-Path $profileDir)) { New-Item -ItemType Directory -Force -Path $profileDir | Out-Null }
+if (-not (Test-Path $profilePath)) { New-Item -ItemType File -Force -Path $profilePath | Out-Null }
+$hookMarker = "# CLAWS terminal hook"
+$profileContent = Get-Content $profilePath -Raw -ErrorAction SilentlyContinue
+if ($profileContent -and $profileContent.Contains("CLAWS terminal hook")) {
+    Write-Host "  OK Shell hook already in profile" -ForegroundColor Green
+} else {
+    $hookCode = @"
+
+# CLAWS terminal hook
+Write-Host ""
+Write-Host "  `e[38;2;200;90;62m+===============================================+`e[0m"
+Write-Host "  `e[38;2;200;90;62m|`e[0m                                               `e[38;2;200;90;62m|`e[0m"
+Write-Host "  `e[38;2;200;90;62m|`e[0m   `e[1;37mCLAWS`e[0m  Terminal Control Bridge             `e[38;2;200;90;62m|`e[0m"
+Write-Host "  `e[38;2;200;90;62m|`e[0m   `e[90mPowered by Claude Opus`e[0m                     `e[38;2;200;90;62m|`e[0m"
+Write-Host "  `e[38;2;200;90;62m|`e[0m   `e[90mv0.3.0 | Node.js only | Zero deps`e[0m         `e[38;2;200;90;62m|`e[0m"
+Write-Host "  `e[38;2;200;90;62m|`e[0m                                               `e[38;2;200;90;62m|`e[0m"
+Write-Host "  `e[38;2;200;90;62m+===============================================+`e[0m"
+Write-Host ""
+"@
+    Add-Content -Path $profilePath -Value $hookCode
+    Write-Host "  OK Shell hook added to PowerShell profile" -ForegroundColor Green
+}
+
+# Step 5: Verify
+Write-Host "[5/5] Verifying..."
 $checks = 0
 if (Test-Path $EXT_LINK) { $checks++; Write-Host "  OK Extension installed" -ForegroundColor Green }
 if (Test-Path $MCP_PATH) { $checks++; Write-Host "  OK MCP server exists" -ForegroundColor Green }
