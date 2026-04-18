@@ -10,15 +10,21 @@ Send text into terminal `<id>`. The text is delivered to whatever is running in 
 ## What to do
 
 1. Send the text via the socket:
-```python
-python3 -c "
-import json, socket
-s = socket.socket(socket.AF_UNIX)
-s.connect('.claws/claws.sock')
-s.sendall((json.dumps({'id': 1, 'cmd': 'send', 'id': '$1', 'text': '''$2''', 'newline': True}) + '\n').encode())
-resp = json.loads(s.recv(65536).decode().split('\n')[0])
-print('sent' if resp.get('ok') else f\"ERROR: {resp.get('error')}\")
-s.close()
+```bash
+node -e "
+const net=require('net');
+const s=net.createConnection('.claws/claws.sock');
+s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'send',tid:'$1',text:'$2',newline:true})+'\n'));
+let b='';
+s.on('data',d=>{
+  b+=d;
+  const nl=b.indexOf('\n');
+  if(nl!==-1){
+    const r=JSON.parse(b.slice(0,nl));
+    console.log(r.ok?'sent':'ERROR: '+r.error);
+    s.destroy();
+  }
+});
 "
 ```
 

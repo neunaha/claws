@@ -15,18 +15,25 @@ ls -la .claws/claws.sock 2>/dev/null && echo "socket exists" || echo "no socket 
 ```
 
 2. List all terminals via the socket:
-```python
-python3 -c "
-import json, socket
-s = socket.socket(socket.AF_UNIX)
-s.connect('.claws/claws.sock')
-s.sendall(b'{\"id\":1,\"cmd\":\"list\"}\n')
-d = json.loads(s.recv(65536).decode().split('\n')[0])
-for t in d.get('terminals', []):
-    wrap = 'WRAPPED' if t.get('logPath') else 'unwrapped'
-    marker = '*' if t.get('active') else ' '
-    print(f\"{marker} {t['id']}  {t['name']:<30} pid={t['pid']}  [{wrap}]\")
-s.close()
+```bash
+node -e "
+const net=require('net');
+const s=net.createConnection('.claws/claws.sock');
+s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'list'})+'\n'));
+let b='';
+s.on('data',d=>{
+  b+=d;
+  const nl=b.indexOf('\n');
+  if(nl!==-1){
+    const r=JSON.parse(b.slice(0,nl));
+    (r.terminals||[]).forEach(t=>{
+      const wrap=t.logPath?'WRAPPED':'unwrapped';
+      const marker=t.active?'*':' ';
+      console.log(marker+' '+t.id+'  '+t.name.padEnd(30)+'  pid='+t.pid+'  ['+wrap+']');
+    });
+    s.destroy();
+  }
+});
 "
 ```
 

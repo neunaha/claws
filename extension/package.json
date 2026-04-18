@@ -2,7 +2,7 @@
   "name": "claws",
   "displayName": "Claws — Terminal Control Bridge",
   "description": "Turn every VS Code terminal into a programmable endpoint. List, create, send, execute, read, and close terminals from any external process via a local socket.",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "publisher": "neunaha",
   "license": "MIT",
   "repository": {
@@ -43,6 +43,24 @@
   "activationEvents": [
     "onStartupFinished"
   ],
+  "scripts": {
+    "compile": "tsc --noEmit && node esbuild.mjs",
+    "build": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test:smoke": "node test/smoke.test.js",
+    "test:worker": "node test/worker.test.js",
+    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:worker"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.93.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.4.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
+  },
   "contributes": {
     "commands": [
       {
@@ -90,6 +108,11 @@
           "type": "number",
           "default": 500,
           "description": "Maximum command events retained in the ring buffer."
+        },
+        "claws.maxCaptureBytes": {
+          "type": "number",
+          "default": 1048576,
+          "description": "Maximum per-terminal output captured in the in-memory ring buffer for wrapped Pseudoterminal terminals (1 MB default)."
         },
         "claws.enableWebSocket": {
           "type": "boolean",

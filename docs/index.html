@@ -254,9 +254,12 @@
     <p style="font-size: 20px; color: var(--text-muted); max-width: 650px; margin: 0 auto 12px; line-height: 1.6;">
       One extension. One socket. Full control over every VS Code terminal from the outside. Your AI writes code in one terminal, tests in another, deploys in a third — while you watch.
     </p>
-    <p style="font-size: 15px; color: var(--accent); font-family: var(--mono); margin-bottom: 28px;">
-      pip install claws-client &nbsp;&middot;&nbsp; 5 lines of Python &nbsp;&middot;&nbsp; zero dependencies
+    <p style="font-size: 15px; color: var(--accent); font-family: var(--mono); margin-bottom: 16px;">
+      one command &nbsp;&middot;&nbsp; zero dependencies &nbsp;&middot;&nbsp; terminal transforms instantly
     </p>
+    <p style="font-size: 14px; color: var(--text-muted); margin-bottom: 8px;">Paste this into any Claude Code terminal:</p>
+    <pre style="background: var(--code-bg); border: 2px solid var(--accent); border-radius: 10px; padding: 16px 24px; display: inline-block; text-align: left; font-size: 15px; margin-bottom: 8px; max-width: 750px; cursor: pointer; position: relative;" onclick="navigator.clipboard.writeText('install claws from https://github.com/neunaha/claws — run the install script and set up everything'); this.style.borderColor='#4ade80'; setTimeout(()=>this.style.borderColor='#C85A3E',1500);">install claws from https://github.com/neunaha/claws — run the install script and set up everything</pre>
+    <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 20px;">click to copy</p>
     <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
       <a href="https://github.com/neunaha/claws#install" class="btn btn-primary" style="padding: 14px 32px; font-size: 16px;">Get Started — 30 seconds</a>
       <a href="https://github.com/neunaha/claws" class="btn btn-ghost" style="padding: 14px 32px; font-size: 16px;">Star on GitHub</a>
@@ -265,19 +268,37 @@
       <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT">
       <img src="https://img.shields.io/badge/VS%20Code-1.93+-007ACC.svg" alt="VS Code">
       <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Zero deps">
+      <img src="https://img.shields.io/badge/Node.js-only-339933.svg" alt="Node.js">
+      <img src="https://img.shields.io/badge/Python-not%20required-lightgrey.svg" alt="No Python">
       <img src="https://img.shields.io/github/stars/neunaha/claws?style=social" alt="Stars">
     </div>
   </div>
 </div>
 
-<!-- The hook — what it replaces -->
-<section style="text-align: center; padding: 40px 24px 60px; max-width: 800px; margin: 0 auto;">
-  <p style="font-size: 18px; color: var(--text-muted); line-height: 1.8;">
-    <span style="text-decoration: line-through; opacity: 0.5;">Copy the command from Claude. Paste it in the terminal. Copy the output. Paste it back. Repeat 47 times.</span>
+<!-- Before/After -->
+<section style="padding: 40px 24px 20px; max-width: 1100px; margin: 0 auto;" class="reveal">
+  <div class="section-label" style="text-align: center;">The Problem → The Solution</div>
+  <img class="img-full" src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/before-after.png" alt="Before and After Claws">
+  <p style="text-align: center; max-width: 700px; margin: 0 auto;">
+    <strong>Before:</strong> copy-paste loop between Claude and terminal. One terminal. No visibility.<br>
+    <strong>After:</strong> your AI controls every terminal directly. Parallel workers. Full visibility. You just watch.
   </p>
-  <p style="font-size: 22px; color: var(--text); font-weight: 600; margin-top: 16px;">
-    That loop is over. Claws gives your AI direct terminal access.
-  </p>
+</section>
+
+<!-- Install Flow -->
+<section style="padding: 20px 24px 40px; max-width: 1100px; margin: 0 auto;" class="reveal">
+  <div class="section-label" style="text-align: center;">Get Started in 3 Steps</div>
+  <h2 style="text-align: center;">Install → Reload → Ready</h2>
+  <img class="img-full" src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/install-flow.png" alt="Install Flow">
+  <p style="text-align: center; color: var(--text-muted);">Zero dependencies. No Python. No pip. No brew. Just Node.js (ships with VS Code).</p>
+</section>
+
+<!-- What You See -->
+<section style="padding: 20px 24px 40px; max-width: 1100px; margin: 0 auto;" class="reveal">
+  <div class="section-label" style="text-align: center;">What You'll See</div>
+  <h2 style="text-align: center;">Your terminal transforms</h2>
+  <img class="img-full" src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/what-you-see.png" alt="What You See After Install">
+  <p style="text-align: center; color: var(--text-muted);">CLAWS banner in every terminal. Worker tabs in the panel. "Claws Wrapped Terminal" in the dropdown. Shell commands ready.</p>
 </section>
 
 <!-- Stats bar -->
@@ -291,13 +312,13 @@
 <!-- Tech badges -->
 <div style="text-align: center; padding: 32px 24px;" class="reveal">
   <span class="tech-badge accent">&#9654; VS Code Extension</span>
-  <span class="tech-badge">&#128013; Python Client</span>
-  <span class="tech-badge">&#127760; MCP Server</span>
+  <span class="tech-badge accent">&#9881; Node.js Only</span>
+  <span class="tech-badge">&#128225; MCP Server</span>
   <span class="tech-badge">&#128274; Safety Gate</span>
   <span class="tech-badge">&#128196; Pty Capture</span>
-  <span class="tech-badge">&#128225; JSON Protocol</span>
   <span class="tech-badge">&#9881; File-Based Exec</span>
   <span class="tech-badge">&#128203; Bracketed Paste</span>
+  <span class="tech-badge">&#127760; Cross-Device (planned)</span>
 </div>
 
 <!-- Image carousel — all architecture diagrams -->
@@ -306,11 +327,14 @@
   <h2 style="text-align: center;">See the full architecture</h2>
   <div class="carousel" id="archCarousel">
     <div class="carousel-track" id="archTrack">
+      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/before-after.png" alt="Before and After">
       <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/architecture.png" alt="Architecture">
       <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/wrapped-terminal.png" alt="Wrapped Terminal">
+      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/what-you-see.png" alt="What You See">
       <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/ai-orchestration.png" alt="AI Orchestration">
-      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/protocol-flow.png" alt="Protocol Flow">
-      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/safety-gate.png" alt="Safety Gate">
+      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/slash-commands.png" alt="Slash Commands">
+      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/install-flow.png" alt="Install Flow">
+      <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/zero-dep-install.png" alt="Zero Dependencies">
       <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cross-device.png" alt="Cross-Device">
     </div>
   </div>
@@ -323,13 +347,12 @@
   <h2>VS Code terminals were a black box. Not anymore.</h2>
   <p>Every developer runs code, builds, AI agents, and servers inside VS Code terminals. But there was <strong>no programmatic API to control them from the outside</strong>. You couldn't list what's running. Couldn't send a command from a script. Couldn't read the output of an interactive TUI session.</p>
   <p><strong>Claws changes that with one extension and 5 lines of code.</strong> A socket server inside VS Code accepts JSON commands from any external process — Python scripts, AI orchestrators, CI runners, or other machines on your network.</p>
-<pre>from claws import ClawsClient
+<pre>// Raw socket — works from any language
+echo '{"id":1,"cmd":"create","name":"build","wrapped":true}' | nc -U .claws/claws.sock
+echo '{"id":2,"cmd":"exec","id":"1","command":"npm test"}' | nc -U .claws/claws.sock
+echo '{"id":3,"cmd":"close","id":"1"}' | nc -U .claws/claws.sock
 
-client = ClawsClient(".claws/claws.sock")
-worker = client.create("build", wrapped=True)
-result = client.exec(worker.id, "npm test")
-print(f"exit {result.exit_code}: {result.output}")
-client.close(worker.id)</pre>
+// Or via MCP — Claude Code gets 8 tools natively, zero code needed</pre>
 </section>
 
 <!-- Architecture -->
@@ -541,9 +564,9 @@ for name, term in workers.items():
   <p>Control terminals on remote machines via WebSocket. Token-based auth + TLS. Discover other Claws instances on your LAN automatically.</p>
   <img class="img-full" src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cross-device.png" alt="Cross-Device Architecture">
   <p><strong>Available today via SSH tunnel:</strong></p>
-<pre>ssh -L 9999:/remote/workspace/.claws/claws.sock user@remote
-# Then connect locally
-client = ClawsClient("/tmp/forwarded.sock")</pre>
+<pre>ssh -L /tmp/remote-claws.sock:/remote/workspace/.claws/claws.sock user@remote
+# Then connect locally via raw socket or MCP
+echo '{"id":1,"cmd":"list"}' | nc -U /tmp/remote-claws.sock</pre>
 </section>
 
 <!-- MCP Server -->
@@ -556,14 +579,14 @@ client = ClawsClient("/tmp/forwarded.sock")</pre>
 {
   "mcpServers": {
     "claws": {
-      "command": "python3",
-      "args": ["/path/to/claws/mcp_server.py"],
+      "command": "node",
+      "args": ["/path/to/claws/mcp_server.js"],
       "env": { "CLAWS_SOCKET": ".claws/claws.sock" }
     }
   }
 }</pre>
     <p>Tools injected: <code>claws_list</code> <code>claws_create</code> <code>claws_send</code> <code>claws_exec</code> <code>claws_read_log</code> <code>claws_poll</code> <code>claws_close</code> <code>claws_worker</code></p>
-    <p>Zero dependencies. Stdlib Python. Works on macOS and Linux. Your AI writes code in one terminal, tests in another, deploys in a third — all through native MCP tool calls.</p>
+    <p>Zero dependencies. Pure Node.js. Works on macOS and Linux. Your AI writes code in one terminal, tests in another, deploys in a third — all through native MCP tool calls.</p>
   </div>
 </section>
 

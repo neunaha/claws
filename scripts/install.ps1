@@ -38,18 +38,18 @@ Write-Host ""
 
 # Step 1: Clone or update
 if (Test-Path $INSTALL_DIR) {
-    Write-Host "[1/5] Updating existing install..."
+    Write-Host "[1/4] Updating existing install..."
     Push-Location $INSTALL_DIR
     git pull origin main --quiet 2>$null
     Pop-Location
 } else {
-    Write-Host "[1/5] Cloning..."
+    Write-Host "[1/4] Cloning..."
     git clone --quiet $REPO $INSTALL_DIR 2>$null
     if (-not $?) { git clone $REPO $INSTALL_DIR }
 }
 
 # Step 2: Create junction (Windows symlink equivalent)
-Write-Host "[2/5] Installing extension to $EXT_DIR ..."
+Write-Host "[2/4] Installing extension to $EXT_DIR ..."
 if (Test-Path $EXT_LINK) {
     Remove-Item $EXT_LINK -Force -Recurse 2>$null
 }
@@ -69,36 +69,10 @@ try {
     }
 }
 
-# Step 3: Python client
-Write-Host "[3/5] Installing Python client..."
-$pip = $null
-if (Get-Command pip3 -ErrorAction SilentlyContinue) { $pip = "pip3" }
-elseif (Get-Command pip -ErrorAction SilentlyContinue) { $pip = "pip" }
-elseif (Get-Command python3 -ErrorAction SilentlyContinue) { $pip = "python3 -m pip" }
-elseif (Get-Command python -ErrorAction SilentlyContinue) { $pip = "python -m pip" }
-
-if ($pip) {
-    try {
-        Invoke-Expression "$pip install -e $INSTALL_DIR\clients\python --quiet" 2>$null
-        Write-Host "  OK Python client installed" -ForegroundColor Green
-    } catch {
-        try {
-            Invoke-Expression "$pip install -e $INSTALL_DIR\clients\python --user --quiet" 2>$null
-            Write-Host "  OK Python client installed (user)" -ForegroundColor Green
-        } catch {
-            Write-Host "  ! pip install failed - run manually: $pip install -e $INSTALL_DIR\clients\python" -ForegroundColor Yellow
-        }
-    }
-} else {
-    Write-Host "  (skipped - pip not found)" -ForegroundColor Yellow
-}
-
-# Step 4: MCP auto-configure
-Write-Host "[4/5] Configuring MCP server..."
-$MCP_PATH = "$INSTALL_DIR\mcp_server.py"
+# Step 3: MCP auto-configure
+Write-Host "[3/4] Configuring MCP server..."
+$MCP_PATH = "$INSTALL_DIR\mcp_server.js"
 $CLAUDE_SETTINGS = "$env:USERPROFILE\.claude\settings.json"
-
-$pythonCmd = if (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } else { "python" }
 
 if (Test-Path $CLAUDE_SETTINGS) {
     $content = Get-Content $CLAUDE_SETTINGS -Raw
@@ -111,7 +85,7 @@ if (Test-Path $CLAUDE_SETTINGS) {
                 $cfg | Add-Member -NotePropertyName "mcpServers" -NotePropertyValue @{} -Force
             }
             $cfg.mcpServers | Add-Member -NotePropertyName "claws" -NotePropertyValue @{
-                command = $pythonCmd
+                command = "node"
                 args = @($MCP_PATH.Replace('\', '/'))
                 env = @{ CLAWS_SOCKET = ".claws/claws.sock" }
             } -Force
@@ -126,7 +100,7 @@ if (Test-Path $CLAUDE_SETTINGS) {
     @{
         mcpServers = @{
             claws = @{
-                command = $pythonCmd
+                command = "node"
                 args = @($MCP_PATH.Replace('\', '/'))
                 env = @{ CLAWS_SOCKET = ".claws/claws.sock" }
             }
@@ -135,14 +109,43 @@ if (Test-Path $CLAUDE_SETTINGS) {
     Write-Host "  OK Created settings with MCP server" -ForegroundColor Green
 }
 
+# Step 4: Inject PowerShell profile hook
+Write-Host "[4/5] Injecting shell hook..."
+$profilePath = $PROFILE
+if (-not $profilePath) { $profilePath = "$env:USERPROFILE\Documents\PowerShell\Microsoft.PowerShell_profile.ps1" }
+$profileDir = Split-Path $profilePath -Parent
+if (-not (Test-Path $profileDir)) { New-Item -ItemType Directory -Force -Path $profileDir | Out-Null }
+if (-not (Test-Path $profilePath)) { New-Item -ItemType File -Force -Path $profilePath | Out-Null }
+$hookMarker = "# CLAWS terminal hook"
+$profileContent = Get-Content $profilePath -Raw -ErrorAction SilentlyContinue
+if ($profileContent -and $profileContent.Contains("CLAWS terminal hook")) {
+    Write-Host "  OK Shell hook already in profile" -ForegroundColor Green
+} else {
+    $hookCode = @"
+
+# CLAWS terminal hook
+Write-Host ""
+Write-Host "  `e[38;2;200;90;62m+===============================================+`e[0m"
+Write-Host "  `e[38;2;200;90;62m|`e[0m                                               `e[38;2;200;90;62m|`e[0m"
+Write-Host "  `e[38;2;200;90;62m|`e[0m   `e[1;37mCLAWS`e[0m  Terminal Control Bridge             `e[38;2;200;90;62m|`e[0m"
+Write-Host "  `e[38;2;200;90;62m|`e[0m   `e[90mPowered by Claude Opus`e[0m                     `e[38;2;200;90;62m|`e[0m"
+Write-Host "  `e[38;2;200;90;62m|`e[0m   `e[90mv0.3.0 | Node.js only | Zero deps`e[0m         `e[38;2;200;90;62m|`e[0m"
+Write-Host "  `e[38;2;200;90;62m|`e[0m                                               `e[38;2;200;90;62m|`e[0m"
+Write-Host "  `e[38;2;200;90;62m+===============================================+`e[0m"
+Write-Host ""
+"@
+    Add-Content -Path $profilePath -Value $hookCode
+    Write-Host "  OK Shell hook added to PowerShell profile" -ForegroundColor Green
+}
+
 # Step 5: Verify
 Write-Host "[5/5] Verifying..."
 $checks = 0
 if (Test-Path $EXT_LINK) { $checks++; Write-Host "  OK Extension installed" -ForegroundColor Green }
 if (Test-Path $MCP_PATH) { $checks++; Write-Host "  OK MCP server exists" -ForegroundColor Green }
 try {
-    & $pythonCmd -c "from claws import ClawsClient" 2>$null
-    if ($?) { $checks++; Write-Host "  OK Python client importable" -ForegroundColor Green }
+    & node --version 2>$null
+    if ($?) { $checks++; Write-Host "  OK Node.js available" -ForegroundColor Green }
 } catch {}
 
 Write-Host ""

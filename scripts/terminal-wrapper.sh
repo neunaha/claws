@@ -25,4 +25,12 @@ SHELL_BIN="${SHELL:-/bin/zsh}"
 # Do NOT use script's -F flag. -F flushes after every write, which splits
 # Ink-based TUI renderers (Claude Code, etc.) into corrupted partial frames.
 # Default buffering produces a clean terminal at the cost of ~1-2s log delay.
-exec script -q "$CLAWS_TERM_LOG" "$SHELL_BIN" -il
+
+# Detect BSD (macOS) vs GNU/Linux script(1) — different argument order.
+if script --version 2>&1 | grep -qi "util-linux"; then
+  # Linux: script -q -c "command" outfile
+  exec script -q -c "$SHELL_BIN -il" "$CLAWS_TERM_LOG"
+else
+  # macOS/BSD: script -q outfile command
+  exec script -q "$CLAWS_TERM_LOG" "$SHELL_BIN" -il
+fi

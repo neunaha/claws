@@ -1,13 +1,44 @@
+# ── Build artifacts (generated on install, never committed) ────────────────
 node_modules/
-*.vsix
-out/
 dist/
+out/
+build/
+*.vsix
+*.tsbuildinfo
 .vscode-test/
+coverage/
+
+# ── Installer output (created in project roots by scripts/install.sh) ──────
+# Ignored here so running the installer inside the Claws repo itself during
+# testing doesn't leak the vendored copies into version control.
+.claws-bin/
+.mcp.json
+
+# ── Local development only (never ships to GitHub) ─────────────────────────
+# Roadmap, audits, internal planning docs, scratch notes. Put anything here
+# that informs *how* the product is built but isn't the product itself.
+.local/
+NOTES.md
+TODO.md
+SCRATCH.md
+
+# ── Runtime artifacts ──────────────────────────────────────────────────────
+.claws/
+*.sock
+*.log
+
+# ── Secrets ────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Editor / OS ────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ── Python legacy (clients/python/ is optional, guard against bytecode) ────
 __pycache__/
 *.pyc
 *.egg-info/
-build/
-*.log
-.DS_Store
-.claws/
-*.sock

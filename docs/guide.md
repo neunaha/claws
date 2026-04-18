@@ -2,6 +2,8 @@
 
 A comprehensive course-level guide to mastering terminal control with Claws — from first install to production AI orchestration fleets.
 
+> **Note:** The Python client shown in this guide is **optional**. The MCP server (Node.js) provides the same 8 terminal control tools natively in Claude Code with zero install. If you are using Claude Code, you do not need the Python client -- everything works through MCP tool calls out of the box.
+
 ---
 
 ## Table of Contents
@@ -27,7 +29,7 @@ A comprehensive course-level guide to mastering terminal control with Claws — 
 
 - VS Code 1.93.0 or later
 - macOS or Linux (Windows support planned)
-- Python 3.10+ (optional, for the client library)
+- Node.js 18+ (bundled with most systems)
 - A terminal (the irony is intentional)
 
 ### Installation
