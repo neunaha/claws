@@ -1,71 +1,40 @@
 ---
 name: claws-fix
-description: Diagnose and fix Claws connection issues. Run this when claws_* tools aren't available or the MCP server isn't connecting.
+description: Auto-diagnose and repair Claws connection issues. Runs ~/.claws-src/scripts/fix.sh — which checks every piece of the install chain, auto-repairs what it can (missing symlinks, missing project .mcp.json, stale sockets), and reports what still needs a VS Code reload or Claude Code restart. All diagnostic logic is in the script so new checks added to fix.sh activate automatically on the next git pull.
 ---
 
 # /claws-fix
 
-Diagnose why Claws isn't working and fix it.
-
-## What to do
-
-Run these diagnostics in order. Fix each issue found before moving to the next.
-
-### 1. Check if Claws is installed
+Run this when `claws_*` tools aren't available or something about Claws isn't working.
 
 ```bash
-ls -la ~/.claws-src/mcp_server.js 2>/dev/null && echo "INSTALLED" || echo "NOT INSTALLED — run: bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)"
+bash ~/.claws-src/scripts/fix.sh "$(pwd)"
 ```
 
-### 2. Check if MCP server is registered in settings
+ONE bash call. Do NOT break into multiple steps. Do NOT interleave commentary. The script prints a `[check]` line per item with `✓ / → / ✗` markers; let it speak.
 
-```bash
-cat ~/.claude/settings.json 2>/dev/null | grep -A 3 '"claws"' || echo "NOT REGISTERED"
-```
+## What the script checks and fixes
 
-If not registered, fix it:
-```bash
-node -e "
-const fs=require('fs'),p=require('path'),h=require('os').homedir();
-const sp=p.join(h,'.claude','settings.json');
-fs.mkdirSync(p.join(h,'.claude'),{recursive:true});
-let cfg={};
-try{cfg=JSON.parse(fs.readFileSync(sp,'utf8'))}catch{}
-if(!cfg.mcpServers)cfg.mcpServers={};
-cfg.mcpServers.claws={command:'node',args:[p.join(h,'.claws-src','mcp_server.js')]};
-fs.writeFileSync(sp,JSON.stringify(cfg,null,2));
-console.log('Fixed: MCP server registered at',p.join(h,'.claws-src','mcp_server.js'));
-"
-```
+All logic lives in `~/.claws-src/scripts/fix.sh` — updated automatically via `git pull`. The current checks:
 
-### 3. Check if the MCP server path actually exists
+1. **Source clone** at `~/.claws-src` exists (if not: tell the user to run the installer).
+2. **Extension bundle** `dist/extension.js` present — auto-rebuilds via `npm` if missing; falls back to legacy JS if rebuild fails.
+3. **Editor symlink** `~/.vscode/extensions/neunaha.claws-<version>` — auto-recreates if missing.
+4. **Project `.mcp.json`** registers `claws` — auto-writes it (and vendors `.claws-bin/mcp_server.js`) if missing.
+5. **MCP handshake** — spawns `mcp_server.js` and sends `initialize`. Reports the failure reason if it errors.
+6. **Socket liveness** — checks `.claws/claws.sock` exists AND responds. Removes stale socket files so VS Code can re-create on reload.
+7. **Global `~/.claude/settings.json`** — informational: notes if a global claws entry coexists with the project one.
 
-```bash
-node -e "const p=require('path'),h=require('os').homedir();const f=p.join(h,'.claws-src','mcp_server.js');require('fs').existsSync(f)?console.log('EXISTS:',f):console.log('MISSING:',f)"
-```
+New checks or auto-repairs go into `fix.sh` in the repo. No change to this markdown is required for users to pick them up.
 
-### 4. Check if Node.js can run the MCP server
+## After the script finishes, tell the user EXACTLY this
 
-```bash
-node -e "require('$(echo ~/.claws-src/mcp_server.js)'); console.log('MCP server loads OK')" 2>&1 | head -3
-```
+If the script printed `All checks passed`:
 
-### 5. Check if VS Code extension is linked
+> Everything is wired up. **Activate by:** (1) Reload VS Code, (2) Restart Claude Code in this project. The `claws_*` tools will be available after that.
 
-```bash
-ls -la ~/.vscode/extensions/neunaha.claws-* 2>/dev/null || ls -la ~/.cursor/extensions/neunaha.claws-* 2>/dev/null || echo "EXTENSION NOT LINKED"
-```
+If the script printed `X still open`:
 
-### 6. Check if socket exists (extension must be active)
+> Some issues couldn't be auto-fixed. Run `/claws-report` to bundle the full diagnostic into a shareable file — the output path is printed at the end of the report. Paste the file contents in a GitHub issue or share them with me.
 
-```bash
-find . -name "claws.sock" -path "*/.claws/*" 2>/dev/null | head -1 || echo "NO SOCKET — reload VS Code: Cmd+Shift+P → Developer: Reload Window"
-```
-
-### 7. After fixing, tell the user:
-
-"Fixed. Now do these two things:
-1. Exit this Claude Code session: type 'exit'
-2. Start a new Claude Code session: type 'claude'
-
-The MCP tools load at session start — they can't be added mid-session. After restarting, the claws_* tools will be available."
+Never suggest manual shell commands to fix specific steps — the script owns all auto-repair logic; if it couldn't fix something, either a VS Code reload / Claude Code restart will, or it's a real bug that needs a report.

@@ -1,32 +1,29 @@
 ---
 name: claws-update
-description: One command. Pulls the latest Claws source, runs the project-local installer (which rebuilds the TypeScript bundle, refreshes .mcp.json + .claws-bin + .claude, migrates legacy CLAUDE.md, verifies everything with 10 checks), syncs extension docs, shows the changelog, and renders the CLAWS banner. The user types /claws-update and waits.
+description: Update Claws to the latest version. Pulls the source, then delegates all update logic to ~/.claws-src/scripts/update.sh — so new steps added to that script are picked up automatically on the next update, without ever needing to re-install the slash command itself.
 ---
 
 # /claws-update
 
-**Run from the project root** so the installer targets the right folder. Single bash call:
+**Run from the project root.** This command is a thin dispatcher — all the real work lives in `~/.claws-src/scripts/update.sh`, which is refreshed by `git pull` on every run. That means when we add new update steps (migrations, cleanup, notifications), they activate automatically on the next update.
 
 ```bash
-PROJECT_PWD="$(pwd)" && cd ~/.claws-src && git pull --ff-only origin main && cp README.md extension/README.md 2>/dev/null; cp CHANGELOG.md extension/CHANGELOG.md 2>/dev/null; cd "$PROJECT_PWD" && bash ~/.claws-src/scripts/install.sh && echo "" && echo "  ═══════════════════════════════════════" && echo "  WHAT'S NEW (full log: ~/.claws-src/CHANGELOG.md)" && echo "  ═══════════════════════════════════════" && awk '/^## \[/{c++} c==1 && NR>1{print}' ~/.claws-src/CHANGELOG.md | head -60 && echo "" && echo "  ═══════════════════════════════════════" && unset CLAWS_BANNER_SHOWN && source ~/.claws-src/scripts/shell-hook.sh
+PROJECT_PWD="$(pwd)" && cd ~/.claws-src && git pull --ff-only origin main && bash ~/.claws-src/scripts/update.sh "$PROJECT_PWD"
 ```
 
-ONE bash call. Do NOT break into multiple steps. Do NOT interleave commentary. Let the output speak for itself.
+ONE bash call. Do NOT break into multiple steps. Do NOT interleave commentary. The script prints its own status; let it speak.
 
-## What this does
+## What happens (owned by `scripts/update.sh`, not this markdown)
 
-1. **`cd ~/.claws-src && git pull --ff-only origin main`** — fast-forward pull of the source.
-2. **Syncs `README.md` and `CHANGELOG.md` into `extension/`** — keeps the marketplace-facing docs in step with the root.
-3. **Runs `~/.claws-src/scripts/install.sh` from the current project root** — this is the rewritten v0.4 installer. It:
-   - Rebuilds the TypeScript bundle (`dist/extension.js`) with esbuild. Falls back to legacy JS if `node-pty` doesn't compile.
-   - Re-creates/refreshes the `~/.vscode/extensions/neunaha.claws-<version>` symlink.
-   - Writes `<project>/.mcp.json`, `<project>/.claws-bin/{mcp_server.js, shell-hook.sh}`.
-   - Copies all 19 slash commands, rules, and skills into `<project>/.claude/`.
-   - Runs the CLAUDE.md injector — **migrates legacy v0.1–v0.3 `## CLAWS — Terminal Orchestration Active` sections into the new fenced `<!-- CLAWS:BEGIN --> ... <!-- CLAWS:END -->` block** while preserving all other project content.
-   - Runs 10 verification checks with visible ✓/✗ markers.
-   - Saves a full install log to `/tmp/claws-install-<timestamp>.log`.
-4. **Prints the latest changelog entry** (just the newest `## [x.y.z]` section).
-5. **Re-sources the shell hook** so the new CLAWS banner renders in the current terminal.
+1. **Pull latest source** into `~/.claws-src` via `git pull --ff-only`.
+2. **Delegate to `update.sh`** which then:
+   - Syncs `README.md` and `CHANGELOG.md` into `extension/` for the VSIX.
+   - Runs `scripts/install.sh` against the current project. That alone handles: TS rebuild, extension symlink, project-local `.mcp.json` + `.claws-bin/` + `.claude/`, CLAUDE.md migration + fenced injection, shell-hook refresh, 10-check verification, install log at `/tmp/claws-install-<timestamp>.log`, and the ASCII banner.
+   - Prints the newest `## [x.y.z]` section from `CHANGELOG.md`.
+   - Runs any post-update migrations (e.g. cleaning stale `.claws/claws.sock` files older than a day).
+   - Re-sources `shell-hook.sh` so the in-terminal banner updates.
+
+Any new update step — a breaking-change warning, a data migration, a cleanup task — is added to `update.sh` in the repo. Users get it on their very next `/claws-update` with no action required from them (or from me) beyond the pull itself.
 
 ## After the output finishes, tell the user EXACTLY this
 
@@ -37,5 +34,5 @@ Update complete. **Two things to activate:**
 
 If anything looks off:
 - **MCP tools not appearing?** → run `/claws-fix`
-- **Install looked wrong or something failed?** → run `/claws-report` to bundle logs + diagnostics, then share the file (`~/claws-report-<timestamp>.txt`) for help.
-- **See the install log directly**: the banner at the end of `/claws-update` prints the log path (`/tmp/claws-install-<timestamp>.log`).
+- **Something failed or looked wrong?** → run `/claws-report` to bundle logs + diagnostics into a shareable file (`~/claws-report-<timestamp>.txt`).
+- **Install log** — the banner at the end of the install section prints the exact log path (`/tmp/claws-install-<timestamp>.log`).
