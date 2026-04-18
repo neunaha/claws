@@ -74,8 +74,15 @@ The repo has a **strict separation between product code (ships to GitHub, consum
 ```
 Claws/
 ├── extension/          # VS Code extension (TypeScript + esbuild bundle)
-│   ├── src/            #   source — extension.ts, server.ts, claws-pty.ts, …
-│   ├── test/           #   smoke + worker test harnesses
+│   ├── src/            #   source — extension.ts, server.ts, claws-pty.ts,
+│   │                   #            terminal-manager.ts, capture-store.ts,
+│   │                   #            server-config.ts, status-bar.ts,
+│   │                   #            uninstall-cleanup.ts, protocol.ts,
+│   │                   #            ansi-strip.ts, safety.ts
+│   ├── test/           #   smoke, native-bundle, config-reload, capture-store,
+│   │                   #   oversized-line, pty-lifecycle, profile-provider,
+│   │                   #   multi-connection (57 checks across 8 suites)
+│   ├── native/         #   bundled node-pty (self-contained, no global install)
 │   ├── package.json    #   manifest, build scripts, deps (node-pty optional)
 │   ├── tsconfig.json   #   strict TS config
 │   ├── esbuild.mjs     #   bundler entry
@@ -121,11 +128,12 @@ See `.local/README.md` for the full rubric.
 
 ## Current state
 
-- **Phase**: 1 — scaffold complete. Extension works as raw JS; TypeScript rewrite planned.
-- **Transport**: Unix socket only. WebSocket transport planned (Phase 3).
+- **Version**: 0.5.0 — Phase 6 hardening sweep (6A + 6B) closed out. 57 automated checks across 8 suites. 50-point audit cleared.
+- **Phase**: 2 — TypeScript rewrite, Pseudoterminal, config hot-reload, status bar, Uninstall Cleanup, chord keybindings, bundled `node-pty`, UUID profile adoption all landed. Marketplace publish is the remaining Phase 2 item.
+- **Transport**: Unix socket only (per-folder sockets for multi-root workspaces). WebSocket transport planned (Phase 3).
 - **Cross-device**: not yet. SSH tunnel pattern documented as interim. WebSocket + token auth planned.
-- **Marketplace**: not published yet. Needs publisher account + bundling + tests.
-- **Clients**: MCP server (Node.js) is primary. Python client optional.
+- **Marketplace**: not published yet. Needs publisher account + final VSIX validation.
+- **Clients**: MCP server (Node.js) is primary. Python client optional. `introspect` command gives all clients a structured runtime snapshot.
 
 ## Phase plan
 
@@ -140,15 +148,17 @@ See `.local/README.md` for the full rubric.
 - [ ] First commit
 
 ### Phase 2 — Polish for Marketplace
-- [ ] TypeScript rewrite (extension.js → src/*.ts)
-- [ ] esbuild bundling
-- [ ] contributes.configuration for all settings (socket path, default wrapped, auto-cleanup timeout)
-- [ ] Status bar item showing: connected clients count, active terminals count
-- [ ] Commands: "Claws: List Terminals", "Claws: Create Wrapped Terminal", "Claws: Show Status"
-- [ ] Extension tests with @vscode/test-electron
+- [x] TypeScript rewrite (extension.js → src/*.ts)
+- [x] esbuild bundling
+- [x] contributes.configuration for all 10 settings (socket path, default wrapped, capture/exec/poll limits, WebSocket opts)
+- [x] Status bar item showing live terminal count + socket state (6B)
+- [x] Commands: Status, List Terminals, Health Check, Show Log, Rebuild Native PTY, Uninstall Cleanup, Refresh Status Bar (7 total, all under `Claws:` category)
+- [x] Chord keybindings: `cmd+alt+c h/l/s` (6B)
+- [x] Extension tests — 57 checks / 8 suites (smoke, native-bundle, config-reload, capture-store, oversized-line, pty-lifecycle, profile-provider, multi-connection)
+- [x] Icon (128×128 PNG) + banner
+- [x] Bundled `node-pty` under `extension/native/node-pty/`
 - [ ] GitHub Actions CI (lint + test on PR, publish on tag)
 - [ ] Create VS Code Marketplace publisher account
-- [ ] Icon (128×128 PNG) + banner
 - [ ] First marketplace publish
 - [ ] PyPI publish for claws-client
 

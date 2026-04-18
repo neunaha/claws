@@ -38,7 +38,16 @@ Update complete. **Two things to activate:**
 1. **Reload VS Code** — `Cmd+Shift+P → Developer: Reload Window`
 2. **Restart Claude Code in this project** — exit this Claude session and re-open `claude` from the project root so the new project-local `.mcp.json` is picked up.
 
+**v0.5.0 — what's new after this update:**
+- Status bar item on the right showing `$(terminal) Claws (N)`; click it to run Health Check.
+- Seven palette commands under `Claws:` — Show Status, Refresh Status Bar, List Terminals (now a QuickPick), Health Check, Show Log, Rebuild Native PTY, Uninstall Cleanup.
+- Chord keybindings: `cmd/ctrl+alt+c h` (Health Check), `cmd/ctrl+alt+c l` (Show Log), `cmd/ctrl+alt+c s` (Show Status).
+- New `/claws-introspect` slash command — one-shot runtime snapshot from the socket.
+- Protocol bumped to `claws/1` with explicit `rid` correlation + client-version drift warnings.
+- Bundled `node-pty` under `extension/native/` — no more global install needed.
+
 If anything looks off:
 - **MCP tools not appearing?** → run `/claws-fix`
+- **Want the full runtime snapshot?** → run `/claws-introspect`
 - **Something failed or looked wrong?** → run `/claws-report` to bundle logs + diagnostics into a shareable file (`~/claws-report-<timestamp>.txt`).
 - **Install log** — the banner at the end of the install section prints the exact log path (`/tmp/claws-install-<timestamp>.log`).

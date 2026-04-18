@@ -118,6 +118,8 @@ Claws runs a socket server inside VS Code. Any process connects and controls ter
 
 **Wrapped terminals** are the key feature — as of v0.4 they use VS Code's native `Pseudoterminal` API (backed by `node-pty`, with a `child_process` pipe-mode fallback). No `script(1)` wrapping means **zero rendering corruption** for TUI apps like Claude Code, vim, htop, k9s. Every byte the shell emits flows through the extension's own `onDidWrite` event and into an in-memory ring buffer — readable via `readLog` with ANSI escapes stripped, giving you clean text of everything that happened.
 
+A **status bar item** (right side, `$(terminal) Claws (N)`) shows live socket + terminal count at a glance; click it to run Health Check. Color shifts to warning-yellow in pipe-mode and error-red when no server is running.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/wrapped-terminal.png" alt="Wrapped Terminal Data Flow" width="720">
 </p>
@@ -153,6 +155,20 @@ Run commands with captured stdout + stderr + exit code. File-based capture works
 </p>
 
 Detects TUI vs shell. Warns before sending text into vim/claude instead of a shell prompt. Non-blocking by default.
+
+### Self-Diagnosis & Cleanup
+
+Every install ships with a first-class diagnostic surface — no external tools, no guesswork.
+
+- **Status bar item** — live `$(terminal) Claws (N)` with socket + node-pty state in the tooltip. Click to run Health Check. Warning-yellow in pipe-mode, error-red when no server is running.
+- **Health Check** (`cmd+alt+c h` / palette → `Claws: Health Check`) — one-shot introspection snapshot: extension version, Node + Electron ABI, platform, `node-pty` load path (or fallback reason), every active socket, MCP server version, uptime.
+- **Show Log** (`cmd+alt+c l`) — focuses the `Claws` Output channel with the full runtime trace.
+- **Show Status** (`cmd+alt+c s`) — markdown-formatted runtime block, copy-pasteable into a bug report.
+- **List Terminals** — QuickPick of every Claws-known terminal (`id · name · wrapped/unwrapped · pid`); selecting one focuses it.
+- **Rebuild Native PTY** — runs `@electron/rebuild` against the bundled `node-pty`. Use after a VS Code major upgrade if pipe-mode fallback kicks in.
+- **Uninstall Cleanup** — scans open workspace folders, inventories every Claws-installed file (`.mcp.json` entry, `.claws-bin/`, `.claude/commands/claws-*`, skill dirs, `.vscode/extensions.json` recommendation, fenced block in `CLAUDE.md`), shows a per-folder confirmation, removes only what was installed, and writes a summary to the Output channel.
+
+All seven commands are also reachable from the command palette under the `Claws:` category.
 
 ### MCP Server — Native Claude Code Integration (project-local)
 <p align="center">
@@ -218,8 +234,9 @@ The installer writes files in **two scopes**: the machine (once) and the project
 | What | Where | Purpose |
 |---|---|---|
 | Cloned source | `~/.claws-src/` | Full repo clone — used by `/claws-update` |
-| VS Code extension | `~/.vscode/extensions/neunaha.claws-0.4.0` | Symlink → `~/.claws-src/extension` |
+| VS Code extension | `~/.vscode/extensions/neunaha.claws-0.5.0` | Symlink → `~/.claws-src/extension` |
 | Extension bundle | `~/.claws-src/extension/dist/extension.js` | Built from TypeScript on install |
+| Bundled native PTY | `~/.claws-src/extension/native/node-pty/` | Self-contained `node-pty` — keeps wrapped terminals glitch-free without a global install |
 | Shell hook | `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.config/fish/conf.d/claws.fish` | CLAWS banner + `claws-*` shell commands |
 
 ### Project-level (written into the project you installed from)
@@ -233,6 +250,7 @@ The installer writes files in **two scopes**: the machine (once) and the project
 | Orchestration skill | `<project>/.claude/skills/claws-orchestration-engine/` | 7 patterns + lifecycle protocol |
 | Prompt templates | `<project>/.claude/skills/claws-prompt-templates/` | 7 mission templates |
 | Dynamic CLAUDE.md block | `<project>/CLAUDE.md` (fenced `<!-- CLAWS:BEGIN -->` … `<!-- CLAWS:END -->`) | Tool list + operating principles (generated at install time) |
+| Workspace recommendation | `<project>/.vscode/extensions.json` | Adds `neunaha.claws` to `recommendations` so teammates are prompted to install on open |
 
 ### Opt-in: global install
 
@@ -267,8 +285,8 @@ Claws was designed for and tested with Claude Opus — the model with the deepes
 
 - **v0.3** ✅ Zero dependencies — Node.js only
 - **v0.4** ✅ TypeScript rewrite, Pseudoterminal (no glitching), blocking `claws_worker`, project-local install, dynamic CLAUDE.md, automatic legacy migration
-- **v0.5** — State persistence across VS Code reload, `claws_ping` health check, WebSocket transport, VS Code Marketplace publish
-- **v0.6** — Cross-device control, team config, device discovery, web dashboard
+- **v0.5** ✅ Hardening sweep — `introspect` command, status bar item, Health Check / Uninstall Cleanup, chord keybindings, UUID profile adoption, hot-reloadable config, bundled `node-pty`, 57 automated checks
+- **v0.6** — MCP server Layer 2 rewrite, WebSocket transport, cross-device control, team config, device discovery, web dashboard, VS Code Marketplace publish
 
 ---
 
