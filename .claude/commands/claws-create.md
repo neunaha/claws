@@ -12,21 +12,26 @@ Create a new wrapped terminal with the given name.
 1. Parse the arguments. First arg is the terminal name, second is optional cwd.
 
 2. Create the terminal via the socket:
-```python
-python3 -c "
-import json, socket
-s = socket.socket(socket.AF_UNIX)
-s.connect('.claws/claws.sock')
-req = {'id': 1, 'cmd': 'create', 'name': '$1', 'wrapped': True}
-cwd = '$2' if '$2' else None
-if cwd: req['cwd'] = cwd
-s.sendall((json.dumps(req) + '\n').encode())
-resp = json.loads(s.recv(65536).decode().split('\n')[0])
-if resp.get('ok'):
-    print(f\"created terminal id={resp['id']} logPath={resp.get('logPath')}\")
-else:
-    print(f\"ERROR: {resp.get('error')}\")
-s.close()
+```bash
+node -e "
+const net=require('net');
+const s=net.createConnection('.claws/claws.sock');
+s.on('connect',()=>{
+  const req={id:1,cmd:'create',name:'$1',wrapped:true};
+  if('$2') req.cwd='$2';
+  s.write(JSON.stringify(req)+'\n');
+});
+let b='';
+s.on('data',d=>{
+  b+=d;
+  const nl=b.indexOf('\n');
+  if(nl!==-1){
+    const r=JSON.parse(b.slice(0,nl));
+    if(r.ok) console.log('created terminal id='+r.id+' logPath='+r.logPath);
+    else console.log('ERROR: '+r.error);
+    s.destroy();
+  }
+});
 "
 ```
 

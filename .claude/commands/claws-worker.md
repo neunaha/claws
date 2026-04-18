@@ -10,28 +10,39 @@ Spawn a complete worker terminal with monitoring. This is the pair-programmer pa
 ## What to do
 
 1. Create a wrapped terminal:
-```python
-# Create terminal
-python3 -c "
-import json, socket
-s = socket.socket(socket.AF_UNIX); s.connect('.claws/claws.sock')
-s.sendall((json.dumps({'id':1,'cmd':'create','name':'$1','wrapped':True}) + '\n').encode())
-resp = json.loads(s.recv(65536).decode().split('\n')[0])
-print(f\"TERM_ID={resp['id']}\nLOG={resp.get('logPath')}\")
-s.close()
+```bash
+node -e "
+const net=require('net');
+const s=net.createConnection('.claws/claws.sock');
+s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'create',name:'$1',wrapped:true})+'\n'));
+let b='';
+s.on('data',d=>{
+  b+=d;
+  const nl=b.indexOf('\n');
+  if(nl!==-1){
+    const r=JSON.parse(b.slice(0,nl));
+    console.log('TERM_ID='+r.id);
+    console.log('LOG='+r.logPath);
+    s.destroy();
+  }
+});
 "
 ```
 
 2. Wait 1.5 seconds for the shell to initialize.
 
 3. Send the command into the terminal:
-```python
-python3 -c "
-import json, socket
-s = socket.socket(socket.AF_UNIX); s.connect('.claws/claws.sock')
-s.sendall((json.dumps({'id':1,'cmd':'send','id':'TERM_ID','text':'$2'}) + '\n').encode())
-s.recv(4096)
-s.close()
+```bash
+node -e "
+const net=require('net');
+const s=net.createConnection('.claws/claws.sock');
+s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'send',tid:'TERM_ID',text:'$2'})+'\n'));
+let b='';
+s.on('data',d=>{
+  b+=d;
+  const nl=b.indexOf('\n');
+  if(nl!==-1){ s.destroy(); }
+});
 "
 ```
 

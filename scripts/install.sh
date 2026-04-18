@@ -224,7 +224,7 @@ fi
 
 # Copy slash commands
 mkdir -p "$HOME/.claude/commands"
-for cmd in claws-status claws-connect claws-create claws-send claws-exec claws-read claws-worker claws-fleet claws-update; do
+for cmd in claws claws-do claws-go claws-watch claws-learn claws-setup claws-cleanup claws-help claws-status claws-connect claws-create claws-send claws-exec claws-read claws-worker claws-fleet claws-update; do
   if [ -f "$INSTALL_DIR/.claude/commands/${cmd}.md" ]; then
     cp "$INSTALL_DIR/.claude/commands/${cmd}.md" "$HOME/.claude/commands/" 2>/dev/null
   fi

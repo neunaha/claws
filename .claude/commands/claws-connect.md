@@ -16,21 +16,24 @@ test -S "$SOCK" && echo "socket found: $SOCK" || { echo "ERROR: no socket at $SO
 ```
 
 2. Send a ping (list command) to verify the server responds:
-```python
-python3 -c "
-import json, socket, sys
-sock = socket.socket(socket.AF_UNIX)
-try:
-    sock.connect('${SOCK:-.claws/claws.sock}')
-    sock.sendall(b'{\"id\":0,\"cmd\":\"list\"}\n')
-    resp = json.loads(sock.recv(65536).decode().split('\n')[0])
-    n = len(resp.get('terminals', []))
-    print(f'Claws connected — {n} terminal(s) active')
-except Exception as e:
-    print(f'ERROR: {e}', file=sys.stderr)
-    sys.exit(1)
-finally:
-    sock.close()
+```bash
+node -e "
+const net=require('net');
+const sock='${SOCK:-.claws/claws.sock}';
+const s=net.createConnection(sock);
+s.on('connect',()=>s.write(JSON.stringify({id:0,cmd:'list'})+'\n'));
+let b='';
+s.on('data',d=>{
+  b+=d;
+  const nl=b.indexOf('\n');
+  if(nl!==-1){
+    const r=JSON.parse(b.slice(0,nl));
+    const n=(r.terminals||[]).length;
+    console.log('Claws connected — '+n+' terminal(s) active');
+    s.destroy();
+  }
+});
+s.on('error',e=>{console.error('ERROR: '+e.message);process.exit(1);});
 "
 ```
 

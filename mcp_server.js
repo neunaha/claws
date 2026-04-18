@@ -373,7 +373,7 @@ async function main() {
     if (method === 'initialize') {
       respond(id, {
         protocolVersion: '2024-11-05',
-        serverInfo: { name: 'claws', version: '0.2.0' },
+        serverInfo: { name: 'claws', version: '0.3.0' },
         capabilities: { tools: {} },
       });
     } else if (method === 'notifications/initialized') {
