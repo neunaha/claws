@@ -19,49 +19,68 @@
 
 ---
 
-One VS Code extension. One socket. Full control over every terminal from the outside. Your AI writes code in one terminal, runs tests in another, deploys in a third — while you watch everything happen live.
-
-~~Copy the command from Claude. Paste it in the terminal. Copy the output. Paste it back. Repeat 47 times.~~ **That loop is over.**
+## The Problem → The Solution
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/hero-cinematic.png" alt="Claws Terminal Orchestration" width="720">
+  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/before-after.png" alt="Before and After Claws" width="720">
 </p>
+
+**Before Claws**: copy a command from Claude → paste in terminal → copy the output → paste it back → repeat 47 times. One terminal. No visibility. No parallelism.
+
+**After Claws**: your AI controls every terminal directly. Spawns workers. Runs tests, builds, deploys — all in parallel, all visible. You just watch.
 
 ---
 
-## Install
+## Get Started in 3 Steps
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/install-flow.png" alt="Install Flow" width="720">
+</p>
+
+### Step 1 — Install
 
 **Paste this into any Claude Code terminal:**
 
 > install claws from https://github.com/neunaha/claws — run the install script and set up everything
 
-**Or run directly (macOS / Linux):**
+**Or run directly:**
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)
 ```
 
-**Windows (PowerShell):**
-```powershell
-irm https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.ps1 | iex
-```
+**Zero dependencies.** No Python. No pip. No brew. Just Node.js (ships with VS Code).
+
+### Step 2 — Reload VS Code
+
+`Cmd+Shift+P` → `Developer: Reload Window`
+
+### Step 3 — You're ready
+
+Type `/claws` to see the dashboard. Type `/claws-do run my tests` to see it work.
+
+---
+
+## What You'll See
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/zero-dep-install.png" alt="Zero Dependency Install" width="720">
+  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/what-you-see.png" alt="What You See" width="720">
 </p>
 
-**Zero dependencies.** No Python. No pip. No brew. Just Node.js (ships with VS Code). One command, everything works.
-
-After install: `Cmd+Shift+P` → `Developer: Reload Window`. Then type `/claws` to get started.
+After install, your VS Code terminal panel transforms:
+- **CLAWS banner** appears in every new terminal with live bridge status
+- **"Claws Wrapped Terminal"** appears in the terminal dropdown — click it for full pty capture
+- **Multiple worker tabs** appear when AI spawns parallel terminals
+- **Shell commands** (`claws-ls`, `claws-new`, `claws-run`, `claws-log`) work in any terminal
 
 ---
 
 ## The Commands
 
-One command to remember: **`/claws`**
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/slash-commands.png" alt="Slash Commands" width="720">
 </p>
+
+One command to remember: **`/claws`**
 
 | Command | What it does |
 |---|---|
@@ -73,12 +92,15 @@ One command to remember: **`/claws`**
 | `/claws-cleanup` | Close all worker terminals |
 | `/claws-update` | Pull latest + full rebuild + what's new |
 
-**Talk naturally:**
+### Talk naturally — examples:
+
 ```
-/claws-do run my tests
-/claws-do lint test and build in parallel
-/claws-go fix the bug in auth.ts
-/claws-go audit this codebase for security issues
+/claws-do run my tests                              → single terminal, runs tests, reports
+/claws-do lint test and build in parallel            → 3 terminals, all running simultaneously
+/claws-go fix the bug in auth.ts                     → spawns a Claude worker to fix it
+/claws-go audit this codebase for security issues    → spawns a Claude worker to audit
+/claws-watch                                          → shows all terminals + their latest output
+/claws-cleanup                                        → closes all worker terminals
 ```
 
 ---
@@ -89,45 +111,52 @@ One command to remember: **`/claws`**
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/architecture.png" alt="Architecture" width="720">
 </p>
 
-Claws runs a socket server inside VS Code. Any process connects and controls terminals via JSON commands. **Wrapped terminals** capture full pty output via `script(1)` — readable even for TUI sessions like Claude Code, vim, and htop.
+Claws runs a socket server inside VS Code. Any process connects and controls terminals via JSON commands.
+
+**Wrapped terminals** are the key feature — they run your shell inside `script(1)`, which logs every byte to a file. Claws reads it back with ANSI escapes stripped, giving you clean text of everything — including TUI sessions like Claude Code, vim, htop.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/wrapped-terminal.png" alt="Wrapped Terminal" width="720">
+  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/wrapped-terminal.png" alt="Wrapped Terminal Data Flow" width="720">
 </p>
 
 ---
 
 ## Capabilities
 
+### Terminal Management
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-terminal-mgmt.png" alt="Terminal Management" width="720">
 </p>
 
-**Terminal Control** — list, create, focus, send text, close. Stable numeric IDs. Custom names and working directories.
+List all terminals with PID, name, status. Create new ones with custom names. Focus, show, close programmatically. Every terminal gets a stable numeric ID.
 
+### Full Pty Capture
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-pty-capture.png" alt="Pty Capture" width="720">
 </p>
 
-**Full Pty Capture** — wrapped terminals log every byte. Read back Claude Code conversations, vim sessions, build logs, REPL outputs — all as clean ANSI-stripped text.
+Read back anything — Claude Code conversations, vim sessions, build logs, REPL outputs. The terminal looks and behaves normally. The capture layer is invisible.
 
+### Command Execution
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-exec.png" alt="Command Execution" width="720">
 </p>
 
-**Command Execution** — run commands with captured stdout + stderr + exit code. File-based capture that works in every terminal type.
+Run commands with captured stdout + stderr + exit code. File-based capture works in every terminal type without shell integration.
 
+### Safety Gate
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-safety.png" alt="Safety Gate" width="720">
 </p>
 
-**Safety Gate** — detects when a terminal runs a TUI (vim, claude, less). Warns before sending text that would land as TUI input.
+Detects TUI vs shell. Warns before sending text into vim/claude instead of a shell prompt. Non-blocking by default.
 
+### MCP Server — Native Claude Code Integration
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-mcp.png" alt="MCP Server" width="720">
 </p>
 
-**MCP Server** — register once, every Claude Code session gets 8 native terminal tools. Node.js, zero dependencies.
+Register once, every Claude Code session gets 8 native terminal tools. The installer does this automatically.
 
 ```json
 {
@@ -140,18 +169,16 @@ Claws runs a socket server inside VS Code. Any process connects and controls ter
 }
 ```
 
-The installer registers this automatically.
+**Tools:** `claws_list` · `claws_create` · `claws_send` · `claws_exec` · `claws_read_log` · `claws_poll` · `claws_close` · `claws_worker`
 
+### AI Worker Orchestration
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/ai-orchestration.png" alt="AI Orchestration" width="720">
 </p>
 
-**AI Worker Spawn** — `claws_worker` creates a terminal, launches Claude Code with full permissions, sends a mission, returns the terminal for monitoring. One tool call = full autonomous worker.
+`claws_worker` creates a visible terminal, launches Claude Code with full permissions, sends a mission. One tool call = full autonomous worker that the user watches in real time.
 
----
-
-## Cross-Device Control (planned)
-
+### Cross-Device Control (planned)
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-crossdevice.png" alt="Cross-Device" width="720">
 </p>
@@ -160,6 +187,25 @@ WebSocket transport with token auth + TLS. SSH tunnel works today:
 ```bash
 ssh -L 9999:/remote/.claws/claws.sock user@remote
 ```
+
+---
+
+## What Gets Installed
+
+The installer does everything in one command. Here's exactly what lands on your machine:
+
+| What | Where | Purpose |
+|---|---|---|
+| VS Code extension | `~/.vscode/extensions/neunaha.claws-0.1.0` | Socket server + terminal control |
+| MCP server | `~/.claws-src/mcp_server.js` | 8 native Claude Code tools |
+| Behavior rule | `~/.claude/rules/claws-default-behavior.md` | Claude prefers visible terminals |
+| Orchestration engine | `~/.claude/skills/claws-orchestration-engine/` | 7 patterns + lifecycle protocol |
+| Prompt templates | `~/.claude/skills/claws-prompt-templates/` | 7 mission templates |
+| 17 slash commands | `~/.claude/commands/claws*.md` | `/claws`, `/claws-do`, `/claws-go`, etc. |
+| Shell hook | `~/.zshrc` or `~/.bashrc` | CLAWS banner + shell commands |
+| Terminal wrapper | `~/.claws-src/scripts/terminal-wrapper.sh` | `script(1)` for pty capture |
+
+**To uninstall**: remove `~/.claws-src`, the extension symlink, and the shell hook line from your rc file.
 
 ---
 
@@ -178,16 +224,16 @@ ssh -L 9999:/remote/.claws/claws.sock user@remote
 
 ## Powered by Claude Opus
 
-Claws was designed for and tested with Claude Opus — the model with the deepest reasoning for multi-terminal orchestration. The orchestration engine, lifecycle protocol, and prompt templates are optimized for Opus-class capabilities.
+Claws was designed for and tested with Claude Opus — the model with the deepest reasoning for multi-terminal orchestration.
 
 ---
 
 ## Roadmap
 
-- **v0.3** ✅ Zero dependencies — Node.js only, no Python/pip/brew
-- **v0.4** — TypeScript rewrite, VS Code Marketplace publish, tests
-- **v0.5** — WebSocket transport, token auth, TLS, cross-device
-- **v0.6** — Team config, device discovery, CLI tool, web dashboard
+- **v0.3** ✅ Zero dependencies — Node.js only
+- **v0.4** — TypeScript rewrite, VS Code Marketplace publish
+- **v0.5** — WebSocket transport, cross-device control
+- **v0.6** — Team config, device discovery, web dashboard
 
 ---
 
