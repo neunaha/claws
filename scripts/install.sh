@@ -48,7 +48,9 @@ detect_ext_dir() {
 }
 
 EXT_DIR=$(detect_ext_dir)
-EXT_LINK="$EXT_DIR/neunaha.claws-0.1.0"
+# EXT_LINK is set after clone, once we can read the real version from
+# extension/package.json. VS Code requires the directory name to match
+# `<publisher>.<name>-<version>` or it refuses to load the extension.
 
 echo ""
 echo "  ╔═══════════════════════════════════════════╗"
@@ -89,8 +91,24 @@ else
 fi
 cd "$INSTALL_DIR"
 
+# Derive the extension version from extension/package.json. VS Code rejects
+# the extension if the directory name doesn't match the manifest version, so
+# this MUST come from the source of truth, not be hardcoded.
+if ! command -v node >/dev/null 2>&1; then
+  echo "  ✗ Cannot proceed: Node.js is required to read extension/package.json."
+  echo "    Install Node.js (macOS: brew install node | Linux: sudo apt install nodejs),"
+  echo "    then re-run this installer."
+  exit 1
+fi
+EXT_VERSION="$(CLAWS_PKG="$INSTALL_DIR/extension/package.json" node -p 'require(process.env.CLAWS_PKG).version' 2>/dev/null)"
+if [ -z "$EXT_VERSION" ]; then
+  echo "  ✗ Could not read extension version from $INSTALL_DIR/extension/package.json"
+  exit 1
+fi
+EXT_LINK="$EXT_DIR/neunaha.claws-${EXT_VERSION}"
+
 # ─── Step 2: Extension symlink with permission handling ─────────────────────
-echo "[2/8] Installing extension to $EXT_DIR ..."
+echo "[2/8] Installing extension v${EXT_VERSION} to $EXT_DIR ..."
 # Remove stale links (any version)
 rm -f "$EXT_DIR"/neunaha.claws-* 2>/dev/null || sudo rm -f "$EXT_DIR"/neunaha.claws-* 2>/dev/null || true
 # Create symlink — try without sudo first, fall back to sudo
@@ -125,33 +143,38 @@ if [ "${CLAWS_SKIP_MCP:-}" != "1" ]; then
     if grep -q '"claws"' "$CLAUDE_SETTINGS" 2>/dev/null; then
       echo "  ✓ MCP server already registered in $CLAUDE_SETTINGS"
     else
-      # Inject claws MCP server into existing settings
-      node -e "
-const fs = require('fs');
+      # Inject claws MCP server into existing settings.
+      # Paths go via env vars so they are never interpreted as JS source.
+      CLAWS_SETTINGS_PATH="$CLAUDE_SETTINGS" CLAWS_MCP_PATH="$MCP_PATH" node -e '
+const fs = require("fs");
+const settingsPath = process.env.CLAWS_SETTINGS_PATH;
+const mcpPath = process.env.CLAWS_MCP_PATH;
 try {
-  const cfg = JSON.parse(fs.readFileSync('$CLAUDE_SETTINGS', 'utf8'));
+  const cfg = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
   if (!cfg.mcpServers) cfg.mcpServers = {};
   cfg.mcpServers.claws = {
-    command: 'node',
-    args: ['$MCP_PATH'],
-    env: { CLAWS_SOCKET: '.claws/claws.sock' }
+    command: "node",
+    args: [mcpPath],
+    env: { CLAWS_SOCKET: ".claws/claws.sock" }
   };
-  fs.writeFileSync('$CLAUDE_SETTINGS', JSON.stringify(cfg, null, 2));
-  console.log('  ✓ MCP server registered globally in ~/.claude/settings.json');
+  fs.writeFileSync(settingsPath, JSON.stringify(cfg, null, 2));
+  console.log("  ✓ MCP server registered globally in ~/.claude/settings.json");
 } catch (e) {
-  console.log('  ! Could not auto-register MCP: ' + e.message);
+  console.log("  ! Could not auto-register MCP: " + e.message);
 }
-" 2>/dev/null || echo "  ! Auto-register failed — add manually (see below)"
+' 2>/dev/null || echo "  ! Auto-register failed — add manually (see below)"
     fi
   else
     # Create settings with just the MCP server
     mkdir -p "$HOME/.claude"
-    node -e "
-const fs = require('fs');
-const cfg = { mcpServers: { claws: { command: 'node', args: ['$MCP_PATH'], env: { CLAWS_SOCKET: '.claws/claws.sock' } } } };
-fs.writeFileSync('$HOME/.claude/settings.json', JSON.stringify(cfg, null, 2));
-console.log('  ✓ Created ~/.claude/settings.json with MCP server');
-" 2>/dev/null || echo "  ! Could not create settings — add MCP manually"
+    CLAWS_SETTINGS_PATH="$HOME/.claude/settings.json" CLAWS_MCP_PATH="$MCP_PATH" node -e '
+const fs = require("fs");
+const settingsPath = process.env.CLAWS_SETTINGS_PATH;
+const mcpPath = process.env.CLAWS_MCP_PATH;
+const cfg = { mcpServers: { claws: { command: "node", args: [mcpPath], env: { CLAWS_SOCKET: ".claws/claws.sock" } } } };
+fs.writeFileSync(settingsPath, JSON.stringify(cfg, null, 2));
+console.log("  ✓ Created ~/.claude/settings.json with MCP server");
+' 2>/dev/null || echo "  ! Could not create settings — add MCP manually"
   fi
 else
   echo "[5/8] Skipping MCP config (CLAWS_SKIP_MCP=1)"
@@ -187,16 +210,18 @@ if [ -f "$CLAWS_TEMPLATE" ]; then
     CLAUDE_MD="$PROJECT_ROOT/CLAUDE.md"
     if [ -f "$CLAUDE_MD" ]; then
       if grep -q "CLAWS — Terminal Orchestration Active" "$CLAUDE_MD" 2>/dev/null; then
-        # Already injected — replace with latest version
-        node -e "
-const fs = require('fs');
-let md = fs.readFileSync('$CLAUDE_MD', 'utf8');
-const template = fs.readFileSync('$CLAWS_TEMPLATE', 'utf8').trim();
+        # Already injected — replace with latest version. Paths via env vars.
+        CLAWS_TARGET_MD="$CLAUDE_MD" CLAWS_TEMPLATE_PATH="$CLAWS_TEMPLATE" node -e '
+const fs = require("fs");
+const targetPath = process.env.CLAWS_TARGET_MD;
+const templatePath = process.env.CLAWS_TEMPLATE_PATH;
+let md = fs.readFileSync(targetPath, "utf8");
+const template = fs.readFileSync(templatePath, "utf8").trim();
 const pattern = /## CLAWS — Terminal Orchestration Active[\s\S]*?Type \x60\/claws-help\x60 for the full prompt guide\./;
 md = md.replace(pattern, template);
-fs.writeFileSync('$CLAUDE_MD', md);
-console.log('  ✓ CLAUDE.md Claws section updated');
-" 2>/dev/null || echo "  ✓ CLAUDE.md already has Claws section"
+fs.writeFileSync(targetPath, md);
+console.log("  ✓ CLAUDE.md Claws section updated");
+' 2>/dev/null || echo "  ✓ CLAUDE.md already has Claws section"
       else
         # Append to end
         printf "\n\n" >> "$CLAUDE_MD"
@@ -363,15 +388,17 @@ r=fail
 if [ -f "$HOME/.claude/settings.json" ] && grep -q "$MCP_PATH" "$HOME/.claude/settings.json" 2>/dev/null; then
   r=ok
 elif [ -f "$HOME/.claude/settings.json" ]; then
-  # auto-fix mismatch silently
-  node -e "
-const fs=require('fs'),p=require('path');
-const sp=p.join('$HOME','.claude','settings.json');
-let cfg={};try{cfg=JSON.parse(fs.readFileSync(sp,'utf8'))}catch{}
-if(!cfg.mcpServers)cfg.mcpServers={};
-cfg.mcpServers.claws={command:'node',args:['$MCP_PATH']};
-fs.writeFileSync(sp,JSON.stringify(cfg,null,2));
-" 2>/dev/null
+  # Auto-fix mismatch silently. Paths via env vars.
+  CLAWS_SETTINGS_PATH="$HOME/.claude/settings.json" CLAWS_MCP_PATH="$MCP_PATH" node -e '
+const fs = require("fs");
+const sp = process.env.CLAWS_SETTINGS_PATH;
+const mcpPath = process.env.CLAWS_MCP_PATH;
+let cfg = {};
+try { cfg = JSON.parse(fs.readFileSync(sp, "utf8")); } catch (e) {}
+if (!cfg.mcpServers) cfg.mcpServers = {};
+cfg.mcpServers.claws = { command: "node", args: [mcpPath] };
+fs.writeFileSync(sp, JSON.stringify(cfg, null, 2));
+' 2>/dev/null
   grep -q "$MCP_PATH" "$HOME/.claude/settings.json" 2>/dev/null && r=ok
 fi
 verify "MCP path in settings.json" "$r"

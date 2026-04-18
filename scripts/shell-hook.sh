@@ -70,33 +70,64 @@ fi
 
 # ═══════════════════════════════════════════════════════════════
 # Shell commands — type these in any terminal
+# ─────────────────────────────────────────────────────────────────
+# All user input is passed via env vars (process.env.*). The node
+# scripts are single-quoted heredocs so bash performs zero
+# interpolation — argument values can never be interpreted as JS.
 # ═══════════════════════════════════════════════════════════════
 
 claws-ls() {
-  local sock="${CLAWS_SOCKET:-.claws/claws.sock}"
-  node -e "
-const net=require('net');
-const s=net.createConnection('$sock');
-s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'list'})+'\n'));
-let b='';
-s.on('data',d=>{b+=d;if(b.includes('\n')){try{const d2=JSON.parse(b.split('\n')[0]);(d2.terminals||[]).forEach(t=>{const w=t.logPath?'WRAPPED':'       ';const a=t.active?'*':' ';console.log(a+' '+String(t.id).padStart(3)+' '+String(t.name||'').padEnd(25)+' pid='+t.pid+'  ['+w+']')})}catch(e){console.log('error: '+e.message+' — is the Claws extension running?')};s.destroy()}});
-s.on('error',e=>{console.log('error: '+e.message+' — is the Claws extension running?');s.destroy()});
-setTimeout(()=>{console.log('error: timeout');s.destroy()},5000);
-" 2>/dev/null || echo "error: node not available"
+  CLAWS_SOCK="${CLAWS_SOCKET:-.claws/claws.sock}" node -e '
+const net = require("net");
+const s = net.createConnection(process.env.CLAWS_SOCK);
+s.on("connect", () => s.write(JSON.stringify({ id: 1, cmd: "list" }) + "\n"));
+let b = "";
+s.on("data", (d) => {
+  b += d;
+  if (b.includes("\n")) {
+    try {
+      const r = JSON.parse(b.split("\n")[0]);
+      (r.terminals || []).forEach((t) => {
+        const w = t.logPath ? "WRAPPED" : "       ";
+        const a = t.active ? "*" : " ";
+        console.log(a + " " + String(t.id).padStart(3) + " " +
+          String(t.name || "").padEnd(25) + " pid=" + t.pid + "  [" + w + "]");
+      });
+    } catch (e) {
+      console.log("error: " + e.message + " — is the Claws extension running?");
+    }
+    s.destroy();
+  }
+});
+s.on("error", (e) => { console.log("error: " + e.message + " — is the Claws extension running?"); s.destroy(); });
+setTimeout(() => { console.log("error: timeout"); s.destroy(); }, 5000);
+' 2>/dev/null || echo "error: node not available"
 }
 
 claws-new() {
-  local name="${1:-claws}"
-  local sock="${CLAWS_SOCKET:-.claws/claws.sock}"
-  node -e "
-const net=require('net');
-const s=net.createConnection('$sock');
-s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'create',name:'$name',wrapped:true})+'\n'));
-let b='';
-s.on('data',d=>{b+=d;if(b.includes('\n')){try{const d2=JSON.parse(b.split('\n')[0]);if(d2.ok){console.log('created terminal '+d2.id+' — log: '+(d2.logPath||''))}else{console.log('error: '+d2.error)}}catch(e){console.log('error: '+e.message)};s.destroy()}});
-s.on('error',e=>{console.log('error: '+e.message);s.destroy()});
-setTimeout(()=>{console.log('error: timeout');s.destroy()},5000);
-" 2>/dev/null || echo "error: node not available"
+  CLAWS_SOCK="${CLAWS_SOCKET:-.claws/claws.sock}" \
+  CLAWS_NAME="${1:-claws}" \
+  node -e '
+const net = require("net");
+const s = net.createConnection(process.env.CLAWS_SOCK);
+s.on("connect", () => s.write(JSON.stringify({
+  id: 1, cmd: "create", name: process.env.CLAWS_NAME, wrapped: true,
+}) + "\n"));
+let b = "";
+s.on("data", (d) => {
+  b += d;
+  if (b.includes("\n")) {
+    try {
+      const r = JSON.parse(b.split("\n")[0]);
+      if (r.ok) console.log("created terminal " + r.id + " — log: " + (r.logPath || ""));
+      else console.log("error: " + r.error);
+    } catch (e) { console.log("error: " + e.message); }
+    s.destroy();
+  }
+});
+s.on("error", (e) => { console.log("error: " + e.message); s.destroy(); });
+setTimeout(() => { console.log("error: timeout"); s.destroy(); }, 5000);
+' 2>/dev/null || echo "error: node not available"
 }
 
 claws-run() {
@@ -106,27 +137,57 @@ claws-run() {
   fi
   local id="$1"; shift
   local cmd="$*"
-  local sock="${CLAWS_SOCKET:-.claws/claws.sock}"
-  # Write command to temp file to avoid shell injection via $cmd interpolation
-  local tmpf="/tmp/claws-cmd-$$.txt"
+  # Command goes via tempfile so it is never on a command line; id and
+  # sock go via env so they can never be interpreted as JS.
+  local tmpf
+  # Portable mktemp: pass an explicit template path so both BSD (macOS) and
+  # GNU (Linux) substitute the X's. `-t prefix` differs between the two.
+  tmpf="$(mktemp "${TMPDIR:-/tmp}/claws-cmd.XXXXXX")" || return 1
   printf '%s' "$cmd" > "$tmpf"
-  node -e "
-const net=require('net'),fs=require('fs'),path=require('path'),crypto=require('crypto');
-const sockPath='$sock',termId='$id',cmdFile='$tmpf';
-const cmd=fs.readFileSync(cmdFile,'utf8');
-try{fs.unlinkSync(cmdFile)}catch(e){}
-const s=net.createConnection(sockPath);
-const eid=crypto.randomBytes(4).toString('hex');
-const base='/tmp/claws-exec';
-try{fs.mkdirSync(base,{recursive:true})}catch(e){}
-const outF=path.join(base,eid+'.out'),doneF=path.join(base,eid+'.done');
-const wrapper='{ '+cmd+'; } > '+outF+' 2>&1; echo \$? > '+doneF;
-s.on('connect',()=>{s.write(JSON.stringify({id:1,cmd:'send',id:termId,text:wrapper})+'\n')});
-let b='';
-s.on('data',d=>{b+=d;if(b.includes('\n')){poll()}});
-function poll(){const deadline=Date.now()+180000;const iv=setInterval(()=>{try{if(fs.existsSync(doneF)){clearInterval(iv);console.log('exit '+fs.readFileSync(doneF,'utf8').trim());try{console.log(fs.readFileSync(outF,'utf8'))}catch(e){};try{fs.unlinkSync(outF)}catch(e){};try{fs.unlinkSync(doneF)}catch(e){};s.destroy()}}catch(e){}if(Date.now()>deadline){clearInterval(iv);console.log('timeout');s.destroy()}},200)}
-s.on('error',e=>{console.log('error: '+e.message);s.destroy()});
-" 2>/dev/null || echo "error: node not available"
+  CLAWS_SOCK="${CLAWS_SOCKET:-.claws/claws.sock}" \
+  CLAWS_TERM_ID="$id" \
+  CLAWS_CMD_FILE="$tmpf" \
+  node -e '
+const net = require("net"), fs = require("fs"), path = require("path"), crypto = require("crypto");
+const sockPath = process.env.CLAWS_SOCK;
+const termId   = process.env.CLAWS_TERM_ID;
+const cmdFile  = process.env.CLAWS_CMD_FILE;
+const cmd = fs.readFileSync(cmdFile, "utf8");
+try { fs.unlinkSync(cmdFile); } catch (e) {}
+const eid = crypto.randomBytes(4).toString("hex");
+const base = path.join(require("os").tmpdir(), "claws-exec");
+try { fs.mkdirSync(base, { recursive: true }); } catch (e) {}
+const outF  = path.join(base, eid + ".out");
+const doneF = path.join(base, eid + ".done");
+const wrapper = "{ " + cmd + "; } > " + outF + " 2>&1; echo $? > " + doneF;
+const s = net.createConnection(sockPath);
+s.on("connect", () => s.write(JSON.stringify({
+  id: termId, cmd: "send", text: wrapper,
+}) + "\n"));
+let b = "";
+s.on("data", (d) => { b += d; if (b.includes("\n")) poll(); });
+function poll() {
+  const deadline = Date.now() + 180000;
+  const iv = setInterval(() => {
+    try {
+      if (fs.existsSync(doneF)) {
+        clearInterval(iv);
+        console.log("exit " + fs.readFileSync(doneF, "utf8").trim());
+        try { console.log(fs.readFileSync(outF, "utf8")); } catch (e) {}
+        try { fs.unlinkSync(outF); } catch (e) {}
+        try { fs.unlinkSync(doneF); } catch (e) {}
+        s.destroy();
+      }
+    } catch (e) {}
+    if (Date.now() > deadline) {
+      clearInterval(iv);
+      console.log("timeout");
+      s.destroy();
+    }
+  }, 200);
+}
+s.on("error", (e) => { console.log("error: " + e.message); s.destroy(); });
+' 2>/dev/null || echo "error: node not available"
 }
 
 claws-log() {
@@ -136,14 +197,35 @@ claws-log() {
     echo "usage: claws-log <terminal-id> [lines]"
     return 1
   fi
-  local sock="${CLAWS_SOCKET:-.claws/claws.sock}"
-  node -e "
-const net=require('net');
-const s=net.createConnection('$sock');
-s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'readLog',id:'$id',strip:true})+'\n'));
-let b='';
-s.on('data',d=>{b+=d;if(b.includes('\n')){try{const d2=JSON.parse(b.split('\n')[0]);if(d2.ok){const lines=(d2.bytes||'').split('\n');lines.slice(-$lines).forEach(l=>console.log(l));console.log('\n['+(d2.totalSize||0)+' bytes total]')}else{console.log('error: '+d2.error)}}catch(e){console.log('error: '+e.message)};s.destroy()}});
-s.on('error',e=>{console.log('error: '+e.message);s.destroy()});
-setTimeout(()=>{console.log('error: timeout');s.destroy()},10000);
-" 2>/dev/null || echo "error: node not available"
+  CLAWS_SOCK="${CLAWS_SOCKET:-.claws/claws.sock}" \
+  CLAWS_TERM_ID="$id" \
+  CLAWS_LINES="$lines" \
+  node -e '
+const net = require("net");
+// Coerce CLAWS_LINES to a positive integer; never trust the env var as code.
+const linesN = Math.max(1, parseInt(process.env.CLAWS_LINES, 10) || 30);
+const s = net.createConnection(process.env.CLAWS_SOCK);
+s.on("connect", () => s.write(JSON.stringify({
+  id: process.env.CLAWS_TERM_ID, cmd: "readLog", strip: true,
+}) + "\n"));
+let b = "";
+s.on("data", (d) => {
+  b += d;
+  if (b.includes("\n")) {
+    try {
+      const r = JSON.parse(b.split("\n")[0]);
+      if (r.ok) {
+        const arr = (r.bytes || "").split("\n");
+        arr.slice(-linesN).forEach((l) => console.log(l));
+        console.log("\n[" + (r.totalSize || 0) + " bytes total]");
+      } else {
+        console.log("error: " + r.error);
+      }
+    } catch (e) { console.log("error: " + e.message); }
+    s.destroy();
+  }
+});
+s.on("error", (e) => { console.log("error: " + e.message); s.destroy(); });
+setTimeout(() => { console.log("error: timeout"); s.destroy(); }, 10000);
+' 2>/dev/null || echo "error: node not available"
 }

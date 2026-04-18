@@ -191,6 +191,20 @@ async function handle(req, extensionPath) {
     const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const wantWrapped = req.wrapped === true && !!wsRoot;
 
+    // Wrapped terminals depend on script(1), a POSIX bash utility. On Windows
+    // there is no equivalent; silently opening an unwrapped shell would make
+    // every later `read_log` fail opaquely. Refuse explicitly until v0.4
+    // ships native Pseudoterminal + ConPTY support.
+    if (wantWrapped && process.platform === 'win32') {
+      return {
+        ok: false,
+        error:
+          'wrapped=true is not supported on Windows yet — script(1) is POSIX-only. ' +
+          'Native Pseudoterminal/ConPTY support ships in v0.4. ' +
+          'Workaround: use wrapped=false; output capture works via claws_exec on any platform.',
+      };
+    }
+
     const reservedId = String(nextTerminalId++);
     let logPath = null;
     const options = {
@@ -346,16 +360,74 @@ async function handle(req, extensionPath) {
   return { ok: false, error: `unknown cmd: ${cmd}` };
 }
 
-function startServer(context) {
+// Probe an existing socket file. Returns true if something responds (i.e.
+// another VS Code window owns it); false if the socket is stale/refused.
+function probeSocket(sockPath, timeoutMs) {
+  return new Promise((resolve) => {
+    const sock = net.createConnection(sockPath);
+    let settled = false;
+    const finish = (alive) => {
+      if (settled) return;
+      settled = true;
+      try { sock.destroy(); } catch {}
+      resolve(alive);
+    };
+    sock.on('connect', () => {
+      sock.write(JSON.stringify({ id: 0, cmd: 'list' }) + '\n');
+    });
+    sock.on('data', () => finish(true));
+    sock.on('error', () => finish(false));
+    setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
+async function startServer(context) {
   const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!wsRoot) {
     outputChannel.appendLine('[claws] no workspace folder; bridge disabled');
     return;
   }
   const socketRel = getConfig('socketPath', DEFAULT_SOCKET_REL);
-  socketPath = path.join(wsRoot, socketRel);
-  fs.mkdirSync(path.dirname(socketPath), { recursive: true });
-  try { fs.unlinkSync(socketPath); } catch {}
+  // Use a local until we've actually claimed ownership. Assigning the
+  // module-level `socketPath` too early would cause our dispose() / deactivate()
+  // to unlink another window's socket if we later refuse to start.
+  const candidatePath = path.join(wsRoot, socketRel);
+  const clawsDir = path.dirname(candidatePath);
+  fs.mkdirSync(clawsDir, { recursive: true });
+
+  // Privacy: pty logs and the socket live here. They contain typed passwords,
+  // tokens in error messages, and full command history. Auto-write a
+  // .gitignore so a fresh `git add .` never leaks them. Idempotent.
+  const gitignorePath = path.join(clawsDir, '.gitignore');
+  if (!fs.existsSync(gitignorePath)) {
+    try {
+      fs.writeFileSync(gitignorePath, '*\n!.gitignore\n');
+      outputChannel.appendLine(`[claws] wrote ${gitignorePath} (privacy: prevents committing pty logs)`);
+    } catch (err) {
+      outputChannel.appendLine(`[claws] could not write .gitignore: ${err.message}`);
+    }
+  }
+
+  // Workspace collision detection: if a socket already exists at this path,
+  // probe it before unlinking. If another VS Code window is alive on this
+  // workspace, do NOT clobber its socket — refuse to start, and crucially do
+  // NOT set the module-level `socketPath` (otherwise our cleanup would later
+  // unlink the other window's socket). Only unlink if genuinely stale.
+  if (fs.existsSync(candidatePath)) {
+    const probeOk = await probeSocket(candidatePath, 500);
+    if (probeOk) {
+      const msg = `Another VS Code window already owns this workspace's Claws socket (${candidatePath}). ` +
+        `Close the other window, or open a different workspace, then reload this one.`;
+      outputChannel.appendLine(`[claws] REFUSE: ${msg}`);
+      vscode.window.showErrorMessage(`Claws: ${msg}`);
+      return;
+    }
+    outputChannel.appendLine(`[claws] removing stale socket at ${candidatePath}`);
+    try { fs.unlinkSync(candidatePath); } catch {}
+  }
+
+  // Take ownership now that we're past the collision check.
+  socketPath = candidatePath;
 
   const extPath = context.extensionPath;
 
@@ -400,7 +472,10 @@ function activate(context) {
   outputChannel.appendLine('[claws] activating');
 
   attachShellIntegrationListeners(context);
-  startServer(context);
+  // startServer is async (probes any pre-existing socket); fire-and-log.
+  startServer(context).catch((err) => {
+    outputChannel.appendLine(`[claws] startServer failed: ${err && err.message || err}`);
+  });
 
   for (const t of vscode.window.terminals) idFor(t);
 
@@ -425,8 +500,11 @@ function activate(context) {
     }),
   );
 
+  // Wrapped terminal profile is only registered on POSIX. On Windows the
+  // dropdown entry would silently open a non-wrapped shell — see the same
+  // refusal in the `create` command handler. Hide it entirely instead.
   const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (wsRoot) {
+  if (wsRoot && process.platform !== 'win32') {
     context.subscriptions.push(
       vscode.window.registerTerminalProfileProvider('claws.wrappedTerminal', {
         provideTerminalProfile() {
@@ -450,6 +528,11 @@ function activate(context) {
           });
         },
       }),
+    );
+  } else if (wsRoot && process.platform === 'win32') {
+    outputChannel.appendLine(
+      '[claws] Windows detected — wrapped terminal profile disabled. ' +
+      'Use unwrapped terminals; native Pseudoterminal/ConPTY ships in v0.4.',
     );
   }
 
