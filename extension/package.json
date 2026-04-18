@@ -128,6 +128,16 @@
           "default": 1048576,
           "description": "Maximum per-terminal output captured in the in-memory ring buffer for wrapped Pseudoterminal terminals (1 MB default)."
         },
+        "claws.execTimeoutMs": {
+          "type": "number",
+          "default": 180000,
+          "description": "Default timeout for an `exec` command before the server rejects with timeout (milliseconds, 180s default). Individual requests may override via `timeoutMs` in the request payload."
+        },
+        "claws.pollLimit": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum number of history events returned by a single `poll` request. Responses exceeding this are truncated to the most-recent `limit` entries and include `truncated: true`."
+        },
         "claws.enableWebSocket": {
           "type": "boolean",
           "default": false,

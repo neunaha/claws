@@ -22,15 +22,28 @@ export interface CreateOptions {
   preserveFocus?: boolean;
 }
 
+// If VS Code never calls our Pseudoterminal.open() hook within this window
+// after a programmatic createWrapped, we treat the ClawsPty as orphaned and
+// dispose it. Covers the pathological case where the extension host crashes
+// or VS Code silently drops the terminal spec.
+const UNOPENED_PTY_TIMEOUT_MS = 60_000;
+// Interval at which we scan for stale un-opened PTYs. 10s is frequent enough
+// that cleanup feels responsive but infrequent enough that it's invisible
+// in perf traces.
+const UNOPENED_PTY_SCAN_INTERVAL_MS = 10_000;
+
 export class TerminalManager {
   private readonly records = new Map<string, TerminalRecord>();
   private readonly byTerminal = new Map<vscode.Terminal, string>();
   private nextId = 1;
+  private unopenedScanTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly captureStore: CaptureStore,
     private readonly logger: (msg: string) => void,
-  ) {}
+  ) {
+    this.startUnopenedScan();
+  }
 
   adoptExisting(terminals: readonly vscode.Terminal[]): void {
     for (const t of terminals) this.idFor(t);
@@ -60,9 +73,14 @@ export class TerminalManager {
     return this.records.get(String(id)) ?? null;
   }
 
+  /**
+   * Describe a terminal WITHOUT mutating state. If the terminal has never
+   * been adopted by the manager (no entry in byTerminal), we return a
+   * minimal descriptor with `status: 'unknown'` and no stable id. Adoption
+   * happens elsewhere — typically in the `onDidOpenTerminal` event handler.
+   */
   async describe(terminal: vscode.Terminal): Promise<TerminalDescriptor> {
-    const id = this.idFor(terminal);
-    const rec = this.records.get(id);
+    const existingId = this.byTerminal.get(terminal);
     let pid: number | null = null;
     try {
       const p = await terminal.processId;
@@ -70,14 +88,28 @@ export class TerminalManager {
     } catch {
       pid = null;
     }
+    if (!existingId) {
+      return {
+        id: '',
+        name: terminal.name,
+        pid,
+        hasShellIntegration: !!terminal.shellIntegration,
+        active: vscode.window.activeTerminal === terminal,
+        logPath: null,
+        wrapped: false,
+        status: 'unknown',
+      };
+    }
+    const rec = this.records.get(existingId);
     return {
-      id,
+      id: existingId,
       name: terminal.name,
       pid,
       hasShellIntegration: !!terminal.shellIntegration,
       active: vscode.window.activeTerminal === terminal,
       logPath: rec?.logPath ?? null,
       wrapped: rec?.wrapped ?? false,
+      status: 'adopted',
     };
   }
 
@@ -172,5 +204,40 @@ export class TerminalManager {
       logPath: null,
       name: terminal.name,
     });
+  }
+
+  /**
+   * Tear down internal timers and dispose any tracked ClawsPty instances.
+   * Call this during extension deactivation.
+   */
+  dispose(): void {
+    if (this.unopenedScanTimer) {
+      clearInterval(this.unopenedScanTimer);
+      this.unopenedScanTimer = null;
+    }
+  }
+
+  private startUnopenedScan(): void {
+    // setInterval is `unref`ed so it never holds the event loop open on its
+    // own — matters for unit-test processes that shouldn't hang on exit.
+    const timer = setInterval(() => this.scanUnopenedPtys(), UNOPENED_PTY_SCAN_INTERVAL_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+    this.unopenedScanTimer = timer;
+  }
+
+  private scanUnopenedPtys(): void {
+    for (const [id, rec] of this.records) {
+      if (!rec.pty) continue;
+      if (rec.pty.hasOpened()) continue;
+      if (rec.pty.ageMs() < UNOPENED_PTY_TIMEOUT_MS) continue;
+      this.logger(
+        `[terminal-manager] pty id=${id} never opened after ${rec.pty.ageMs()}ms — disposing orphan`,
+      );
+      try { rec.pty.close(); } catch { /* ignore */ }
+      try { rec.terminal.dispose(); } catch { /* ignore */ }
+      this.byTerminal.delete(rec.terminal);
+      this.records.delete(id);
+      this.captureStore.clear(id);
+    }
   }
 }

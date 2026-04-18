@@ -1,6 +1,22 @@
+// Claws wire protocol — v1.
+//
+// Requests and responses are newline-delimited JSON frames. Clients MAY
+// include `protocol: "claws/1"` on any request; if the server sees a
+// different protocol tag it will reject with `ok:false, error: "incompatible
+// protocol version"`. Absent = treated as claws/1 (current).
+//
+// Every response includes `protocol: "claws/1"` and `rid` (request id) —
+// `id` is preserved too for legacy clients, but `rid` is always the request
+// id regardless of whether a response field shadows it (e.g. `create`
+// returns a terminal `id`).
+
+export const PROTOCOL_VERSION = 'claws/1';
+
 export interface BaseRequest {
   id?: number | string;
   cmd: string;
+  /** Optional client-declared protocol tag. Must be 'claws/1' or absent. */
+  protocol?: string;
 }
 
 export interface ListRequest extends BaseRequest { cmd: 'list'; }
@@ -22,6 +38,24 @@ export interface ShowRequest extends BaseRequest {
   preserveFocus?: boolean;
 }
 
+/**
+ * `send` semantics differ slightly between wrapped and unwrapped terminals
+ * because VS Code exposes two distinct APIs:
+ *
+ *   - UNWRAPPED → `Terminal.sendText(text, withNewline)`. VS Code owns the
+ *     input decode path; `paste` bracketing is best-effort (sent as literal
+ *     bytes) and newline is ALWAYS `\n` regardless of platform. Multi-line
+ *     strings may be fragmented if the shell lacks bracketed-paste support.
+ *
+ *   - WRAPPED → `Pseudoterminal.handleInput(data)` via ClawsPty.writeInjected.
+ *     We fully control the byte stream: bracketed paste (`\x1b[200~…\x1b[201~`)
+ *     is injected verbatim, and newline is sent as `\r` to match tty input
+ *     conventions (terminals convert it to \n through icrnl). This path is
+ *     what you want for sending prompts into TUI sessions like Claude Code.
+ *
+ * The server's `send` response includes `mode: 'wrapped' | 'unwrapped'` so
+ * clients can reason about which path they got.
+ */
 export interface SendRequest extends BaseRequest {
   cmd: 'send';
   id: string | number;
@@ -49,6 +83,8 @@ export interface ReadRequest extends BaseRequest {
 export interface PollRequest extends BaseRequest {
   cmd: 'poll';
   since?: number;
+  /** Optional client-requested cap. Server enforces its own cap via config. */
+  limit?: number;
 }
 
 export interface CloseRequest extends BaseRequest {
@@ -84,6 +120,8 @@ export interface TerminalDescriptor {
   active: boolean;
   logPath: string | null;
   wrapped: boolean;
+  /** 'unknown' is emitted for terminals the manager has never adopted. */
+  status?: 'adopted' | 'unknown';
 }
 
 export interface HistoryEvent {
@@ -101,5 +139,7 @@ export interface ClawsResponse {
   id?: number | string;
   ok: boolean;
   error?: string;
+  /** Always 'claws/1' on a successful server response. */
+  protocol?: string;
   [key: string]: unknown;
 }

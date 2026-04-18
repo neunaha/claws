@@ -71,7 +71,8 @@ esbuild.buildSync({
   logLevel: 'silent',
 });
 
-const { ClawsPty } = require(OUT);
+const ptyModule = require(OUT);
+const { ClawsPty, sanitizeEnv, defaultShell, defaultShellArgs } = ptyModule;
 
 // Capture-store is bundled inline so we build a small wrapper instance by
 // compiling capture-store separately — same approach as capture-store-trim.
@@ -113,6 +114,62 @@ check('mode is "none" before open()', () => {
   if (pty.mode !== 'none') throw new Error(`mode=${pty.mode}`);
 });
 
+check('hasOpened() is false before open()', () => {
+  if (typeof pty.hasOpened !== 'function') throw new Error('hasOpened() missing');
+  if (pty.hasOpened()) throw new Error('hasOpened() should be false before open()');
+  if (typeof pty.ageMs !== 'function') throw new Error('ageMs() missing');
+  if (pty.ageMs() < 0) throw new Error(`ageMs=${pty.ageMs()}`);
+});
+
+check('sanitizeEnv drops VSCODE_/ELECTRON_/npm_ prefixes but keeps PATH/HOME/TERM', () => {
+  const base = {
+    PATH: '/usr/bin',
+    HOME: '/home/u',
+    USER: 'u',
+    LANG: 'en_US.UTF-8',
+    TERM: 'xterm',
+    VSCODE_PID: '123',
+    VSCODE_IPC_HOOK: '/tmp/ipc',
+    ELECTRON_RUN_AS_NODE: '1',
+    CHROME_DESKTOP: 'Code.desktop',
+    npm_lifecycle_event: 'test',
+    npm_package_name: 'claws',
+    INIT_CWD: '/tmp',
+    EDITOR: 'vim',
+  };
+  const out = sanitizeEnv(base);
+  if (out.PATH !== '/usr/bin') throw new Error('PATH dropped');
+  if (out.HOME !== '/home/u') throw new Error('HOME dropped');
+  if (out.TERM !== 'xterm') throw new Error('TERM dropped');
+  if (out.EDITOR !== 'vim') throw new Error('EDITOR dropped');
+  if (out.USER !== 'u') throw new Error('USER dropped');
+  if ('VSCODE_PID' in out) throw new Error('VSCODE_PID kept');
+  if ('VSCODE_IPC_HOOK' in out) throw new Error('VSCODE_IPC_HOOK kept');
+  if ('ELECTRON_RUN_AS_NODE' in out) throw new Error('ELECTRON_RUN_AS_NODE kept');
+  if ('CHROME_DESKTOP' in out) throw new Error('CHROME_DESKTOP kept');
+  if ('npm_lifecycle_event' in out) throw new Error('npm_lifecycle_event kept');
+  if ('INIT_CWD' in out) throw new Error('INIT_CWD kept');
+});
+
+check('sanitizeEnv overrides take precedence', () => {
+  const out = sanitizeEnv({ TERM: 'xterm', PATH: '/a' }, { TERM: 'xterm-256color' });
+  if (out.TERM !== 'xterm-256color') throw new Error(`TERM=${out.TERM}`);
+  if (out.PATH !== '/a') throw new Error(`PATH=${out.PATH}`);
+});
+
+check('defaultShell returns a truthy path', () => {
+  const s = defaultShell();
+  if (typeof s !== 'string' || s.length === 0) throw new Error(`defaultShell=${JSON.stringify(s)}`);
+});
+
+check('defaultShellArgs returns at least -i for zsh/bash/sh', () => {
+  for (const shell of ['/bin/zsh', '/bin/bash', '/bin/sh']) {
+    const args = defaultShellArgs(shell);
+    if (!Array.isArray(args)) throw new Error(`not array: ${shell}`);
+    if (!args.includes('-i')) throw new Error(`${shell}: no -i in ${JSON.stringify(args)}`);
+  }
+});
+
 (async () => {
   let openThrew = null;
   try {
@@ -129,6 +186,10 @@ check('mode is "none" before open()', () => {
     if (pty.mode !== 'pty' && pty.mode !== 'pipe') {
       throw new Error(`mode=${pty.mode}, logs=${JSON.stringify(logs)}`);
     }
+  });
+
+  check('hasOpened() is true after open()', () => {
+    if (!pty.hasOpened()) throw new Error('hasOpened() still false after open()');
   });
 
   const modeAfterOpen = pty.mode;

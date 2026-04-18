@@ -87,6 +87,86 @@ check('clear() drops terminal state', () => {
   if (slice.totalSize !== 0) throw new Error(`totalSize after clear=${slice.totalSize}`);
 });
 
+// 5. Single-growable-buffer correctness: many small appends then a read at
+//    an arbitrary offset should return exactly the right slice and handle
+//    the grow-and-copy path.
+check('many small appends yield contiguous bytes (growable-buffer path)', () => {
+  // Cap is larger than the cumulative total so no trimming occurs and we
+  // can verify exact byte identity end-to-end.
+  const store = new CaptureStore(8192);
+  let expected = '';
+  for (let i = 0; i < 200; i++) {
+    const piece = `chunk${i}|`;
+    store.append('t1', piece);
+    expected += piece;
+  }
+  const slice = store.read('t1', 0, expected.length, false);
+  if (slice.bytes !== expected) {
+    throw new Error(`mismatch (len actual=${slice.bytes.length}, expected=${expected.length})`);
+  }
+  if (slice.totalSize !== expected.length) throw new Error(`totalSize=${slice.totalSize}`);
+});
+
+// 6. Read from a non-zero offset inside the live window returns the exact
+//    tail bytes — exercises the subarray() path of the rewritten store.
+check('read from arbitrary offset returns correct tail', () => {
+  const store = new CaptureStore(1024);
+  store.append('t1', '0123456789');
+  const slice = store.read('t1', 4, 100, false);
+  if (slice.bytes !== '456789') throw new Error(`bytes=${JSON.stringify(slice.bytes)}`);
+  if (slice.offset !== 4) throw new Error(`offset=${slice.offset}`);
+  if (slice.nextOffset !== 10) throw new Error(`nextOffset=${slice.nextOffset}`);
+});
+
+// 7. Overflow with a LARGE trim (one append exceeds cap by a lot) to ensure
+//    the trim shifts the live window correctly and droppedBefore is accurate.
+check('large-chunk overflow trims to cap and advances offset', () => {
+  const store = new CaptureStore(8);
+  store.append('t1', 'abcdefghijklmnop'); // 16 bytes
+  const slice = store.read('t1', undefined, 100, false);
+  if (slice.bytes.length !== 8) throw new Error(`present=${slice.bytes.length}, expected 8`);
+  if (slice.totalSize !== 16) throw new Error(`totalSize=${slice.totalSize}`);
+  if (slice.offset !== 8) throw new Error(`offset=${slice.offset}`);
+  if (slice.bytes !== 'ijklmnop') throw new Error(`bytes=${JSON.stringify(slice.bytes)}`);
+});
+
+// 8. ANSI strip covers CSI, OSC (title), DCS, and single-char ESC. These
+//    are the patterns we see in real wrapped-terminal captures (claude,
+//    iTerm hyperlinks, vim, htop).
+check('stripAnsi removes CSI, OSC, DCS, and single-ESC sequences', () => {
+  // CSI + SGR + cursor control
+  const input1 = '\x1b[2J\x1b[H\x1b[38;5;123mhello\x1b[0m\x1b[?25h';
+  const store = new CaptureStore(4096);
+  store.append('s1', input1);
+  const s1 = store.read('s1', 0, 4096, true);
+  if (s1.bytes !== 'hello') throw new Error(`csi/sgr: ${JSON.stringify(s1.bytes)}`);
+
+  // OSC with BEL terminator (common form)
+  store.append('s2', '\x1b]0;my terminal title\x07text');
+  const s2 = store.read('s2', 0, 4096, true);
+  if (s2.bytes !== 'text') throw new Error(`osc bel: ${JSON.stringify(s2.bytes)}`);
+
+  // OSC with ST terminator (ESC \\)
+  store.append('s3', '\x1b]0;title\x1b\\after');
+  const s3 = store.read('s3', 0, 4096, true);
+  if (s3.bytes !== 'after') throw new Error(`osc st: ${JSON.stringify(s3.bytes)}`);
+
+  // DCS sequence
+  store.append('s4', '\x1bP1;2;3|content\x1b\\tail');
+  const s4 = store.read('s4', 0, 4096, true);
+  if (s4.bytes !== 'tail') throw new Error(`dcs: ${JSON.stringify(s4.bytes)}`);
+
+  // Single-char ESC (charset select)
+  store.append('s5', 'pre\x1b(Bmid\x1b=end');
+  const s5 = store.read('s5', 0, 4096, true);
+  if (s5.bytes !== 'premidend') throw new Error(`single-esc: ${JSON.stringify(s5.bytes)}`);
+
+  // Plaintext with \n, \r, \t is preserved
+  store.append('s6', 'line1\nline2\tcol\r\n');
+  const s6 = store.read('s6', 0, 4096, true);
+  if (s6.bytes !== 'line1\nline2\tcol\r\n') throw new Error(`plain: ${JSON.stringify(s6.bytes)}`);
+});
+
 for (const a of assertions) {
   console.log(`  ${a.ok ? '✓' : '✗'} ${a.name}${a.ok ? '' : ' — ' + a.err}`);
 }
