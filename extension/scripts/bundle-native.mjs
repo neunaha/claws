@@ -119,12 +119,49 @@ function detectElectronVersion() {
   return { version: FALLBACK_ELECTRON, source: 'fallback' };
 }
 
+// ─── Detect target architecture ──────────────────────────────────────────────
+function detectTargetArch() {
+  // Honour explicit override first.
+  const envArch = process.env.CLAWS_ELECTRON_ARCH;
+  if (envArch) {
+    log(`using CLAWS_ELECTRON_ARCH=${envArch} (env override)`);
+    return envArch;
+  }
+
+  const machineArch = process.arch; // 'arm64' or 'x64'
+
+  // Rosetta 2 detection: node reports 'x64' even on arm64 when running under
+  // Rosetta. Check the actual CPU via sysctl.
+  if (process.platform === 'darwin' && machineArch === 'x64') {
+    try {
+      const rosetta = execFileSync('sysctl', ['-n', 'sysctl.proc_translated'], { encoding: 'utf8' }).trim();
+      if (rosetta === '1') {
+        log('WARNING: Node.js is running under Rosetta 2 (x64 emulation on arm64 Mac)');
+        log('The pty.node binary will be built for x64. If your VS Code is native arm64,');
+        log('it will run in pipe-mode. Use CLAWS_ELECTRON_ARCH=arm64 to build for arm64.');
+      }
+    } catch { /* sysctl not available — not on macOS or too old */ }
+  }
+
+  log(`target arch: ${machineArch}`);
+  return machineArch;
+}
+
 // ─── Step 2: @electron/rebuild ───────────────────────────────────────────────
-function runElectronRebuild(electronVersion) {
-  log(`running @electron/rebuild --version ${electronVersion} --which node-pty --force`);
+function runElectronRebuild(electronVersion, targetArch) {
+  const cachePath = join(EXT_ROOT, '..', '.electron-rebuild-cache');
+  log(`running @electron/rebuild --version ${electronVersion} --arch ${targetArch} --which node-pty --force --useCache --cachePath ${cachePath}`);
   const result = spawnSync(
     'npx',
-    ['--yes', '@electron/rebuild', '--version', electronVersion, '--which', 'node-pty', '--force'],
+    [
+      '--yes', '@electron/rebuild',
+      '--version', electronVersion,
+      '--arch', targetArch,
+      '--which', 'node-pty',
+      '--force',
+      '--useCache',
+      '--cachePath', cachePath,
+    ],
     {
       cwd: EXT_ROOT,
       stdio: ['ignore', 'inherit', 'inherit'],
@@ -238,13 +275,13 @@ function copyRuntimeSlice() {
 }
 
 // ─── Step 5: metadata ────────────────────────────────────────────────────────
-function writeMetadata(electronVersion, electronSource, nodePtyVersion, totals) {
+function writeMetadata(electronVersion, electronSource, nodePtyVersion, totals, targetArch) {
   const metadata = {
     electronVersion,
     electronSource,
     nodePtyVersion,
     platform: process.platform,
-    arch: process.arch,
+    arch: targetArch,
     bundledAt: new Date().toISOString(),
     filesCopied: totals.files,
     bytesCopied: totals.bytes,
@@ -278,10 +315,11 @@ function main() {
 
   const { version: electronVersion, source: electronSource } = detectElectronVersion();
   log(`target Electron: ${electronVersion}`);
+  const targetArch = detectTargetArch();
 
   if (!SKIP_REBUILD) {
     try {
-      runElectronRebuild(electronVersion);
+      runElectronRebuild(electronVersion, targetArch);
     } catch (err) {
       fail(`@electron/rebuild invocation threw`, err);
     }
@@ -302,10 +340,10 @@ function main() {
     return;
   }
 
-  writeMetadata(electronVersion, electronSource, nodePtyVersion, totals);
+  writeMetadata(electronVersion, electronSource, nodePtyVersion, totals, targetArch);
 
   log('──── bundle summary ────');
-  log(`  target        : ${process.platform}-${process.arch}`);
+  log(`  target        : ${process.platform}-${targetArch}`);
   log(`  electron      : ${electronVersion}`);
   log(`  node-pty      : ${nodePtyVersion}`);
   log(`  destination   : ${relative(EXT_ROOT, NATIVE_DEST)}`);
