@@ -369,6 +369,18 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
       info "building extension bundle + rebuilding node-pty for current Electron"
     fi
 
+    # Network pre-check: @electron/rebuild fetches Electron headers from GitHub.
+    # Fail fast on air-gapped machines before a 3-minute build that will hang.
+    info "checking network connectivity for Electron headers fetch..."
+    if curl --silent --head --max-time 5 "https://github.com" >/dev/null 2>&1 \
+       || wget --spider --quiet --timeout=5 "https://github.com" >/dev/null 2>&1; then
+      info "network reachable — Electron headers fetch should succeed"
+    else
+      warn "network unreachable (GitHub) — @electron/rebuild may fail fetching Electron headers"
+      warn "If you are on an air-gapped machine, set CLAWS_ELECTRON_VERSION=<version> and ensure"
+      warn "headers are available at a local mirror, or use CLAWS_FORCE_REBUILD_NPTY=0 to skip."
+    fi
+
     # Run with visible output — the user needs to see @electron/rebuild
     # progress and any compile errors. --silent here hides the exact
     # diagnostic that tells them what to fix.
@@ -962,6 +974,25 @@ if [ -d "$HOME/.config/fish" ]; then
     echo "end"
   } > "$FISH_CONF" && ok "wrote fish conf (native fish, no bass required)" || warn "could not write fish config"
 fi
+
+# ── Nushell hook ─────────────────────────────────────────────────────────────
+# Nushell sources env.nu on startup. We append a CLAWS_DIR assignment if absent.
+_NU_ENV="$HOME/.config/nushell/env.nu"
+_NU_CONFIG="$HOME/.config/nushell/config.nu"
+if [ -f "$_NU_ENV" ] || [ -f "$_NU_CONFIG" ]; then
+  _NU_TARGET="${_NU_ENV:-$_NU_CONFIG}"
+  if ! grep -q "CLAWS_DIR" "$_NU_TARGET" 2>/dev/null; then
+    {
+      printf '\n# CLAWS terminal hook\n'
+      printf '$env.CLAWS_DIR = "%s"\n' "$INSTALL_DIR"
+      printf '$env.CLAWS_SOCKET = ".claws/claws.sock"\n'
+    } >> "$_NU_TARGET" && ok "wrote nushell env ($( basename "$_NU_TARGET" ))" \
+      || warn "could not write nushell config"
+  else
+    ok "nushell env already has CLAWS_DIR — skipped"
+  fi
+fi
+unset _NU_ENV _NU_CONFIG _NU_TARGET
 
 # ─── Step 8: Verify ────────────────────────────────────────────────────────
 step "Verifying"
