@@ -8,8 +8,21 @@
 if [[ $- == *i* ]] && [[ -z "${CLAWS_BANNER_SHOWN:-}" ]]; then
   export CLAWS_BANNER_SHOWN=1
 
-  # Detect if Claws socket is active
-  CLAWS_SOCK="${CLAWS_SOCKET:-.claws/claws.sock}"
+  # Detect if Claws socket is active.
+  # Walk up from $PWD — the extension creates the socket at
+  # <workspace-root>/.claws/claws.sock, not relative to $PWD.
+  CLAWS_SOCK="${CLAWS_SOCKET:-}"
+  if [ -z "$CLAWS_SOCK" ]; then
+    _walk="$PWD"
+    while [ "$_walk" != "/" ]; do
+      if [ -S "$_walk/.claws/claws.sock" ]; then
+        CLAWS_SOCK="$_walk/.claws/claws.sock"
+        break
+      fi
+      _walk="${_walk%/*}"
+    done
+    unset _walk
+  fi
   if [ -S "$CLAWS_SOCK" ] 2>/dev/null; then
     _CLAWS_STATUS="\033[32m● connected\033[0m"
     _CLAWS_TERMS=$(node -e "
@@ -72,8 +85,18 @@ fi
 # Shell commands — type these in any terminal
 # ═══════════════════════════════════════════════════════════════
 
+_claws_find_sock() {
+  if [ -n "${CLAWS_SOCKET:-}" ]; then echo "$CLAWS_SOCKET"; return; fi
+  local _w="$PWD"
+  while [ "$_w" != "/" ]; do
+    [ -S "$_w/.claws/claws.sock" ] && { echo "$_w/.claws/claws.sock"; return; }
+    _w="${_w%/*}"
+  done
+  echo ".claws/claws.sock"
+}
+
 claws-ls() {
-  local sock="${CLAWS_SOCKET:-.claws/claws.sock}"
+  local sock; sock="$(_claws_find_sock)"
   node -e "
 const net=require('net');
 const s=net.createConnection('$sock');
@@ -87,7 +110,7 @@ setTimeout(()=>{console.log('error: timeout');s.destroy()},5000);
 
 claws-new() {
   local name="${1:-claws}"
-  local sock="${CLAWS_SOCKET:-.claws/claws.sock}"
+  local sock; sock="$(_claws_find_sock)"
   node -e "
 const net=require('net');
 const s=net.createConnection('$sock');
@@ -106,7 +129,7 @@ claws-run() {
   fi
   local id="$1"; shift
   local cmd="$*"
-  local sock="${CLAWS_SOCKET:-.claws/claws.sock}"
+  local sock; sock="$(_claws_find_sock)"
   # Write command to temp file to avoid shell injection via $cmd interpolation
   local tmpf="/tmp/claws-cmd-$$.txt"
   printf '%s' "$cmd" > "$tmpf"
@@ -136,7 +159,7 @@ claws-log() {
     echo "usage: claws-log <terminal-id> [lines]"
     return 1
   fi
-  local sock="${CLAWS_SOCKET:-.claws/claws.sock}"
+  local sock; sock="$(_claws_find_sock)"
   node -e "
 const net=require('net');
 const s=net.createConnection('$sock');

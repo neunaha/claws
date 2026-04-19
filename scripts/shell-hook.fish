@@ -12,12 +12,26 @@ if set -q CLAWS_BANNER_SHOWN
 else
     set -gx CLAWS_BANNER_SHOWN 1
 
-    # Detect socket status
-    set -l sock (test -n "$CLAWS_SOCKET" && echo $CLAWS_SOCKET || echo ".claws/claws.sock")
+    # Detect socket status.
+    # Walk up from $PWD — the extension creates the socket at
+    # <workspace-root>/.claws/claws.sock, not relative to $PWD.
+    set -l sock ""
+    if test -n "$CLAWS_SOCKET"
+        set sock $CLAWS_SOCKET
+    else
+        set -l _walk (pwd)
+        while test "$_walk" != "/"
+            if test -S "$_walk/.claws/claws.sock"
+                set sock "$_walk/.claws/claws.sock"
+                break
+            end
+            set _walk (dirname $_walk)
+        end
+    end
     set -l claws_status ""
     set -l claws_terms "-"
 
-    if test -S $sock
+    if test -n "$sock"; and test -S $sock
         set claws_status "\033[32m● connected\033[0m"
         set claws_terms (node -e "
 const net=require('net');
@@ -72,8 +86,22 @@ end
 
 # ── Shell functions ─────────────────────────────────────────────────────────
 
+function _claws_find_sock
+    if test -n "$CLAWS_SOCKET"
+        echo $CLAWS_SOCKET; return
+    end
+    set -l _w (pwd)
+    while test "$_w" != "/"
+        if test -S "$_w/.claws/claws.sock"
+            echo "$_w/.claws/claws.sock"; return
+        end
+        set _w (dirname $_w)
+    end
+    echo ".claws/claws.sock"
+end
+
 function claws-ls
-    set -l sock (test -n "$CLAWS_SOCKET" && echo $CLAWS_SOCKET || echo ".claws/claws.sock")
+    set -l sock (_claws_find_sock)
     node -e "
 const net=require('net');
 const s=net.createConnection('$sock');
@@ -87,7 +115,7 @@ end
 
 function claws-new
     set -l name (test -n "$argv[1]" && echo $argv[1] || echo "claws")
-    set -l sock (test -n "$CLAWS_SOCKET" && echo $CLAWS_SOCKET || echo ".claws/claws.sock")
+    set -l sock (_claws_find_sock)
     node -e "
 const net=require('net');
 const s=net.createConnection('$sock');
@@ -101,7 +129,7 @@ end
 
 function claws-run
     set -l cmd (string join " " $argv)
-    set -l sock (test -n "$CLAWS_SOCKET" && echo $CLAWS_SOCKET || echo ".claws/claws.sock")
+    set -l sock (_claws_find_sock)
     node -e "
 const net=require('net');
 const s=net.createConnection('$sock');
@@ -115,7 +143,7 @@ end
 
 function claws-log
     set -l id $argv[1]
-    set -l sock (test -n "$CLAWS_SOCKET" && echo $CLAWS_SOCKET || echo ".claws/claws.sock")
+    set -l sock (_claws_find_sock)
     node -e "
 const net=require('net');
 const s=net.createConnection('$sock');
