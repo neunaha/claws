@@ -352,13 +352,13 @@ else
   exit 1
 fi
 
-# 2b. Read extension version from manifest so the symlink matches
-# EXPECTED_MIN_VERSION is pinned at script-release time. If the clone
-# reports an older version, we know the working tree is stale — that was
-# the v0.5.1 bug where users saw "v0.4.0 — installed" because their
-# ~/.claws-src/ hadn't caught up with main.
-EXPECTED_MIN_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.5.6')}" 2>/dev/null || echo "0.5.6")
-EXT_VERSION="$EXPECTED_MIN_VERSION"
+# 2b. Read extension version from manifest so the symlink matches.
+# EXPECTED_MIN_VERSION is hardcoded at script-release time. EXT_VERSION is
+# read from the clone at runtime. If the clone is behind EXPECTED_MIN_VERSION,
+# the working tree is stale and the installer aborts — that was the v0.5.1 bug
+# where users saw "v0.4.0 — installed" because their ~/.claws-src/ was stale.
+EXPECTED_MIN_VERSION="0.5.7"
+EXT_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.0.0')}" 2>/dev/null || echo "0.0.0")
 
 # Flag stale clones loudly so users don't silently run on an old version.
 if [ "$EXT_VERSION" != "$EXPECTED_MIN_VERSION" ]; then
