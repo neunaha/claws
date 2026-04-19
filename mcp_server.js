@@ -145,7 +145,7 @@ const TOOLS = [
       properties: {
         name: { type: 'string', description: 'Terminal display name' },
         cwd: { type: 'string', description: 'Working directory (absolute path)' },
-        wrapped: { type: 'boolean', description: 'Enable script(1) pty logging for full read-back. Always true for worker terminals.' },
+        wrapped: { type: 'boolean', description: 'Enable script(1) pty logging for full read-back. Defaults to true — all worker terminals should be wrapped for observability. Set false only for interactive UI terminals where logging is undesired.' },
       },
       required: ['name'],
     },
