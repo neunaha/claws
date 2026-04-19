@@ -55,6 +55,7 @@ trap 'ec=$?; if [ $ec -ne 0 ]; then printf "\n${C_RED}${C_BOLD}INSTALL FAILED${C
 # ─── Globals ────────────────────────────────────────────────────────────────
 REPO="https://github.com/neunaha/claws.git"
 INSTALL_DIR="${CLAWS_DIR:-$HOME/.claws-src}"
+CLAWS_REF="${CLAWS_REF:-main}"
 USER_PWD="$(pwd)"
 PLATFORM="$(uname -s)"
 case "$PLATFORM" in
@@ -104,7 +105,12 @@ echo "Checking dependencies..."
 
 # ── Required: git ──────────────────────────────────────────────────────────
 if command -v git &>/dev/null; then
-  ok "git ($(git --version | awk '{print $3}'))"
+  GIT_VERSION_STR="$(git --version | awk '{print $3}')"
+  GIT_MAJOR="$(echo "$GIT_VERSION_STR" | cut -d. -f1)"
+  if [ "${GIT_MAJOR:-0}" -lt 2 ] 2>/dev/null; then
+    die "git $GIT_VERSION_STR too old — Claws requires git 2+. Upgrade via your package manager."
+  fi
+  ok "git ($GIT_VERSION_STR)"
 else
   case "$PLATFORM" in
     Darwin) die "git not found — install with: xcode-select --install" ;;
@@ -219,16 +225,17 @@ echo ""
 # ─── Step 1: Clone or update ───────────────────────────────────────────────
 step "Fetching Claws source"
 if [ -d "$INSTALL_DIR/.git" ]; then
-  info "updating existing clone at $INSTALL_DIR"
+  info "updating existing clone at $INSTALL_DIR (ref: $CLAWS_REF)"
   PREV_SHA="$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo 'unknown')"
-  if ( cd "$INSTALL_DIR" && git fetch --quiet origin main 2>/dev/null \
-       && git reset --hard --quiet origin/main ); then
+  if ( cd "$INSTALL_DIR" && git fetch origin "$CLAWS_REF" 2>>"$CLAWS_LOG" \
+       && git reset --hard --quiet "origin/$CLAWS_REF" ); then
     NEW_SHA="$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo 'unknown')"
     if [ "$PREV_SHA" = "$NEW_SHA" ]; then
-      ok "already at origin/main (${NEW_SHA:0:7})"
+      ok "already at origin/$CLAWS_REF (${NEW_SHA:0:7})"
     else
       ok "updated ${PREV_SHA:0:7} → ${NEW_SHA:0:7}"
     fi
+    git -C "$INSTALL_DIR" fsck --no-dangling 2>/dev/null || warn "clone integrity check failed — consider: rm -rf $INSTALL_DIR && re-run installer"
   else
     bad "failed to update $INSTALL_DIR (network error or corrupted clone)."
     bad "Fix: rm -rf $INSTALL_DIR && re-run this installer."
@@ -237,9 +244,11 @@ if [ -d "$INSTALL_DIR/.git" ]; then
 elif [ -d "$INSTALL_DIR" ]; then
   die "$INSTALL_DIR exists but is not a git clone — remove it or set CLAWS_DIR to a different path"
 else
-  info "cloning $REPO → $INSTALL_DIR"
-  git clone --quiet "$REPO" "$INSTALL_DIR"
-  ok "cloned to $INSTALL_DIR"
+  info "cloning $REPO → $INSTALL_DIR (ref: $CLAWS_REF, shallow)"
+  git clone --depth 1 --branch "$CLAWS_REF" "$REPO" "$INSTALL_DIR" 2>>"$CLAWS_LOG" \
+    || git clone --depth 1 "$REPO" "$INSTALL_DIR" 2>>"$CLAWS_LOG"
+  ok "cloned to $INSTALL_DIR (${CLAWS_REF})"
+  git -C "$INSTALL_DIR" fsck --no-dangling 2>/dev/null || warn "clone integrity check failed — consider: rm -rf $INSTALL_DIR && re-run installer"
 fi
 
 # ─── Step 2: Build + symlink extension ─────────────────────────────────────
