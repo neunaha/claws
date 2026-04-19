@@ -670,6 +670,14 @@ cfg.mcpServers.claws = {
 fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
 " "$PROJECT_MCP"
     ok "wrote $PROJECT_MCP"
+    if ! node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
+      bad ".mcp.json written to $PROJECT_ROOT but is not valid JSON — MCP server will fail to load"
+      bad "Check $CLAWS_LOG for jq/cat errors above"
+    fi
+    if [ -f "$PROJECT_ROOT/.gitignore" ] && ! grep -q "^\.claws/" "$PROJECT_ROOT/.gitignore" 2>/dev/null; then
+      echo ".claws/" >> "$PROJECT_ROOT/.gitignore"
+      ok "added .claws/ to $PROJECT_ROOT/.gitignore"
+    fi
 
     # Write/merge .vscode/extensions.json so VS Code prompts anyone who opens
     # this project without Claws installed. Pins `neunaha.claws` as a
@@ -789,7 +797,11 @@ CLAWSCMD
 
   # CLAUDE.md injection (project scope only — never inside $HOME)
   if [ "$TARGET" != "$HOME" ]; then
-    node --no-deprecation "$INSTALL_DIR/scripts/inject-claude-md.js" "$TARGET" 2>&1 | sed 's/^/  /' || warn "CLAUDE.md injector failed"
+    if [ ! -f "$INSTALL_DIR/scripts/inject-claude-md.js" ] && [ ! -f "$INSTALL_DIR/.claws-bin/inject-claude-md.js" ]; then
+      warn "inject-claude-md.js not found — CLAUDE.md injection skipped. Clone may be incomplete."
+    else
+      node --no-deprecation "$INSTALL_DIR/scripts/inject-claude-md.js" "$TARGET" 2>&1 | sed 's/^/  /' || warn "CLAUDE.md injector failed"
+    fi
   fi
 
   ok "$LABEL: $cmd_count commands, rules, skills"
@@ -912,6 +924,18 @@ if [ "$CHECKS_FAIL" -eq 0 ]; then
   ok "$CHECKS_PASS checks passed"
 else
   warn "$CHECKS_PASS passed, $CHECKS_FAIL issue(s) — see above"
+fi
+
+# Verify shell hook is active in user's rc files
+_hook_verified=0
+for _rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+  if [ -f "$_rc" ] && grep -q "CLAWS terminal hook" "$_rc" 2>/dev/null; then
+    _hook_verified=1
+    break
+  fi
+done
+if [ "$_hook_verified" = "0" ]; then
+  warn "Shell hook not detected in any rc file — run: source $INSTALL_DIR/scripts/shell-hook.sh"
 fi
 
 # ─── End-of-install banner ─────────────────────────────────────────────────
