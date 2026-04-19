@@ -20,12 +20,16 @@ else
         set sock $CLAWS_SOCKET
     else
         set -l _walk (pwd)
-        while test "$_walk" != "/"
+        while test -n "$_walk"; and test "$_walk" != "/"
             if test -S "$_walk/.claws/claws.sock"
                 set sock "$_walk/.claws/claws.sock"
                 break
             end
-            set _walk (dirname $_walk)
+            set -l _parent (dirname $_walk)
+            if test "$_parent" = "$_walk"
+                break
+            end
+            set _walk $_parent
         end
     end
     set -l claws_status ""
@@ -91,11 +95,15 @@ function _claws_find_sock
         echo $CLAWS_SOCKET; return
     end
     set -l _w (pwd)
-    while test "$_w" != "/"
+    while test -n "$_w"; and test "$_w" != "/"
         if test -S "$_w/.claws/claws.sock"
             echo "$_w/.claws/claws.sock"; return
         end
-        set _w (dirname $_w)
+        set -l _p (dirname $_w)
+        if test "$_p" = "$_w"
+            break
+        end
+        set _w $_p
     end
     echo ".claws/claws.sock"
 end

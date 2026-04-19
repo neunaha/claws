@@ -14,7 +14,7 @@ if [[ $- == *i* ]] && [[ -z "${CLAWS_BANNER_SHOWN:-}" ]]; then
   CLAWS_SOCK="${CLAWS_SOCKET:-}"
   if [ -z "$CLAWS_SOCK" ]; then
     _walk="$PWD"
-    while [ "$_walk" != "/" ]; do
+    while [ -n "$_walk" ] && [ "$_walk" != "/" ]; do
       if [ -S "$_walk/.claws/claws.sock" ]; then
         CLAWS_SOCK="$_walk/.claws/claws.sock"
         break
@@ -88,7 +88,7 @@ fi
 _claws_find_sock() {
   if [ -n "${CLAWS_SOCKET:-}" ]; then echo "$CLAWS_SOCKET"; return; fi
   local _w="$PWD"
-  while [ "$_w" != "/" ]; do
+  while [ -n "$_w" ] && [ "$_w" != "/" ]; do
     [ -S "$_w/.claws/claws.sock" ] && { echo "$_w/.claws/claws.sock"; return; }
     _w="${_w%/*}"
   done
