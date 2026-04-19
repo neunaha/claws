@@ -2,6 +2,7 @@
 .vscode-test/**
 src/**
 test/**
+scripts/**
 out/**
 node_modules/**
 tsconfig.json
@@ -10,3 +11,4 @@ esbuild.mjs
 *.vsix
 .DS_Store
 docs/**
+!native/**

@@ -8,10 +8,20 @@ export interface CaptureSlice {
   truncated: boolean;
 }
 
+// Per-terminal bookkeeping. `buf` is a single growable Buffer whose first
+// `length` bytes are live; anything past `length` is uninitialised capacity.
+// `droppedBefore` counts bytes that have been trimmed off the front of the
+// stream but still contribute to the absolute byte offset exposed to callers.
+interface Entry {
+  buf: Buffer;
+  length: number;
+  droppedBefore: number;
+}
+
+const MIN_INITIAL_CAPACITY = 8 * 1024; // 8 KB — tiny writes stay cheap.
+
 export class CaptureStore {
-  private buffers = new Map<string, Buffer[]>();
-  private totals = new Map<string, number>();
-  private offsets = new Map<string, number>();
+  private entries = new Map<string, Entry>();
   private maxBytesPerTerminal: number;
 
   constructor(maxBytesPerTerminal: number) {
@@ -19,59 +29,82 @@ export class CaptureStore {
   }
 
   append(id: string, chunk: string | Buffer): void {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8');
-    if (!this.buffers.has(id)) {
-      this.buffers.set(id, []);
-      this.totals.set(id, 0);
-      this.offsets.set(id, 0);
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8');
+    let entry = this.entries.get(id);
+    if (!entry) {
+      const initialCap = Math.max(MIN_INITIAL_CAPACITY, Math.min(data.length * 2, this.maxBytesPerTerminal));
+      entry = { buf: Buffer.allocUnsafe(Math.max(initialCap, data.length)), length: 0, droppedBefore: 0 };
+      this.entries.set(id, entry);
     }
-    const list = this.buffers.get(id)!;
-    list.push(buf);
-    this.totals.set(id, (this.totals.get(id) ?? 0) + buf.length);
+    const needed = entry.length + data.length;
+    if (needed > entry.buf.length) {
+      // Grow to at least `needed`, capped at (maxBytes * 2) — the "+1 chunk"
+      // slack lets one pre-trim append happen without rebuilding twice. We
+      // allocate slightly oversized so common-case small writes don't churn.
+      const cap = Math.max(
+        needed,
+        Math.min(entry.buf.length * 2, this.maxBytesPerTerminal * 2),
+      );
+      const bigger = Buffer.allocUnsafe(cap);
+      entry.buf.copy(bigger, 0, 0, entry.length);
+      entry.buf = bigger;
+    }
+    data.copy(entry.buf, entry.length);
+    entry.length += data.length;
     this.trim(id);
   }
 
   private trim(id: string): void {
-    const list = this.buffers.get(id);
-    if (!list) return;
-    let total = this.totals.get(id) ?? 0;
-    while (total > this.maxBytesPerTerminal && list.length > 1) {
-      const dropped = list.shift()!;
-      total -= dropped.length;
-      this.offsets.set(id, (this.offsets.get(id) ?? 0) + dropped.length);
-    }
-    this.totals.set(id, total);
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    if (entry.length <= this.maxBytesPerTerminal) return;
+    const overflow = entry.length - this.maxBytesPerTerminal;
+    // Shift live window left by `overflow` bytes. Keep capacity unchanged —
+    // no allocations, no GC pressure.
+    entry.buf.copy(entry.buf, 0, overflow, entry.length);
+    entry.length -= overflow;
+    entry.droppedBefore += overflow;
   }
 
   read(id: string, offset: number | undefined, limit: number, strip: boolean): CaptureSlice {
-    const list = this.buffers.get(id) ?? [];
-    const dropped = this.offsets.get(id) ?? 0;
-    const present = Buffer.concat(list);
-    const totalSize = dropped + present.length;
-
+    const entry = this.entries.get(id);
+    if (!entry) {
+      return { bytes: '', offset: 0, nextOffset: 0, totalSize: 0, truncated: false };
+    }
+    const totalSize = entry.droppedBefore + entry.length;
     const effectiveOffset = offset == null
-      ? Math.max(dropped, totalSize - limit)
-      : Math.max(offset, dropped);
-    const startInPresent = effectiveOffset - dropped;
-    const slice = present.subarray(startInPresent, startInPresent + limit);
-    const text = strip ? stripAnsi(slice.toString('utf8')) : slice.toString('utf8');
-
+      ? Math.max(entry.droppedBefore, totalSize - limit)
+      : Math.max(offset, entry.droppedBefore);
+    const startInPresent = effectiveOffset - entry.droppedBefore;
+    const endInPresent = Math.min(entry.length, startInPresent + limit);
+    const sliceLength = Math.max(0, endInPresent - startInPresent);
+    // subarray returns a view into the same underlying ArrayBuffer — zero-copy
+    // until we call toString(), which only allocates for the actual slice.
+    const view = entry.buf.subarray(startInPresent, startInPresent + sliceLength);
+    const text = strip ? stripAnsi(view.toString('utf8')) : view.toString('utf8');
     return {
       bytes: text,
       offset: effectiveOffset,
-      nextOffset: effectiveOffset + slice.length,
+      nextOffset: effectiveOffset + sliceLength,
       totalSize,
-      truncated: totalSize > effectiveOffset + slice.length,
+      truncated: totalSize > effectiveOffset + sliceLength,
     };
   }
 
   clear(id: string): void {
-    this.buffers.delete(id);
-    this.totals.delete(id);
-    this.offsets.delete(id);
+    this.entries.delete(id);
   }
 
   has(id: string): boolean {
-    return this.buffers.has(id);
+    return this.entries.has(id);
+  }
+
+  setMaxBytesPerTerminal(bytes: number): void {
+    this.maxBytesPerTerminal = bytes;
+    for (const id of this.entries.keys()) this.trim(id);
+  }
+
+  getMaxBytesPerTerminal(): number {
+    return this.maxBytesPerTerminal;
   }
 }

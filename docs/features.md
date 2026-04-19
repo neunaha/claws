@@ -13,9 +13,14 @@ Everything the extension can do, in depth. For the quick overview, see the [READ
 - [Command Execution (exec)](#command-execution)
 - [Pty Log Reading (readLog)](#pty-log-reading)
 - [Event Streaming (poll)](#event-streaming)
+- [Introspection (introspect)](#introspection)
 - [Terminal Profile — Dropdown Integration](#terminal-profile)
 - [Safety Gate](#safety-gate)
 - [Bracketed Paste](#bracketed-paste)
+- [Command Palette](#command-palette)
+- [Keybindings](#keybindings)
+- [Status Bar Item](#status-bar-item)
+- [Uninstall Cleanup](#uninstall-cleanup)
 - [Configuration Reference](#configuration-reference)
 - [Socket Server Internals](#socket-server-internals)
 - [Cross-Device Control](#cross-device-control)
@@ -166,7 +171,7 @@ Runs a shell command in a terminal and captures structured output. Unlike `send`
 |---|---|---|---|
 | `id` | string | auto-created | Target terminal ID |
 | `command` | string | required | Shell command to run |
-| `timeoutMs` | number | `180000` | Max wait time in milliseconds |
+| `timeoutMs` | number | `claws.execTimeoutMs` (default `180000`) | Max wait time in milliseconds. Falls back to the hot-reloadable config value when omitted. |
 
 **Returns**:
 ```json
@@ -286,6 +291,46 @@ Each event contains:
 
 **Ring buffer**: Claws stores the last `maxHistory` events (default 500). Older events are dropped. If you poll infrequently, you may miss events that were pushed out of the buffer.
 
+**Response cap**: Each `poll` is also capped at `claws.pollLimit` (default 100). The response includes `limit` (the effective cap applied) and `truncated` (true when the pending queue exceeded it). Clients may pass their own `limit` on the request; it's clamped to `claws.pollLimit` as an upper bound.
+
+---
+
+## Introspection
+
+**Command**: `introspect`
+
+Returns a single structured snapshot of the extension + host. Both the `/claws-introspect` slash command and the in-UI `Claws: Health Check` command are powered by the same provider, so the data is identical across paths.
+
+**Request**: `{"cmd": "introspect"}`
+
+**Response**:
+```json
+{
+  "ok": true,
+  "protocol": "claws/1",
+  "extensionVersion": "0.5.0",
+  "nodeVersion": "v20.11.1",
+  "electronAbi": 125,
+  "platform": "darwin-arm64",
+  "nodePty": {
+    "loaded": true,
+    "loadedFrom": "/absolute/path/to/extension/native/node-pty",
+    "error": null
+  },
+  "servers": [
+    { "workspace": "/absolute/path", "socket": "/absolute/path/.claws/claws.sock" }
+  ],
+  "terminals": 3,
+  "uptime_ms": 1234567
+}
+```
+
+- `nodePty.loaded = false` → pipe-mode fallback is active; wrapped terminals still work but without real PTY semantics (no resize signals, limited TUI compatibility).
+- `servers` is an array: multi-root workspaces run one server per folder, each with its own socket.
+- `uptime_ms` is since the server bound its socket, not since VS Code launched.
+
+Call `introspect` as the first thing after connecting to verify compatibility and confirm `node-pty` loaded cleanly.
+
 ---
 
 ## Terminal Profile
@@ -335,6 +380,74 @@ After the bracketed paste block, Claws sends a separate `\r` (carriage return) t
 
 ---
 
+## Command Palette
+
+Every contributed command is grouped under the `Claws:` category in the command palette (`Cmd/Ctrl+Shift+P`).
+
+| Command | ID | What it does |
+|---|---|---|
+| Show Status | `claws.status` | Writes a markdown-formatted runtime block to the `Claws` Output channel (socket list, runtime, version). |
+| Refresh Status Bar | `claws.statusBar` | Manually refresh + re-show the status bar item (useful after a theme swap or focus cycle). |
+| List Terminals | `claws.listTerminals` | Opens a QuickPick with every Claws-known terminal (`id · name · wrapped/unwrapped · pid`). Selecting an item calls `terminal.show()`. |
+| Health Check | `claws.healthCheck` | Renders a full introspection snapshot — extension version, Node / Electron ABI, platform, node-pty state, active sockets, MCP server version, uptime — to the Output channel. |
+| Show Log | `claws.showLog` | Focuses the `Claws` Output channel. |
+| Rebuild Native PTY | `claws.rebuildPty` | Runs `@electron/rebuild` against the bundled `node-pty`. Use after a VS Code major upgrade if pipe-mode fallback kicks in. |
+| Uninstall Cleanup | `claws.uninstallCleanup` | Opt-in — scans workspace folders, inventories Claws-installed files, asks per folder, removes only what was installed. See below. |
+
+All seven commands are also registered as activation events, so invoking any of them from a cold start activates the extension before executing.
+
+---
+
+## Keybindings
+
+Chord bindings (`ctrl+alt+c` prefix on Windows/Linux, `cmd+alt+c` on macOS) for the three most-used diagnostic commands:
+
+| Binding | Command |
+|---|---|
+| `cmd+alt+c h` / `ctrl+alt+c h` | Claws: Health Check |
+| `cmd+alt+c l` / `ctrl+alt+c l` | Claws: Show Log |
+| `cmd+alt+c s` / `ctrl+alt+c s` | Claws: Show Status |
+
+Conflicts with other extensions surface in `Keyboard Shortcuts` (`Cmd/Ctrl+K Cmd/Ctrl+S`). The extension remains fully functional if you rebind or remove them.
+
+---
+
+## Status Bar Item
+
+Right-aligned, priority 100. Shows `$(terminal) Claws (N)` where `N` is the live terminal count.
+
+- **Tooltip**: Markdown-rendered block listing every active socket, node-pty load state, and extension version. Hovering for ~500ms reveals it.
+- **Click**: runs `Claws: Health Check`.
+- **Color**: default theme color when healthy; warning-yellow (`statusBarItem.warningBackground`) in pipe-mode fallback; error-red (`statusBarItem.errorBackground`) when no server is running.
+- **Refresh cadence**: 30s interval (unref'd — never blocks shutdown). Manual refresh via `claws.statusBar`.
+
+To hide: right-click the status bar and uncheck "Claws".
+
+---
+
+## Uninstall Cleanup
+
+`claws.uninstallCleanup` is an opt-in, reversible-by-git, destructive-outside-git command that removes Claws's per-project footprint from one or more workspace folders.
+
+**What it scans for**, per folder:
+- `.mcp.json` — the `claws` entry only (other MCP entries are left untouched; file deleted only if that was the only entry)
+- `.claws-bin/` — vendored MCP server + shell hook
+- `.claude/commands/claws-*.md` — the 19 slash command files
+- `.claude/rules/claws-default-behavior.md`
+- `.claude/skills/claws-orchestration-engine/` + `.claude/skills/claws-prompt-templates/`
+- `.vscode/extensions.json` — removes `neunaha.claws` from `recommendations` only
+- `CLAUDE.md` — removes just the fenced `<!-- CLAWS:BEGIN --> … <!-- CLAWS:END -->` block
+
+**Flow**:
+1. Inventories everything that's actually present.
+2. Prompts with a modal per folder listing exactly what will be removed.
+3. On confirm, deletes only what was inventoried — never reaches outside the scanned set.
+4. Writes a summary to the `Claws` Output channel.
+
+Machine-wide artifacts (`~/.claws-src/`, the extension symlink, the shell-hook line in your `rc` file) are **not** touched. Remove those manually as documented in the README's "Uninstall" section.
+
+---
+
 ## Configuration Reference
 
 All settings live under the `claws` namespace in VS Code's settings (`settings.json`).
@@ -363,6 +476,31 @@ All settings live under the `claws` namespace in VS Code's settings (`settings.j
 - **Type**: number
 - **Default**: `500`
 - **Description**: Maximum number of command-completion events retained in the ring buffer for `poll`. Older events are dropped FIFO. Increase if you poll infrequently and don't want to miss events.
+
+### `claws.maxCaptureBytes`
+- **Type**: number
+- **Default**: `1048576` (1 MB)
+- **Description**: Per-terminal in-memory capture buffer for Pseudoterminal-backed wrapped terminals. `readLog` serves from this ring buffer. Bytes beyond the cap are dropped FIFO. Hot-reloadable.
+
+### `claws.execTimeoutMs`
+- **Type**: number
+- **Default**: `180000` (180 s)
+- **Description**: Default wall-clock timeout for an `exec` request before the server rejects with `exec timeout after Xms`. Individual requests may override via `timeoutMs` in the payload. Hot-reloadable — edits to `settings.json` take effect on the next request, no reload needed.
+
+### `claws.pollLimit`
+- **Type**: number
+- **Default**: `100`
+- **Description**: Maximum number of history events returned by a single `poll` request. Client-requested `limit` is clamped to this. Responses exceeding the cap return the tail slice with `truncated: true`. Hot-reloadable.
+
+### `claws.enableWebSocket`
+- **Type**: boolean
+- **Default**: `false`
+- **Description**: [Planned — v0.6] Enable a WebSocket server alongside the Unix socket for cross-device access. Currently a no-op.
+
+### `claws.webSocketPort`
+- **Type**: number
+- **Default**: `9876`
+- **Description**: [Planned — v0.6] Port for the WebSocket server. Honored only when `claws.enableWebSocket` is true.
 
 ---
 

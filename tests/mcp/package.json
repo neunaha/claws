@@ -1,0 +1,7 @@
+{
+  "name": "claws-mcp-tests",
+  "private": true,
+  "scripts": {
+    "test": "node worker.test.js"
+  }
+}

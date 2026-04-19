@@ -1,8 +1,8 @@
 {
   "name": "claws",
-  "displayName": "Claws — Terminal Control Bridge",
+  "displayName": "Claws: Programmable Terminal Bridge",
   "description": "Turn every VS Code terminal into a programmable endpoint. List, create, send, execute, read, and close terminals from any external process via a local socket.",
-  "version": "0.4.0",
+  "version": "0.5.11",
   "publisher": "neunaha",
   "license": "MIT",
   "repository": {
@@ -41,16 +41,30 @@
     "test": "node ./test/runTest.js"
   },
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onCommand:claws.healthCheck",
+    "onCommand:claws.showLog",
+    "onCommand:claws.status",
+    "onCommand:claws.statusBar",
+    "onCommand:claws.listTerminals",
+    "onCommand:claws.rebuildPty",
+    "onCommand:claws.uninstallCleanup"
   ],
   "scripts": {
     "compile": "tsc --noEmit && node esbuild.mjs",
-    "build": "node esbuild.mjs --production",
+    "build": "node esbuild.mjs --production && node scripts/bundle-native.mjs",
+    "bundle-native": "node scripts/bundle-native.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test:smoke": "node test/smoke.test.js",
-    "test:worker": "node test/worker.test.js",
-    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:worker"
+    "test:native": "node test/native-bundle.test.js",
+    "test:config": "node test/config-reload.test.js",
+    "test:capture-store": "node test/capture-store-trim.test.js",
+    "test:oversized": "node test/oversized-line.test.js",
+    "test:pty-lifecycle": "node test/pty-lifecycle.test.js",
+    "test:profile": "node test/profile-provider.test.js",
+    "test:multiconn": "node test/multi-connection.test.js",
+    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:native && npm run test:config && npm run test:capture-store && npm run test:oversized && npm run test:pty-lifecycle && npm run test:profile && npm run test:multiconn"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
@@ -65,11 +79,58 @@
     "commands": [
       {
         "command": "claws.status",
-        "title": "Claws: Show Status"
+        "title": "Show Status",
+        "category": "Claws"
+      },
+      {
+        "command": "claws.statusBar",
+        "title": "Refresh Status Bar",
+        "category": "Claws"
       },
       {
         "command": "claws.listTerminals",
-        "title": "Claws: List Terminals"
+        "title": "List Terminals",
+        "category": "Claws"
+      },
+      {
+        "command": "claws.healthCheck",
+        "title": "Health Check",
+        "category": "Claws"
+      },
+      {
+        "command": "claws.showLog",
+        "title": "Show Log",
+        "category": "Claws"
+      },
+      {
+        "command": "claws.rebuildPty",
+        "title": "Rebuild Native PTY",
+        "category": "Claws"
+      },
+      {
+        "command": "claws.uninstallCleanup",
+        "title": "Uninstall Cleanup (remove Claws files from workspaces)",
+        "category": "Claws"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "claws.healthCheck",
+        "key": "ctrl+alt+c h",
+        "mac": "cmd+alt+c h",
+        "when": "editorTextFocus || !editorTextFocus"
+      },
+      {
+        "command": "claws.showLog",
+        "key": "ctrl+alt+c l",
+        "mac": "cmd+alt+c l",
+        "when": "editorTextFocus || !editorTextFocus"
+      },
+      {
+        "command": "claws.status",
+        "key": "ctrl+alt+c s",
+        "mac": "cmd+alt+c s",
+        "when": "editorTextFocus || !editorTextFocus"
       }
     ],
     "terminal": {
@@ -113,6 +174,16 @@
           "type": "number",
           "default": 1048576,
           "description": "Maximum per-terminal output captured in the in-memory ring buffer for wrapped Pseudoterminal terminals (1 MB default)."
+        },
+        "claws.execTimeoutMs": {
+          "type": "number",
+          "default": 180000,
+          "description": "Default timeout for an `exec` command before the server rejects with timeout (milliseconds, 180s default). Individual requests may override via `timeoutMs` in the request payload."
+        },
+        "claws.pollLimit": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum number of history events returned by a single `poll` request. Responses exceeding this are truncated to the most-recent `limit` entries and include `truncated: true`."
         },
         "claws.enableWebSocket": {
           "type": "boolean",

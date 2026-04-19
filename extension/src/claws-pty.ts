@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
 import { CaptureStore } from './capture-store';
 
 interface NodePtyModule {
@@ -26,23 +28,95 @@ interface NodePtyProcess {
   kill(signal?: string): void;
 }
 
-let nodePtyCache: NodePtyModule | null = null;
+interface LoadAttempt {
+  path: string;
+  message: string;
+  code?: string;
+}
 
-// Load node-pty, caching only successful loads. If the binary is missing or
-// fails to load, we return null — but we DON'T cache that null, so the next
-// terminal spawn retries. This matters when /claws-update compiles the native
-// binary mid-session: new terminal spawns pick it up without needing a full
-// VS Code reload. (A fresh extension activation still re-evaluates from
-// scratch; this only affects the case where the extension has already loaded
-// and the binary appears on disk afterward.)
-function loadNodePty(): NodePtyModule | null {
+let nodePtyCache: NodePtyModule | null = null;
+let loadedFromPath: string | null = null;
+let lastLoadError: { message: string; code?: string; stack?: string; attempts: LoadAttempt[] } | null = null;
+
+// Resolution order for node-pty. We always prefer the bundled copy at
+// <extension>/native/node-pty because it ships with the VSIX — it works even
+// when node_modules/ is stripped (which is what .vscodeignore does). Standard
+// resolution is kept as a fallback so `npm link`'d dev installs still work.
+function resolveCandidates(): string[] {
+  // __dirname is <extension>/dist at runtime (esbuild output) or
+  // <extension>/out in ts-node/dev. Either way, ../native/node-pty lands on
+  // the bundled copy.
+  const bundled = path.join(__dirname, '..', 'native', 'node-pty');
+  return [bundled, 'node-pty'];
+}
+
+// Load node-pty. We cache ONLY successful loads — failures are retried on
+// the next spawn so that if node-pty appears on disk mid-session (e.g. after
+// /claws-update compiles it), new terminals pick it up without a VS Code
+// reload. The full error from EACH failed require() is captured for the
+// diagnostic surface (exposed via loadNodePtyStatus() for the Health Check
+// command).
+function loadNodePty(logger?: (msg: string) => void): NodePtyModule | null {
   if (nodePtyCache) return nodePtyCache;
-  try {
-    nodePtyCache = require('node-pty') as NodePtyModule;
-    return nodePtyCache;
-  } catch {
-    return null;
+
+  const attempts: LoadAttempt[] = [];
+  for (const candidate of resolveCandidates()) {
+    try {
+      logger?.(`[node-pty] trying ${candidate}`);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require(candidate) as NodePtyModule;
+      nodePtyCache = mod;
+      loadedFromPath = candidate;
+      lastLoadError = null;
+      logger?.(`[node-pty] loaded successfully from ${candidate}`);
+      return nodePtyCache;
+    } catch (err: unknown) {
+      const e = err as NodeJS.ErrnoException;
+      const attempt: LoadAttempt = {
+        path: candidate,
+        message: e.message || String(err),
+        code: e.code,
+      };
+      attempts.push(attempt);
+      logger?.(`[node-pty]   FAILED: ${attempt.message}${attempt.code ? ` (code=${attempt.code})` : ''}`);
+    }
   }
+
+  const primary = attempts[0] ?? { path: '(none)', message: 'no candidates' };
+  lastLoadError = {
+    message: primary.message,
+    code: primary.code,
+    attempts,
+    stack: attempts.map((a) => `  ${a.path}: ${a.message}`).join('\n'),
+  };
+  if (logger) {
+    logger(`[node-pty] load FAILED — tried ${attempts.length} candidate(s):`);
+    for (const a of attempts) {
+      logger(`[node-pty]   ${a.path}: ${a.message}${a.code ? ` (${a.code})` : ''}`);
+    }
+    logger(`[node-pty] this causes wrapped terminals to fall back to pipe-mode.`);
+    logger(`[node-pty] fix: run 'Claws: Rebuild Native PTY' from the command palette`);
+  }
+  return null;
+}
+
+export function loadNodePtyStatus(): {
+  loaded: boolean;
+  loadedFrom?: string;
+  error?: { message: string; code?: string; attempts: LoadAttempt[] };
+} {
+  if (nodePtyCache) return { loaded: true, loadedFrom: loadedFromPath ?? undefined };
+  if (lastLoadError) {
+    return {
+      loaded: false,
+      error: {
+        message: lastLoadError.message,
+        code: lastLoadError.code,
+        attempts: lastLoadError.attempts,
+      },
+    };
+  }
+  return { loaded: false };
 }
 
 export interface ClawsPtyOptions {
@@ -65,6 +139,8 @@ export class ClawsPty implements vscode.Pseudoterminal {
   private ptyProc: NodePtyProcess | null = null;
   private childProc: ChildProcessWithoutNullStreams | null = null;
   private isOpen = false;
+  private openedAt: number | null = null;
+  private readonly createdAt = Date.now();
 
   constructor(private readonly opts: ClawsPtyOptions) {}
 
@@ -78,38 +154,55 @@ export class ClawsPty implements vscode.Pseudoterminal {
     return 'none';
   }
 
+  /** True once VS Code has invoked our `open()` hook. */
+  hasOpened(): boolean {
+    return this.openedAt != null;
+  }
+
+  /** Wall-clock ms since this ClawsPty was constructed. */
+  ageMs(): number {
+    return Date.now() - this.createdAt;
+  }
+
   open(initialDimensions: vscode.TerminalDimensions | undefined): void {
     this.isOpen = true;
+    this.openedAt = Date.now();
     const shell = this.opts.shellPath || defaultShell();
     const args = this.opts.shellArgs ?? defaultShellArgs(shell);
     const cwd = this.opts.cwd || os.homedir();
-    const env = { ...process.env, ...(this.opts.env || {}), TERM: 'xterm-256color' };
+    const env = sanitizeEnv(process.env, { ...(this.opts.env || {}), TERM: 'xterm-256color' });
     const cols = initialDimensions?.columns ?? 80;
     const rows = initialDimensions?.rows ?? 24;
 
-    const nodePty = loadNodePty();
+    const nodePty = loadNodePty(this.opts.logger);
     if (nodePty) {
       try {
         this.ptyProc = nodePty.spawn(shell, args, { cols, rows, cwd, env, name: 'xterm-256color' });
         this.ptyProc.onData((data) => this.handleOutput(data));
         this.ptyProc.onExit(({ exitCode }) => this.handleExit(exitCode));
-        this.opts.logger(`[claws-pty ${this.opts.terminalId}] node-pty spawned ${shell} pid=${this.ptyProc.pid}`);
+        this.opts.logger(`[claws-pty ${this.opts.terminalId}] node-pty spawned ${shell} pid=${this.ptyProc.pid} (real pty)`);
         return;
       } catch (err) {
-        this.opts.logger(`[claws-pty ${this.opts.terminalId}] node-pty failed: ${(err as Error).message}. Falling back to pipes.`);
+        this.opts.logger(`[claws-pty ${this.opts.terminalId}] node-pty spawn failed: ${(err as Error).message}. Falling back to child_process pipe-mode.`);
         this.ptyProc = null;
       }
     }
 
+    // Pipe-mode fallback. Log loudly to the Output channel AND emit the
+    // yellow banner into the terminal so the user sees it both ways.
     try {
       this.childProc = spawn(shell, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
       this.childProc.stdout.on('data', (d: Buffer) => this.handleOutput(d.toString('utf8')));
       this.childProc.stderr.on('data', (d: Buffer) => this.handleOutput(d.toString('utf8')));
       this.childProc.on('exit', (code) => this.handleExit(code ?? 0));
+      const loadErr = lastLoadError?.message || 'unknown reason';
+      this.opts.logger(`[claws-pty ${this.opts.terminalId}] PIPE-MODE active (node-pty unavailable): ${loadErr}`);
+      this.opts.logger(`[claws-pty ${this.opts.terminalId}] TUIs will not render correctly. Run 'Claws: Health Check' for diagnostics.`);
       this.opts.logger(`[claws-pty ${this.opts.terminalId}] child_process fallback ${shell} pid=${this.childProc.pid}`);
       this.writeEmitter.fire('\x1b[33m[claws] running in pipe-mode (node-pty unavailable); TUIs may render poorly\x1b[0m\r\n');
+      this.writeEmitter.fire('\x1b[2m[claws] run "Claws: Health Check" in the command palette for why\x1b[0m\r\n');
     } catch (err) {
-      this.opts.logger(`[claws-pty ${this.opts.terminalId}] spawn failed: ${(err as Error).message}`);
+      this.opts.logger(`[claws-pty ${this.opts.terminalId}] SPAWN FAILED: ${(err as Error).message}`);
       this.writeEmitter.fire(`\x1b[31m[claws] failed to spawn shell: ${(err as Error).message}\x1b[0m\r\n`);
       this.closeEmitter.fire(1);
     }
@@ -168,18 +261,122 @@ export class ClawsPty implements vscode.Pseudoterminal {
   }
 }
 
-function defaultShell(): string {
+// ─── Shell resolution ─────────────────────────────────────────────────────
+
+/**
+ * Pick the shell to spawn a wrapped terminal under.
+ *
+ * Order:
+ *   1. $SHELL (user's configured login shell — respect their choice)
+ *   2. /bin/bash (more common default on Linux)
+ *   3. /bin/zsh (default on macOS Catalina+)
+ *   4. /bin/sh (POSIX bottom floor — always present)
+ *
+ * We deliberately don't hardcode zsh: on headless Linux boxes, zsh often
+ * isn't installed at all and falling back to it produces ENOENT at spawn.
+ */
+export function defaultShell(): string {
   if (process.platform === 'win32') {
     return process.env.COMSPEC || 'powershell.exe';
   }
-  return process.env.SHELL || '/bin/zsh';
+  if (process.env.SHELL) return process.env.SHELL;
+  const candidates = ['/bin/bash', '/bin/zsh', '/bin/sh'];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) return c;
+    } catch { /* ignore */ }
+  }
+  return '/bin/sh';
 }
 
-function defaultShellArgs(shell: string): string[] {
+/**
+ * Pick default argv for the chosen shell.
+ *
+ * We always pass `-i` (interactive) so the shell reads its per-user rc file
+ * (`.zshrc`, `.bashrc`, `fish.config`) — this is what makes aliases, PATH
+ * adjustments, and prompt customisation show up.
+ *
+ * We add `-l` (login) ONLY when the user has a login-shell profile file on
+ * disk (`.zprofile`, `.bash_profile`, `.profile`). Adding `-l` unconditionally
+ * is a footgun: many users have slow `.profile` scripts (nvm init, asdf init,
+ * cargo env…) that would then run on EVERY wrapped-terminal creation.
+ * Defaulting to `-i` alone is the fast path — explicit login-profile files
+ * signal the user actually wants login-shell semantics.
+ */
+export function defaultShellArgs(shell: string): string[] {
   if (process.platform === 'win32') return [];
   const base = shell.split('/').pop() || shell;
   if (base === 'zsh' || base === 'bash' || base === 'fish' || base === 'sh') {
-    return ['-i', '-l'];
+    const home = process.env.HOME || os.homedir();
+    const loginFiles = ['.zprofile', '.bash_profile', '.profile'];
+    let hasLoginProfile = false;
+    for (const f of loginFiles) {
+      try {
+        if (fs.existsSync(path.join(home, f))) { hasLoginProfile = true; break; }
+      } catch { /* ignore */ }
+    }
+    return hasLoginProfile ? ['-i', '-l'] : ['-i'];
   }
   return [];
+}
+
+// ─── Env sanitization ─────────────────────────────────────────────────────
+
+/**
+ * Strip VS Code/Electron/npm-lifecycle environment vars before forwarding to
+ * the user's shell. Leaves standard user env (PATH, HOME, USER, LANG, LC_*,
+ * SHELL, EDITOR, VISUAL, TERM, DISPLAY, etc.) intact.
+ *
+ * Why: VS Code's process environment is polluted with internal variables
+ * like VSCODE_IPC_HOOK, VSCODE_PID, ELECTRON_RUN_AS_NODE, plus npm_* vars
+ * from however it was started. Propagating these to the user's shell
+ * confuses `claude` (which inspects ELECTRON_*) and produces bogus
+ * "running inside Electron" warnings.
+ *
+ * `overrides` wins over `baseEnv`, and any `undefined` in `overrides`
+ * explicitly deletes the key from the result.
+ */
+export function sanitizeEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  overrides: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  const DROP_PREFIXES = ['VSCODE_', 'ELECTRON_', 'CHROME_', 'GOOGLE_API_', 'npm_'];
+  const DROP_EXACT = new Set([
+    'INIT_CWD',
+    'VSCODE_PID',
+    'VSCODE_CWD',
+    'VSCODE_IPC_HOOK',
+    'VSCODE_IPC_HOOK_CLI',
+    'VSCODE_NLS_CONFIG',
+    'VSCODE_CODE_CACHE_PATH',
+    'VSCODE_CRASH_REPORTER_PROCESS_TYPE',
+    'VSCODE_HANDLES_UNCAUGHT_ERRORS',
+    'VSCODE_INJECTION',
+    'VSCODE_L10N_BUNDLE_LOCATION',
+    'NODE_OPTIONS', // Often set to --inspect by debug; let user shell pick its own.
+  ]);
+
+  const shouldDrop = (key: string): boolean => {
+    const upper = key.toUpperCase();
+    if (DROP_EXACT.has(key) || DROP_EXACT.has(upper)) return true;
+    for (const p of DROP_PREFIXES) {
+      if (upper.startsWith(p.toUpperCase())) return true;
+    }
+    return false;
+  };
+
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(baseEnv)) {
+    if (v === undefined) continue;
+    if (shouldDrop(k)) continue;
+    out[k] = v;
+  }
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === undefined) {
+      delete out[k];
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
 }

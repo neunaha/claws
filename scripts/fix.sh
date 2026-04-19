@@ -153,7 +153,7 @@ fi
 
 # ─── 3. Extension installed in editors ─────────────────────────────────────
 check "Claws extension installed in VS Code / Cursor / etc"
-EXT_VERSION=$(node --no-deprecation -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.4.0')}" 2>/dev/null || echo "0.4.0")
+EXT_VERSION=$(node --no-deprecation -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.5.0')}" 2>/dev/null || echo "0.5.0")
 
 FOUND_INSTALLS=()
 for dir in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" "$HOME/.cursor/extensions" "$HOME/.windsurf/extensions"; do

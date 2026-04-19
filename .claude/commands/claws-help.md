@@ -156,6 +156,7 @@ monitor both — if either crashes, restart it and tell me what happened
 |---|---|
 | `/claws-help` | This guide |
 | `/claws-status` | Show bridge status + active terminals |
+| `/claws-introspect` | Runtime snapshot — versions, node-pty state, sockets, uptime |
 | `/claws-create name` | Create a wrapped terminal |
 | `/claws-send id text` | Send text to a terminal |
 | `/claws-exec id cmd` | Run command + capture output |
@@ -164,6 +165,26 @@ monitor both — if either crashes, restart it and tell me what happened
 | `/claws-fleet tasks` | Parallel fleet dispatch |
 | `/claws-update` | Pull latest + re-inject everything |
 | `/claws-install` | First-time install |
+| `/claws-fix` | Auto-diagnose + repair install chain |
+| `/claws-report` | Bundle diagnostics into a shareable file |
+
+### VS Code Commands (palette + keybindings — v0.5)
+
+Palette: `Cmd/Ctrl+Shift+P` → type "Claws:"
+
+| Command | Keybinding | What it does |
+|---|---|---|
+| Claws: Show Status | `cmd+alt+c s` | Markdown-formatted runtime block in Output |
+| Claws: Health Check | `cmd+alt+c h` | Full introspection snapshot (Node/Electron/node-pty/sockets) |
+| Claws: Show Log | `cmd+alt+c l` | Focus the Claws Output channel |
+| Claws: List Terminals | — | QuickPick of every Claws-known terminal |
+| Claws: Refresh Status Bar | — | Manually refresh the status bar item |
+| Claws: Rebuild Native PTY | — | `@electron/rebuild` against bundled node-pty |
+| Claws: Uninstall Cleanup | — | Opt-in, per-folder removal of Claws-installed files |
+
+### Status Bar Item (v0.5)
+
+Right-aligned: `$(terminal) Claws (N)` where N is the live terminal count. Tooltip lists every socket + node-pty state. Click → Health Check. Color shifts to warning-yellow in pipe-mode, error-red when no server is running.
 
 ### Shell Commands (available in every terminal)
 
@@ -173,6 +194,19 @@ monitor both — if either crashes, restart it and tell me what happened
 | `claws-new name` | Create a wrapped terminal |
 | `claws-run id cmd` | Execute in a terminal |
 | `claws-log id` | Read a terminal's log |
+
+---
+
+### v0.5.0 — changelog highlights
+
+- **`introspect` protocol command** — one structured snapshot feeds both the socket-level `/claws-introspect` and the in-UI Health Check.
+- **Status bar item + chord keybindings** — diagnostics are one click / two keys away.
+- **Uninstall Cleanup** — reversible-by-git removal of the per-project Claws footprint, one folder at a time.
+- **Hot-reloadable config** — `execTimeoutMs`, `pollLimit`, `maxCaptureBytes` take effect without a window reload.
+- **UUID profile adoption** — two concurrent "Claws Wrapped" terminal creations can no longer cross-bind each other's PTY.
+- **Bundled `node-pty`** — self-contained under `extension/native/`, no global install required.
+- **Protocol v1 handshake** — every response carries `rid` (unshadowed request id) and `protocol: "claws/1"`. Incompatible clients are rejected up-front.
+- **57 automated checks** across 8 suites (up from 22 in v0.4).
 
 ---
 

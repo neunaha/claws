@@ -46,9 +46,18 @@ class TerminalProfile {
 const onOpen = new EventEmitter();
 const onClose = new EventEmitter();
 
+class MarkdownString {
+  constructor() { this.value = ''; this.isTrusted = false; }
+  appendMarkdown(s) { this.value += s; return this; }
+}
+class ThemeColor { constructor(id) { this.id = id; } }
+
 const vscode = {
   EventEmitter,
   TerminalProfile,
+  MarkdownString,
+  ThemeColor,
+  StatusBarAlignment: { Left: 1, Right: 2 },
   Uri: { file: (p) => ({ fsPath: p, scheme: 'file', path: p }) },
   workspace: {
     workspaceFolders: [{ uri: { fsPath: workspaceRoot } }],
@@ -64,6 +73,10 @@ const vscode = {
       show: () => {},
       dispose: () => {},
     }),
+    createStatusBarItem: (_align, _prio) => ({
+      text: '', tooltip: '', color: undefined, command: '', name: '',
+      show: () => {}, hide: () => {}, dispose: () => {},
+    }),
     createTerminal: (_opts) => ({
       name: 'mock',
       processId: Promise.resolve(12345),
@@ -75,10 +88,15 @@ const vscode = {
     onDidOpenTerminal: onOpen.event,
     onDidCloseTerminal: onClose.event,
     registerTerminalProfileProvider: (_id, _provider) => ({ dispose: () => {} }),
+    showErrorMessage: () => ({ then: (cb) => cb && cb(undefined) }),
+    showInformationMessage: () => ({ then: (cb) => cb && cb(undefined) }),
+    showWarningMessage: () => ({ then: (cb) => cb && cb(undefined) }),
+    showQuickPick: () => Promise.resolve(undefined),
     // shell-integration APIs omitted — code path guarded by typeof === 'function'
   },
   commands: {
     registerCommand: (_name, _cb) => ({ dispose: () => {} }),
+    executeCommand: () => Promise.resolve(),
   },
 };
 
@@ -123,11 +141,12 @@ function check(name, fn) {
   }
 }
 
-// Activation log line
-check('logs contain "activating (typescript)"', () => {
-  if (!logs.some((l) => l.includes('activating (typescript)'))) {
-    throw new Error(`logs were: ${JSON.stringify(logs)}`);
-  }
+// Activation log line — proves the v0.4 TypeScript path ran (vs legacy JS).
+check('logs contain activation signature', () => {
+  const hasSignature = logs.some(
+    (l) => l.includes('(typescript)') || l.includes('activation complete'),
+  );
+  if (!hasSignature) throw new Error(`logs were: ${JSON.stringify(logs)}`);
 });
 
 // Wait for socket to be created (listen is async)
@@ -187,9 +206,76 @@ function sendRequest(cmd) {
     } catch (e) {
       check('unknown cmd returns ok:false', () => { throw e; });
     }
+
+    // Protocol tag is present in every response.
+    try {
+      const resp = await sendRequest({ id: 3, cmd: 'list' });
+      check('response carries protocol=claws/1 tag', () => {
+        if (resp.protocol !== 'claws/1') throw new Error(`protocol=${resp.protocol}`);
+      });
+    } catch (e) {
+      check('response carries protocol=claws/1 tag', () => { throw e; });
+    }
+
+    // rid mirrors request id even when the body shadows `id` (e.g. terminal
+    // id on `create`). Use a plain list to keep the path simple.
+    try {
+      const resp = await sendRequest({ id: 42, cmd: 'list' });
+      check('response echoes rid back', () => {
+        if (resp.rid !== 42) throw new Error(`rid=${resp.rid}`);
+      });
+    } catch (e) {
+      check('response echoes rid back', () => { throw e; });
+    }
+
+    // Incompatible protocol version is rejected.
+    try {
+      const resp = await sendRequest({ id: 4, cmd: 'list', protocol: 'claws/99' });
+      check('incompatible protocol is rejected', () => {
+        if (resp.ok !== false) throw new Error(`expected rejection, got ${JSON.stringify(resp)}`);
+        if (!/incompatible protocol/.test(resp.error || '')) {
+          throw new Error(`unexpected error: ${resp.error}`);
+        }
+      });
+    } catch (e) {
+      check('incompatible protocol is rejected', () => { throw e; });
+    }
+
+    // close on unknown id is idempotent — returns ok:true with alreadyClosed:true.
+    try {
+      const resp = await sendRequest({ cmd: 'close', id: 'no-such-terminal-42' });
+      check('close on unknown id is idempotent (ok:true, alreadyClosed)', () => {
+        if (resp.ok !== true) throw new Error(`expected ok:true, got ${JSON.stringify(resp)}`);
+        if (resp.alreadyClosed !== true) throw new Error(`alreadyClosed=${resp.alreadyClosed}`);
+      });
+    } catch (e) {
+      check('close on unknown id is idempotent (ok:true, alreadyClosed)', () => { throw e; });
+    }
+
+    // poll returns truncated + limit fields.
+    try {
+      const resp = await sendRequest({ cmd: 'poll' });
+      check('poll response exposes limit + truncated fields', () => {
+        if (resp.ok !== true) throw new Error(`poll not ok: ${JSON.stringify(resp)}`);
+        if (typeof resp.limit !== 'number') throw new Error(`limit missing: ${JSON.stringify(resp)}`);
+        if (typeof resp.truncated !== 'boolean') throw new Error(`truncated missing: ${JSON.stringify(resp)}`);
+      });
+    } catch (e) {
+      check('poll response exposes limit + truncated fields', () => { throw e; });
+    }
+
+    // Client-supplied limit in poll is capped at server config (default 100).
+    try {
+      const resp = await sendRequest({ cmd: 'poll', limit: 999999 });
+      check('poll caps client-requested limit at server-configured max', () => {
+        if (resp.limit > 100) throw new Error(`limit should be <=100, got ${resp.limit}`);
+      });
+    } catch (e) {
+      check('poll caps client-requested limit at server-configured max', () => { throw e; });
+    }
   }
 
-  ext.deactivate();
+  await ext.deactivate();
   await new Promise((r) => setTimeout(r, 100));
 
   check('socket file cleaned up after deactivate', () => {

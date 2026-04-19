@@ -18,7 +18,12 @@
 set -eo pipefail
 
 # If CLAWS_DEBUG=1, trace every line.
+# Unset any env vars that may contain secrets before enabling xtrace
+# so they don't appear in the trace log.
 if [ "${CLAWS_DEBUG:-0}" = "1" ]; then
+  { unset AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID \
+         GITHUB_TOKEN NPM_TOKEN ANTHROPIC_API_KEY OPENAI_API_KEY \
+         CLAWS_TOKEN HOMEBREW_GITHUB_API_TOKEN; } 2>/dev/null || true
   set -x
 fi
 
@@ -55,8 +60,13 @@ trap 'ec=$?; if [ $ec -ne 0 ]; then printf "\n${C_RED}${C_BOLD}INSTALL FAILED${C
 # ─── Globals ────────────────────────────────────────────────────────────────
 REPO="https://github.com/neunaha/claws.git"
 INSTALL_DIR="${CLAWS_DIR:-$HOME/.claws-src}"
+CLAWS_REF="${CLAWS_REF:-main}"
 USER_PWD="$(pwd)"
 PLATFORM="$(uname -s)"
+case "$PLATFORM" in
+  MINGW*|MSYS*|CYGWIN*)
+    die "Windows (Git Bash/MSYS/Cygwin) not supported — use WSL2: https://aka.ms/wslinstall" ;;
+esac
 
 # ─── Banner ─────────────────────────────────────────────────────────────────
 cat <<BANNER
@@ -91,35 +101,27 @@ else
 fi
 echo ""
 
-# ─── Detect editor extensions dir ──────────────────────────────────────────
-detect_ext_dir() {
-  local editor="${CLAWS_EDITOR:-auto}"
-  case "$editor" in
-    cursor)    mkdir -p "$HOME/.cursor/extensions" && echo "$HOME/.cursor/extensions"; return ;;
-    insiders)  mkdir -p "$HOME/.vscode-insiders/extensions" && echo "$HOME/.vscode-insiders/extensions"; return ;;
-    windsurf)  mkdir -p "$HOME/.windsurf/extensions" && echo "$HOME/.windsurf/extensions"; return ;;
-    skip)      echo ""; return ;;
-  esac
-  # auto-detect — first existing dir wins
-  for d in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" "$HOME/.cursor/extensions" "$HOME/.windsurf/extensions"; do
-    if [ -d "$d" ]; then echo "$d"; return; fi
-  done
-  # none exist — create VS Code default
-  mkdir -p "$HOME/.vscode/extensions"
-  echo "$HOME/.vscode/extensions"
-}
-EXT_DIR="$(detect_ext_dir)"
-
 # ─── Preflight: dependencies ───────────────────────────────────────────────
 # Every dependency the installer or the extension's build chain touches is
 # checked here with a specific install command for the ones that are missing.
 # Fatal checks (die) are things Claws literally cannot work without. Warning
 # checks are things that degrade specific features.
 echo "Checking dependencies..."
+# Disk space: clone + npm install + native build + VSIX needs ~500MB
+_avail_kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2{print $4}' || echo "")
+if [ -n "$_avail_kb" ] && [ "$_avail_kb" -lt 512000 ] 2>/dev/null; then
+  warn "Low disk space: $(( _avail_kb / 1024 ))MB free in \$HOME — Claws needs ~500MB for clone, build, and VSIX packaging"
+fi
+unset _avail_kb
 
 # ── Required: git ──────────────────────────────────────────────────────────
 if command -v git &>/dev/null; then
-  ok "git ($(git --version | awk '{print $3}'))"
+  GIT_VERSION_STR="$(git --version | awk '{print $3}')"
+  GIT_MAJOR="$(echo "$GIT_VERSION_STR" | cut -d. -f1)"
+  if [ "${GIT_MAJOR:-0}" -lt 2 ] 2>/dev/null; then
+    die "git $GIT_VERSION_STR too old — Claws requires git 2+. Upgrade via your package manager."
+  fi
+  ok "git ($GIT_VERSION_STR)"
 else
   case "$PLATFORM" in
     Darwin) die "git not found — install with: xcode-select --install" ;;
@@ -130,6 +132,8 @@ fi
 
 # ── Required: Node.js 18+ (for MCP server + extension build) ───────────────
 if ! command -v node &>/dev/null; then
+  [ -d "$HOME/.nvm" ] && info "nvm detected — run: nvm use --lts  then re-run this installer."
+  [ -d "$HOME/.fnm" ] && info "fnm detected — run: fnm use --lts  then re-run this installer."
   case "$PLATFORM" in
     Darwin) die "node not found — install with: brew install node  (or from https://nodejs.org/)" ;;
     Linux)  die "node not found — install with: sudo apt install nodejs  (or use nvm: https://github.com/nvm-sh/nvm)" ;;
@@ -147,6 +151,10 @@ if ! command -v npm &>/dev/null; then
   die "npm not found — should ship with Node. Reinstall Node or install npm separately."
 fi
 ok "npm ($(npm --version))"
+NPM_MAJOR=$(npm --version 2>/dev/null | cut -d. -f1 || echo "0")
+if [ "$NPM_MAJOR" -lt 7 ] 2>/dev/null; then
+  die "npm $(npm --version) too old — requires npm 7+. Upgrade: npm install -g npm"
+fi
 
 # ── Optional but strongly recommended: C++ toolchain for native modules ────
 # node-pty (optional dep) compiles C++ when no prebuilt binary matches the
@@ -218,6 +226,8 @@ else
 fi
 
 info "Platform: $PLATFORM $(uname -r)"
+ARCH="$(uname -m)"
+info "Architecture: $ARCH"
 info "Shell: $SHELL ($BASH_VERSION)"
 info "Install log: $CLAWS_LOG"
 [ "$TOOLCHAIN_OK" = "0" ] && warn "toolchain issues above — install will still run, but node-pty may not compile"
@@ -226,15 +236,30 @@ echo ""
 # ─── Step 1: Clone or update ───────────────────────────────────────────────
 step "Fetching Claws source"
 if [ -d "$INSTALL_DIR/.git" ]; then
-  info "updating existing clone at $INSTALL_DIR"
-  ( cd "$INSTALL_DIR" && git pull --ff-only --quiet origin main ) || warn "git pull failed; using existing tree"
-  ok "updated $INSTALL_DIR"
+  info "updating existing clone at $INSTALL_DIR (ref: $CLAWS_REF)"
+  PREV_SHA="$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo 'unknown')"
+  if ( cd "$INSTALL_DIR" && git fetch origin "$CLAWS_REF" 2>>"$CLAWS_LOG" \
+       && git reset --hard --quiet "origin/$CLAWS_REF" ); then
+    NEW_SHA="$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo 'unknown')"
+    if [ "$PREV_SHA" = "$NEW_SHA" ]; then
+      ok "already at origin/$CLAWS_REF (${NEW_SHA:0:7})"
+    else
+      ok "updated ${PREV_SHA:0:7} → ${NEW_SHA:0:7}"
+    fi
+    git -C "$INSTALL_DIR" fsck --no-dangling 2>/dev/null || warn "clone integrity check failed — consider: rm -rf $INSTALL_DIR && re-run installer"
+  else
+    bad "failed to update $INSTALL_DIR (network error or corrupted clone)."
+    bad "Fix: rm -rf $INSTALL_DIR && re-run this installer."
+    exit 1
+  fi
 elif [ -d "$INSTALL_DIR" ]; then
   die "$INSTALL_DIR exists but is not a git clone — remove it or set CLAWS_DIR to a different path"
 else
-  info "cloning $REPO → $INSTALL_DIR"
-  git clone --quiet "$REPO" "$INSTALL_DIR"
-  ok "cloned to $INSTALL_DIR"
+  info "cloning $REPO → $INSTALL_DIR (ref: $CLAWS_REF, shallow)"
+  git clone --depth 1 --branch "$CLAWS_REF" "$REPO" "$INSTALL_DIR" 2>>"$CLAWS_LOG" \
+    || git clone --depth 1 "$REPO" "$INSTALL_DIR" 2>>"$CLAWS_LOG"
+  ok "cloned to $INSTALL_DIR (${CLAWS_REF})"
+  git -C "$INSTALL_DIR" fsck --no-dangling 2>/dev/null || warn "clone integrity check failed — consider: rm -rf $INSTALL_DIR && re-run installer"
 fi
 
 # ─── Step 2: Build + symlink extension ─────────────────────────────────────
@@ -269,164 +294,250 @@ needs_build() {
 }
 
 if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; then
-  # ── Bundle build: only when source actually changed ──────────────────────
-  # Unchanged bundle + unchanged git HEAD = safe to skip. This is a caching
-  # optimization only; it does NOT affect node-pty, which runs unconditionally
-  # below so "update is always equivalent to fresh install".
-  if needs_build; then
-    if [ "$CURRENT_SHA" = "$LAST_BUILD_SHA" ]; then
-      info "rebuilding extension bundle (source changed locally)"
-    elif [ -z "$LAST_BUILD_SHA" ]; then
-      info "building extension bundle (first run)"
+  # ── Canonical build path ─────────────────────────────────────────────────
+  # `npm run build` = esbuild (TS → dist/extension.js) + bundle-native.mjs
+  # (detects the user's VS Code Electron version, runs @electron/rebuild
+  # against node_modules/node-pty, and copies the ABI-correct binary into
+  # extension/native/node-pty/). That native/ directory is what the VSIX
+  # ships (via .vscodeignore's `!native/**`) and what claws-pty.ts loads
+  # at runtime. ONE build step owns both outputs — there is no second
+  # rebuild, and there is no fallback to a stale binary.
+  #
+  # If @electron/rebuild fails (missing Xcode CLT, node-gyp/Python issue,
+  # network failure while fetching Electron headers), the build fails
+  # loud and the installer aborts. A silently-broken binary would ship a
+  # VSIX that lands but can't load node-pty — the exact pipe-mode bug
+  # we're trying to kill.
+  NATIVE_PTY_BIN="$INSTALL_DIR/extension/native/node-pty/build/Release/pty.node"
+
+  # Pre-flight: on macOS, @electron/rebuild needs Xcode Command Line Tools
+  # to compile node-pty. Check up front so the error is obvious, not
+  # buried 200 lines into npm output.
+  if [ "$PLATFORM" = "Darwin" ] && ! xcode-select -p &>/dev/null; then
+    bad "Xcode Command Line Tools required to build node-pty."
+    bad "Fix: run 'xcode-select --install', wait for it to finish, then re-run this installer."
+    exit 1
+  fi
+
+  # Pre-detect Electron version from installed editors before building.
+  # bundle-native.mjs detects this too, but surfacing it here lets users
+  # see the ABI target before a potentially long compile.
+  _ELECTRON_PRE=""
+  case "$PLATFORM" in
+    Darwin)
+      for _plist in \
+        "/Applications/Visual Studio Code.app/Contents/Resources/app/package.json" \
+        "/Applications/Cursor.app/Contents/Resources/app/package.json" \
+        "/Applications/Windsurf.app/Contents/Resources/app/package.json"; do
+        if [ -f "$_plist" ]; then
+          _v=$(node -e "try{console.log(require('$_plist').electronVersion||'')}catch{}" 2>/dev/null || true)
+          if [ -n "$_v" ]; then
+            _label=$(basename "$(dirname "$(dirname "$(dirname "$_plist")")")" | sed 's/\.app//')
+            info "Detected Electron $_v from $_label"
+            _ELECTRON_PRE="$_v"
+            break
+          fi
+        fi
+      done
+      ;;
+    Linux)
+      for _ep in /usr/share/code/electron /snap/code/current/usr/share/code/electron /opt/visual-studio-code/electron; do
+        if [ -x "$_ep" ]; then
+          _v=$("$_ep" --version 2>/dev/null | sed 's/^v//' || true)
+          if [ -n "$_v" ]; then
+            info "Detected Electron $_v from $_ep"
+            _ELECTRON_PRE="$_v"
+            break
+          fi
+        fi
+      done
+      ;;
+  esac
+  [ -z "$_ELECTRON_PRE" ] && info "Electron version not pre-detected — bundle-native.mjs will detect at build time"
+
+  needs_rebuild_native=0
+  [ ! -f "$NATIVE_PTY_BIN" ] && needs_rebuild_native=1
+  [ "${CLAWS_FORCE_REBUILD_NPTY:-0}" = "1" ] && needs_rebuild_native=1
+  if needs_build; then needs_rebuild_native=1; fi
+
+  if [ "$needs_rebuild_native" = "1" ]; then
+    if [ ! -f "$NATIVE_PTY_BIN" ]; then
+      info "building extension + native node-pty (binary missing)"
+    elif [ "$CURRENT_SHA" != "$LAST_BUILD_SHA" ] && [ -n "$LAST_BUILD_SHA" ]; then
+      info "rebuilding extension (git HEAD ${LAST_BUILD_SHA:0:7} → ${CURRENT_SHA:0:7})"
     else
-      info "rebuilding extension bundle (git HEAD changed: ${LAST_BUILD_SHA:0:7} → ${CURRENT_SHA:0:7})"
+      info "building extension bundle + rebuilding node-pty for current Electron"
     fi
-    if ( cd "$INSTALL_DIR/extension" && npm install --no-audit --no-fund --loglevel=error --silent && npm run build --silent ); then
+
+    # Network pre-check: @electron/rebuild fetches Electron headers from GitHub.
+    # Fail fast on air-gapped machines before a 3-minute build that will hang.
+    info "checking network connectivity for Electron headers fetch..."
+    if curl --silent --head --max-time 5 "https://github.com" >/dev/null 2>&1 \
+       || wget --spider --quiet --timeout=5 "https://github.com" >/dev/null 2>&1; then
+      info "network reachable — Electron headers fetch should succeed"
+    else
+      warn "network unreachable (GitHub) — @electron/rebuild may fail fetching Electron headers"
+      warn "If you are on an air-gapped machine, set CLAWS_ELECTRON_VERSION=<version> and ensure"
+      warn "headers are available at a local mirror, or use CLAWS_FORCE_REBUILD_NPTY=0 to skip."
+    fi
+
+    # Run with visible output — the user needs to see @electron/rebuild
+    # progress and any compile errors. --silent here hides the exact
+    # diagnostic that tells them what to fix.
+    if ( cd "$INSTALL_DIR/extension" \
+         && npm install --no-audit --no-fund --loglevel=error \
+         && { node -e "require.resolve('@electron/rebuild')" >/dev/null 2>&1 \
+              || warn "@electron/rebuild not found after npm install — pty.node build will likely fail"; true; } \
+         && npm run build ); then
       echo "$CURRENT_SHA" > "$BUILD_SHA_FILE" 2>/dev/null || true
       BUILD_OK=1
-      ok "extension built ($(wc -c < "$BUNDLE" | tr -d ' ') bytes, SHA ${CURRENT_SHA:0:7})"
     else
-      warn "extension build failed — see $CLAWS_LOG for details. Falling back to legacy JS."
-      node --no-deprecation -e "const fs=require('fs'),p='$INSTALL_DIR/extension/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.main='./src/extension.js';fs.writeFileSync(p,JSON.stringify(j,null,2));" 2>/dev/null || true
+      bad "extension build failed — see $CLAWS_LOG for the full compile log."
+      # Scan the log to give a targeted hint
+      if grep -qi "xcode\|xcrun\|CLT\|command line tools" "$CLAWS_LOG" 2>/dev/null; then
+        bad "Likely cause: Xcode Command Line Tools missing or incomplete — run: xcode-select --install"
+      elif grep -qi "electron.*header\|ENOTFOUND\|ETIMEDOUT\|network\|fetch" "$CLAWS_LOG" 2>/dev/null; then
+        bad "Likely cause: network error fetching Electron headers — check internet connectivity and proxy settings"
+      elif grep -qi "python\|gyp" "$CLAWS_LOG" 2>/dev/null; then
+        bad "Likely cause: Python 3 or node-gyp issue — run: brew install python3  OR  sudo apt install python3"
+      else
+        bad "Common causes: Xcode CLT missing, Python 3 missing, or network error during @electron/rebuild's Electron headers fetch"
+      fi
+      bad "After fixing, re-run: bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)"
+      exit 1
     fi
   else
     BUILD_OK=1
     ok "extension bundle up to date (SHA ${CURRENT_SHA:0:7}, $(wc -c < "$BUNDLE" | tr -d ' ') bytes)"
-    # Even if the bundle is current, make sure npm has actually fetched
-    # node-pty (optional dep). A user who cloned before node-pty was added,
-    # or whose node_modules got removed, will have no node-pty dir at all.
-    if [ ! -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
-      info "fetching missing deps (node-pty not present)"
-      ( cd "$INSTALL_DIR/extension" && npm install --no-audit --no-fund --loglevel=error --silent ) || true
-    fi
   fi
 
-  # ── node-pty native binary: ALWAYS verified, rebuilt if ABI-wrong ────────
-  # This runs on every install AND every /claws-update, whether the bundle
-  # was rebuilt or not. That makes update equivalent to fresh install —
-  # no "I updated but the binary stayed wrong" class of bug.
-  #
-  # node-pty is a native module. Its NODE_MODULE_VERSION must match whatever
-  # Node runtime loads it. VS Code's extension host runs Electron-embedded
-  # Node, NOT the user's system Node. Building against system Node (what a
-  # plain `node-gyp rebuild` does) produces a binary that loads from
-  # /usr/local/bin/node but silently fails in the extension host. We use
-  # @electron/rebuild to target the exact Electron version detected from the
-  # installed VS Code.app — the binary ends up ABI-compatible with the
-  # extension host and wrapped terminals get real pty mode.
-  NPTY_BIN="$INSTALL_DIR/extension/node_modules/node-pty/build/Release/pty.node"
-  ELECTRON_ABI_FILE="$INSTALL_DIR/extension/dist/.electron-abi"
-  NPTY_JUST_COMPILED=0
-  if [ -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
-    # Detect VS Code's Electron version from the installed app.
-    ELECTRON_VERSION=""
-    case "$PLATFORM" in
-      Darwin)
-        for app in \
-          "/Applications/Visual Studio Code.app" \
-          "/Applications/Visual Studio Code - Insiders.app" \
-          "/Applications/Cursor.app" \
-          "/Applications/Windsurf.app"; do
-          plist="$app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
-          if [ -f "$plist" ]; then
-            v=$(plutil -extract CFBundleVersion raw "$plist" 2>/dev/null || true)
-            if [ -n "$v" ]; then
-              ELECTRON_VERSION="$v"
-              info "detected Electron $v from $(basename "$app")"
-              break
-            fi
-          fi
-        done
-        ;;
-    esac
-    [ -z "$ELECTRON_VERSION" ] && ELECTRON_VERSION="39.8.5" \
-      && info "couldn't detect Electron version — using fallback $ELECTRON_VERSION"
+  # Hard verification — the VSIX in step 2c packages from extension/, and
+  # without this binary present, wrapped terminals fall back to pipe-mode.
+  # Refusing to continue is the correct behavior; a silent pipe-mode
+  # install is worse than an explicit failure the user can fix.
+  if [ ! -f "$NATIVE_PTY_BIN" ]; then
+    bad "native/node-pty/build/Release/pty.node missing after build."
+    bad "This means @electron/rebuild failed silently or bundle-native.mjs didn't copy the output."
+    bad "Diagnostic: ( cd $INSTALL_DIR/extension && npm run bundle-native )"
+    bad "See $CLAWS_LOG for the bundle-native output."
+    exit 1
+  fi
+  NATIVE_PTY_SIZE=$(wc -c < "$NATIVE_PTY_BIN" | tr -d ' ')
+  NATIVE_PTY_ELECTRON=$(node -e "try{console.log(require('$INSTALL_DIR/extension/native/.metadata.json').electronVersion||'?')}catch(e){console.log('?')}" 2>/dev/null || echo '?')
+  ok "native node-pty ready (${NATIVE_PTY_SIZE} bytes, Electron $NATIVE_PTY_ELECTRON) — VSIX will ship this binary"
+  if command -v file &>/dev/null; then
+    file "$NATIVE_PTY_BIN" 2>/dev/null | grep -qi "$(uname -m)" \
+      || warn "pty.node architecture may not match current machine ($(uname -m)) — check bundle-native.mjs output in $CLAWS_LOG"
+  fi
 
-    LAST_ABI=$(cat "$ELECTRON_ABI_FILE" 2>/dev/null || echo "")
-    NEEDS_NPTY_BUILD=0
-    [ ! -f "$NPTY_BIN" ] && NEEDS_NPTY_BUILD=1
-    [ "$LAST_ABI" != "$ELECTRON_VERSION" ] && NEEDS_NPTY_BUILD=1
-    [ "${CLAWS_FORCE_REBUILD_NPTY:-0}" = "1" ] && NEEDS_NPTY_BUILD=1
-
-    if [ "$NEEDS_NPTY_BUILD" = "1" ]; then
-      if [ "$PLATFORM" = "Darwin" ] && ! xcode-select -p &>/dev/null; then
-        warn "Xcode Command Line Tools not installed — can't compile node-pty."
-        info "Install CLT with: xcode-select --install   then re-run /claws-update"
-      else
-        if [ ! -f "$NPTY_BIN" ]; then
-          info "building node-pty for Electron $ELECTRON_VERSION (binary missing)"
-        else
-          info "rebuilding node-pty for Electron $ELECTRON_VERSION (was: ${LAST_ABI:-unknown})"
-        fi
-        # Remove stale binary + marker so the rebuild is unambiguously fresh.
-        rm -f "$NPTY_BIN" "$ELECTRON_ABI_FILE" 2>/dev/null || true
-        if ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --which=node-pty --force >/dev/null 2>&1 ) && [ -f "$NPTY_BIN" ]; then
-          echo "$ELECTRON_VERSION" > "$ELECTRON_ABI_FILE" 2>/dev/null || true
-          ok "node-pty built for Electron $ELECTRON_VERSION ($(wc -c < "$NPTY_BIN" | tr -d ' ') bytes)"
-          NPTY_JUST_COMPILED=1
-        else
-          warn "@electron/rebuild failed — wrapped terminals will fall back to pipe-mode."
-          info "TUI rendering (claude, vim, htop) will be degraded. See $CLAWS_LOG for build errors."
-          info "manual fix: bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/rebuild-node-pty.sh)"
+  # R3.7: Check if other installed editors use a different Electron version.
+  # The VSIX ships ONE binary built for one Electron ABI. If Cursor/Windsurf
+  # ship a different Electron than VS Code, the binary may load in pipe-mode
+  # for those editors. Warn so the user knows and can rebuild with CLAWS_ELECTRON_VERSION.
+  if [ -n "$NATIVE_PTY_ELECTRON" ] && [ "$NATIVE_PTY_ELECTRON" != "?" ]; then
+    _check_editor_electron() {
+      local app_label="$1"
+      local pkg_json="$2"
+      if [ -f "$pkg_json" ]; then
+        local editor_ver
+        editor_ver=$(node -e "try{console.log(require('$pkg_json').electronVersion||'')}catch{}" 2>/dev/null || true)
+        if [ -n "$editor_ver" ] && [ "$editor_ver" != "$NATIVE_PTY_ELECTRON" ]; then
+          warn "$app_label uses Electron $editor_ver but pty.node was built for Electron $NATIVE_PTY_ELECTRON"
+          warn "  node-pty will load in pipe-mode in $app_label — rebuild with: CLAWS_ELECTRON_VERSION=$editor_ver bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)"
         fi
       fi
-    else
-      ok "node-pty binary OK for Electron $ELECTRON_VERSION (ABI matches)"
-    fi
-  else
-    # node-pty directory itself is missing even after the install attempt
-    # above. Likely means npm install failed or the optional dep was skipped
-    # (e.g. --no-optional). Don't block the install; warn and move on.
-    warn "node-pty package not installed — wrapped terminals will use pipe-mode"
-    info "to install: ( cd $INSTALL_DIR/extension && npm install node-pty )"
-  fi
-  # Explicit nudge when we just compiled the binary: any VS Code window
-  # already open needs to reload to pick up the new pty.node.
-  if [ "$NPTY_JUST_COMPILED" = "1" ]; then
-    info "reload VS Code to activate: Cmd+Shift+P → Developer: Reload Window"
+    }
+    case "$PLATFORM" in
+      Darwin)
+        _check_editor_electron "Cursor"   "/Applications/Cursor.app/Contents/Resources/app/package.json"
+        _check_editor_electron "Windsurf" "/Applications/Windsurf.app/Contents/Resources/app/package.json"
+        _check_editor_electron "VS Code Insiders" "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/package.json"
+        ;;
+    esac
+    unset -f _check_editor_electron
   fi
 else
-  warn "npm or extension/package.json missing — using legacy src/extension.js"
-  node --no-deprecation -e "const fs=require('fs'),p='$INSTALL_DIR/extension/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.main='./src/extension.js';fs.writeFileSync(p,JSON.stringify(j,null,2));" 2>/dev/null || true
+  bad "npm or extension/package.json missing — cannot build extension."
+  bad "Install Node.js 18+ and re-run: bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)"
+  exit 1
 fi
 
-# 2b. Read extension version from manifest so the symlink matches
-EXT_VERSION="0.4.0"
-if command -v node &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; then
-  EXT_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version||'0.4.0')}catch(e){console.log('0.4.0')}" 2>/dev/null || echo "0.4.0")
+# 2b. Read extension version from manifest so the symlink matches.
+# EXPECTED_MIN_VERSION is hardcoded at script-release time. EXT_VERSION is
+# read from the clone at runtime. If the clone is behind EXPECTED_MIN_VERSION,
+# the working tree is stale and the installer aborts — that was the v0.5.1 bug
+# where users saw "v0.4.0 — installed" because their ~/.claws-src/ was stale.
+EXPECTED_MIN_VERSION="0.5.7"
+EXT_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.0.0')}" 2>/dev/null || echo "0.0.0")
+
+# Flag stale clones loudly so users don't silently run on an old version.
+if [ "$EXT_VERSION" != "$EXPECTED_MIN_VERSION" ]; then
+  if ! node -e "
+    const [a,b]=[process.argv[1],process.argv[2]].map(s=>s.split('.').map(Number));
+    for (let i=0;i<3;i++){ if((a[i]||0)<(b[i]||0)) process.exit(1); if((a[i]||0)>(b[i]||0)) process.exit(0); }
+    process.exit(0);
+  " "$EXT_VERSION" "$EXPECTED_MIN_VERSION" 2>/dev/null; then
+    bad "extension version $EXT_VERSION < expected $EXPECTED_MIN_VERSION — clone is stale."
+    bad "Fix: rm -rf $INSTALL_DIR && re-run this installer."
+    exit 1
+  fi
 fi
 
-# 2c. Install the extension via SYMLINK into every detected editor.
+# 2c. Install the extension into every detected editor.
 #
-# IMPORTANT: we use symlinks, NOT VSIX install.
+# Strategy (v0.5.3+):
+#   1. VSIX install via `code --install-extension` — the proper way.
+#      VS Code registers the extension in its extensions.json, extracts
+#      to the extensions dir, and (if a window is open) shows a
+#      "Reload to activate?" toast automatically. For a closed VS Code,
+#      next window-open loads it with zero clicks.
+#   2. Symlink fallback — used when vsce packaging or the editor CLI
+#      isn't available (network error, no `code` binary). Also what
+#      CLAWS_DEV_SYMLINK=1 forces.
 #
-# VSIX install looked nicer (VS Code manages it via Extensions panel) but
-# has a fatal flaw for Claws: `vsce package` excludes node_modules/ by
-# design, so the extracted extension dir at
-#   ~/.vscode/extensions/neunaha.claws-<version>/
-# has NO node_modules. The extension's `require('node-pty')` therefore
-# can never find the native binary we compiled — pipe-mode forever.
-#
-# Symlinks point at ~/.claws-src/extension/ which has the full
-# node_modules tree including the ABI-correct node-pty. VS Code follows
-# symlinks fine; extension shows up normally in the Extensions panel.
-#
-# If you need VSIX for marketplace publishing, do it via a separate
-# `npm run package` path — not in the user-facing install.
+# Why VSIX works now when it didn't before: Phase 2 moved node-pty out
+# of node_modules/ into native/node-pty/. .vscodeignore excludes
+# node_modules/** but un-ignores !native/**, so the packaged VSIX
+# contains the ABI-correct binary at the exact path the runtime loader
+# expects (<ext>/native/node-pty/).
 
 INSTALLED_EDITORS=()
+VSIX_INSTALL_METHOD=""  # "vsix" or "symlink" — reported in the banner
 
-# Enumerate every editor extensions dir that exists. For each, create (or
-# refresh) a symlink that resolves to the source clone. Clean up stale
-# older-version symlinks so VS Code only sees the current one.
+# Zed uses a proprietary extension format (.zedbundle) — not VSIX-compatible.
+# Claws extension is VS Code-only. If Zed is detected, inform the user.
+if command -v zed &>/dev/null; then
+  info "Zed editor detected — Claws extension is VS Code/Cursor/Windsurf-only (VSIX format). Zed is not supported."
+fi
+
+# Editor CLI discovery. Checks $PATH first, then macOS app bundle paths.
+_find_editor_cli() {
+  local label="$1"
+  # In $PATH?
+  if command -v "$label" &>/dev/null; then
+    command -v "$label"
+    return 0
+  fi
+  # Bundled in an app (macOS). Windows/Linux paths fall through.
+  case "$PLATFORM" in
+    Darwin)
+      case "$label" in
+        code)          [ -x "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" ] && echo "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" && return 0 ;;
+        code-insiders) [ -x "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders" ] && echo "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders" && return 0 ;;
+        cursor)        [ -x "/Applications/Cursor.app/Contents/Resources/app/bin/cursor" ] && echo "/Applications/Cursor.app/Contents/Resources/app/bin/cursor" && return 0 ;;
+        windsurf)      [ -x "/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf" ] && echo "/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf" && return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+# Fallback: symlink the source clone into the editor's extensions dir.
 _link_extension_into() {
   local label="$1"
   local ext_dir="$2"
   [ ! -d "$ext_dir" ] && return 1
   local link="$ext_dir/neunaha.claws-$EXT_VERSION"
-  # Remove every claws-* entry: stale symlinks, old VSIX-extracted real
-  # dirs (which don't have node_modules and cause exactly the bug we're
-  # fixing). rm -rf handles both cases.
   rm -rf "$ext_dir"/neunaha.claws-* 2>/dev/null \
     || sudo rm -rf "$ext_dir"/neunaha.claws-* 2>/dev/null \
     || true
@@ -440,24 +551,136 @@ _link_extension_into() {
   return 1
 }
 
-for pair in \
-  "vscode:$HOME/.vscode/extensions" \
-  "vscode-insiders:$HOME/.vscode-insiders/extensions" \
-  "cursor:$HOME/.cursor/extensions" \
-  "windsurf:$HOME/.windsurf/extensions"; do
-  label="${pair%%:*}"
-  dir="${pair#*:}"
-  [ -d "$dir" ] && _link_extension_into "$label" "$dir" || true
-done
+# VSIX install path: package once, install into every editor CLI we find.
+_install_via_vsix() {
+  local VSIX_PATH="/tmp/claws-$EXT_VERSION.vsix"
+  info "packaging VSIX for VS Code install"
 
-# If no editor dir existed at all, create the default one and link there.
-if [ "${#INSTALLED_EDITORS[@]}" -eq 0 ] && [ "$CLAWS_EDITOR" != "skip" ]; then
-  mkdir -p "$HOME/.vscode/extensions" 2>/dev/null
-  _link_extension_into "vscode (new)" "$HOME/.vscode/extensions" || true
+  # Sanity-check publisher field — vsce fails silently if it's missing.
+  local pub
+  pub=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').publisher||'')}catch(e){console.log('')}" 2>/dev/null || echo "")
+  if [ -z "$pub" ]; then
+    warn "extension/package.json missing 'publisher' field — vsce will fail"
+    return 1
+  fi
+
+  # Package. vsce reads package.json + .vscodeignore to produce the VSIX.
+  if ! ( cd "$INSTALL_DIR/extension" \
+       && rm -f "$VSIX_PATH" 2>/dev/null \
+       && npx --yes @vscode/vsce package --skip-license --no-git-tag-version --no-update-package-json --out "$VSIX_PATH" ) >>"$CLAWS_LOG" 2>&1; then
+    warn "vsce package failed — see $CLAWS_LOG for details"
+    info "diagnostic: cd $INSTALL_DIR/extension && npx @vscode/vsce package --out $VSIX_PATH"
+    return 1
+  fi
+
+  if [ ! -f "$VSIX_PATH" ]; then
+    warn "vsce reported success but VSIX missing — falling back to symlink"
+    return 1
+  fi
+
+  local vsix_size; vsix_size=$(wc -c < "$VSIX_PATH" | tr -d ' ')
+  if [ "$vsix_size" -lt 50000 ] 2>/dev/null; then
+    warn "VSIX suspiciously small (${vsix_size} bytes < 50KB) — native binary may be missing from package"
+    warn "Check .vscodeignore includes !native/** and re-run installer"
+    return 1
+  fi
+  ok "packaged $VSIX_PATH ($(numfmt --to=iec-i --suffix=B "$vsix_size" 2>/dev/null || echo "${vsix_size} bytes"))"
+
+  # Install into every detected editor CLI.
+  local any_installed=0
+  for label in code code-insiders cursor windsurf; do
+    local cli
+    cli="$(_find_editor_cli "$label")" || continue
+    info "installing into $label via $cli"
+
+    # Try normal install, then sudo on permission failure (R4.7/B7).
+    local install_ok=0
+    if "$cli" --install-extension "$VSIX_PATH" --force >/dev/null 2>&1; then
+      install_ok=1
+    elif sudo "$cli" --install-extension "$VSIX_PATH" --force >/dev/null 2>&1; then
+      info "  installed via sudo (extensions dir required elevated permissions)"
+      install_ok=1
+    fi
+
+    if [ "$install_ok" = "1" ]; then
+      # R4.10: Verify the extension actually landed in the extensions directory
+      # rather than trusting the exit code alone (VS Code exit codes are undocumented).
+      local ext_dir="$HOME/.vscode/extensions"
+      case "$label" in
+        code-insiders) ext_dir="$HOME/.vscode-insiders/extensions" ;;
+        cursor)        ext_dir="$HOME/.cursor/extensions" ;;
+        windsurf)      ext_dir="$HOME/.windsurf/extensions" ;;
+      esac
+      if ls "$ext_dir"/neunaha.claws-* 2>/dev/null | grep -q .; then
+        ok "Claws extension installed in $label (verified in $ext_dir)"
+      else
+        ok "Claws extension installed in $label (via VSIX — extensions dir not found for verification)"
+      fi
+      INSTALLED_EDITORS+=("$label")
+      any_installed=1
+    else
+      # Non-zero exit and sudo also failed — likely a running window holds an
+      # exclusive lock on the .node binary. The VSIX is staged in /tmp; VS Code
+      # will pick it up on next Reload Window.
+      warn "$label --install-extension refused (likely a running window holds the current version)"
+      info "  this is fine — the new VSIX is staged; Reload Window activates it"
+      # R4.10: Still verify — the extensions dir may already have the new version
+      local ext_dir2="$HOME/.vscode/extensions"
+      case "$label" in
+        code-insiders) ext_dir2="$HOME/.vscode-insiders/extensions" ;;
+        cursor)        ext_dir2="$HOME/.cursor/extensions" ;;
+        windsurf)      ext_dir2="$HOME/.windsurf/extensions" ;;
+      esac
+      if ls "$ext_dir2"/neunaha.claws-* 2>/dev/null | grep -q .; then
+        INSTALLED_EDITORS+=("$label (pending reload)")
+        any_installed=1
+      else
+        warn "$label extensions dir has no neunaha.claws-* entry — install may have failed"
+      fi
+    fi
+  done
+
+  [ "$any_installed" = "1" ] && return 0
+  return 1
+}
+
+# Choose install path.
+if [ "${CLAWS_DEV_SYMLINK:-0}" = "1" ]; then
+  info "CLAWS_DEV_SYMLINK=1 — using symlink install (live-edit dev workflow)"
+  VSIX_INSTALL_METHOD="symlink"
+elif [ "${BUILD_OK:-0}" = "1" ] && command -v npx &>/dev/null; then
+  if _install_via_vsix; then
+    VSIX_INSTALL_METHOD="vsix"
+  else
+    warn "VSIX install failed — falling back to symlink"
+    VSIX_INSTALL_METHOD="symlink"
+  fi
+else
+  info "no npx or build failed — using symlink install"
+  VSIX_INSTALL_METHOD="symlink"
+fi
+
+# Symlink fallback — only runs if VSIX path didn't cover us.
+if [ "$VSIX_INSTALL_METHOD" = "symlink" ] || [ "${#INSTALLED_EDITORS[@]}" -eq 0 ]; then
+  for pair in \
+    "vscode:$HOME/.vscode/extensions" \
+    "vscode-insiders:$HOME/.vscode-insiders/extensions" \
+    "cursor:$HOME/.cursor/extensions" \
+    "windsurf:$HOME/.windsurf/extensions"; do
+    label="${pair%%:*}"
+    dir="${pair#*:}"
+    [ -d "$dir" ] && _link_extension_into "$label" "$dir" || true
+  done
+
+  # If no editor dir existed at all, create the default one and link there.
+  if [ "${#INSTALLED_EDITORS[@]}" -eq 0 ] && [ "$CLAWS_EDITOR" != "skip" ]; then
+    mkdir -p "$HOME/.vscode/extensions" 2>/dev/null
+    _link_extension_into "vscode (new)" "$HOME/.vscode/extensions" || true
+  fi
 fi
 
 if [ "${#INSTALLED_EDITORS[@]}" -eq 0 ]; then
-  warn "extension not linked into any editor — check CLAWS_EDITOR env var"
+  warn "extension not installed in any editor — check CLAWS_EDITOR env var"
 fi
 
 # ─── Step 3: Script permissions ────────────────────────────────────────────
@@ -468,7 +691,18 @@ ok "scripts executable"
 
 # ─── Step 4: Runtime check ─────────────────────────────────────────────────
 step "Runtime check"
-info "No Python required — Node.js only"
+# Verify Node.js is still reachable (a PATH change mid-install would break MCP)
+if command -v node &>/dev/null; then
+  ok "Node.js reachable at $(node -e 'process.stdout.write(process.execPath)' 2>/dev/null) ($(node --version))"
+else
+  bad "node not reachable in current PATH — MCP server and extension build will fail"
+  die "Install Node.js 18+ and re-run: bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)"
+fi
+# Verify mcp_server.js is present in the clone before we try to copy it in step 5
+if [ ! -f "$INSTALL_DIR/mcp_server.js" ]; then
+  bad "$INSTALL_DIR/mcp_server.js missing — clone may be incomplete"
+  die "Fix: rm -rf $INSTALL_DIR && re-run this installer"
+fi
 ok "runtime ready"
 
 # ─── Step 5: MCP server (project-local primary, global opt-in) ─────────────
@@ -485,6 +719,100 @@ else
     cp "$INSTALL_DIR/scripts/shell-hook.sh" "$PROJECT_ROOT/.claws-bin/shell-hook.sh"
     ok "vendored $PROJECT_ROOT/.claws-bin/"
 
+    # ── Copy the built VS Code extension into the project for visibility ────
+    # VS Code still loads the extension from the user-level install
+    # (~/.vscode/extensions/neunaha.claws-<version>). This project-local
+    # copy is purely for visibility + portability — teammates who clone the
+    # project can SEE what's installed, and users running `ls .claws-bin/`
+    # can confirm Claws is present.
+    #
+    # Opt out with CLAWS_SKIP_EXTENSION_COPY=1.
+    if [ "${CLAWS_SKIP_EXTENSION_COPY:-0}" != "1" ]; then
+      PROJECT_EXT_DIR="$PROJECT_ROOT/.claws-bin/extension"
+      rm -rf "$PROJECT_EXT_DIR" 2>/dev/null || true
+      mkdir -p "$PROJECT_EXT_DIR"
+
+      # Copy the runtime-required pieces only — skip src/, test/, scripts/,
+      # tsconfig, esbuild, node_modules (we have native/ as the bundle).
+      for entry in dist native package.json package-lock.json README.md CHANGELOG.md icon.png .vscodeignore; do
+        if [ -e "$INSTALL_DIR/extension/$entry" ]; then
+          cp -R "$INSTALL_DIR/extension/$entry" "$PROJECT_EXT_DIR/" 2>/dev/null || true
+        fi
+      done
+
+      EXT_COPY_BYTES=$(du -sk "$PROJECT_EXT_DIR" 2>/dev/null | awk '{print $1*1024}')
+      ok "copied extension → $PROJECT_EXT_DIR ($(numfmt --to=iec-i --suffix=B "$EXT_COPY_BYTES" 2>/dev/null || echo "${EXT_COPY_BYTES} bytes"))"
+    fi
+
+    # ── Write a visible README.md in .claws-bin/ so teammates see what's there ──
+    cat > "$PROJECT_ROOT/.claws-bin/README.md" <<CLAWSBIN
+# .claws-bin/
+
+Project-local Claws runtime and artifacts. Auto-generated by the Claws
+installer — don't edit by hand; it's refreshed on every \`/claws-update\`.
+
+## Contents
+
+| File / dir | Role |
+|---|---|
+| \`mcp_server.js\` | Node MCP server. Spawned by Claude Code when it reads \`../.mcp.json\`. Bridges MCP protocol ⇄ Claws socket. |
+| \`shell-hook.sh\` | Shell initialization hook — copied from \`scripts/shell-hook.sh\` for reference. Actual hook lives in your \`~/.zshrc\`/\`~/.bashrc\` (appended by the installer). |
+| \`extension/\` | Full built copy of the VS Code extension (dist + native node-pty binary + manifest). **For visibility only** — VS Code itself loads the extension from the user-level install at \`~/.vscode/extensions/neunaha.claws-<version>\`, not from here. |
+| \`README.md\` | This file. |
+
+## How the extension actually loads
+
+The VS Code extension is installed at **user scope**, not per-project —
+that's how every VS Code extension works (Python, ESLint, Prettier, etc.).
+The symlinked location is:
+
+\`\`\`
+~/.vscode/extensions/neunaha.claws-<version>  →  ~/.claws-src/extension
+\`\`\`
+
+The \`extension/\` directory inside \`.claws-bin/\` is a **reference copy** that
+lets teammates see "Claws is installed" in the project. It's also useful if
+you want to version-pin the extension files alongside your project's git
+history.
+
+## Recommended .gitignore
+
+The \`extension/\` copy is ~300–400 KB. Common choices:
+
+- **Commit it** if you want teammates who clone the repo to see the exact
+  Claws version that's active, without running the installer.
+- **Ignore it** (\`.claws-bin/extension/\`) if you treat it as an install
+  artifact that regenerates on demand.
+
+Either way, \`.mcp.json\`, \`.claude/\`, and this directory's other files are
+safe to commit — they're stable across installs and help teammates get the
+same Claws behavior.
+
+## Installing Claws from this project
+
+If a teammate clones this project without Claws installed, they just run:
+
+\`\`\`bash
+bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)
+\`\`\`
+
+That installs the extension at user scope, registers the MCP server, and
+refreshes these project-local files.
+
+## Updating
+
+\`\`\`bash
+bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/update.sh)
+\`\`\`
+
+Or from inside a Claude Code session: \`/claws-update\`.
+
+---
+
+Claws docs: https://github.com/neunaha/claws
+CLAWSBIN
+    ok "wrote $PROJECT_ROOT/.claws-bin/README.md"
+
     # Write or merge .mcp.json with relative-path registration
     PROJECT_MCP="$PROJECT_ROOT/.mcp.json"
     node --no-deprecation -e "
@@ -496,11 +824,25 @@ if (!cfg.mcpServers) cfg.mcpServers = {};
 cfg.mcpServers.claws = {
   command: 'node',
   args: ['./.claws-bin/mcp_server.js'],
+  // CLAWS_SOCKET is relative to the CWD when the MCP server process starts.
+  // Claude Code sets CWD to the workspace root, so this resolves to
+  // <project>/.claws/claws.sock — the socket the VS Code extension creates.
+  // If Claude Code is launched from a different directory, set CLAWS_SOCKET
+  // to an absolute path in your .mcp.json.
   env: { CLAWS_SOCKET: '.claws/claws.sock' }
 };
 fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
 " "$PROJECT_MCP"
     ok "wrote $PROJECT_MCP"
+    if ! node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
+      bad ".mcp.json written to $PROJECT_ROOT but is not valid JSON — MCP server will fail to load"
+      bad "Check $CLAWS_LOG for jq/cat errors above"
+    fi
+    touch "$PROJECT_ROOT/.gitignore" 2>/dev/null || true
+    if ! grep -q "^\.claws/" "$PROJECT_ROOT/.gitignore" 2>/dev/null; then
+      echo ".claws/" >> "$PROJECT_ROOT/.gitignore"
+      ok "added .claws/ to $PROJECT_ROOT/.gitignore"
+    fi
 
     # Write/merge .vscode/extensions.json so VS Code prompts anyone who opens
     # this project without Claws installed. Pins `neunaha.claws` as a
@@ -620,7 +962,11 @@ CLAWSCMD
 
   # CLAUDE.md injection (project scope only — never inside $HOME)
   if [ "$TARGET" != "$HOME" ]; then
-    node --no-deprecation "$INSTALL_DIR/scripts/inject-claude-md.js" "$TARGET" 2>&1 | sed 's/^/  /' || warn "CLAUDE.md injector failed"
+    if [ ! -f "$INSTALL_DIR/scripts/inject-claude-md.js" ] && [ ! -f "$INSTALL_DIR/.claws-bin/inject-claude-md.js" ]; then
+      warn "inject-claude-md.js not found — CLAUDE.md injection skipped. Clone may be incomplete."
+    else
+      node --no-deprecation "$INSTALL_DIR/scripts/inject-claude-md.js" "$TARGET" 2>&1 | sed 's/^/  /' || warn "CLAUDE.md injector failed — see $CLAWS_LOG for details"
+    fi
   fi
 
   ok "$LABEL: $cmd_count commands, rules, skills"
@@ -644,29 +990,68 @@ HOOK_MARKER="# CLAWS terminal hook"
 inject_hook() {
   local rcfile="$1"
   touch "$rcfile" 2>/dev/null || true
+  local had_stale=0
   if grep -q "CLAWS terminal hook" "$rcfile" 2>/dev/null; then
-    ok "already in $(basename "$rcfile")"
+    if ! grep -Fq "$HOOK_SOURCE" "$rcfile" 2>/dev/null; then
+      had_stale=1
+    fi
+    sed -i.claws-bak '/# CLAWS terminal hook/,+1d' "$rcfile" 2>/dev/null && rm -f "$rcfile.claws-bak" 2>/dev/null
+  fi
+  if printf "\n%s\n%s\n" "$HOOK_MARKER" "$HOOK_SOURCE" >> "$rcfile" 2>/dev/null; then
+    if [ "$had_stale" = "1" ]; then
+      ok "refreshed in $(basename "$rcfile") (removed stale path)"
+    else
+      ok "added to $(basename "$rcfile")"
+    fi
   else
-    printf "\n%s\n%s\n" "$HOOK_MARKER" "$HOOK_SOURCE" >> "$rcfile" && ok "added to $(basename "$rcfile")" || warn "could not write to $rcfile"
+    warn "could not write to $rcfile"
   fi
 }
 
+[ -f "$INSTALL_DIR/scripts/shell-hook.sh" ] \
+  || die "shell-hook.sh missing from $INSTALL_DIR/scripts/ — clone may be incomplete."
 inject_hook "$HOME/.zshrc"
+bash -n "$HOME/.zshrc" 2>/dev/null || warn "~/.zshrc has a syntax error after hook injection — check manually"
 inject_hook "$HOME/.bashrc"
-[ "$PLATFORM" = "Darwin" ] && inject_hook "$HOME/.bash_profile"
+bash -n "$HOME/.bashrc" 2>/dev/null || warn "~/.bashrc has a syntax error after hook injection — check manually"
+if [ "$PLATFORM" = "Darwin" ]; then
+  inject_hook "$HOME/.bash_profile"
+  bash -n "$HOME/.bash_profile" 2>/dev/null || warn "~/.bash_profile has a syntax error after hook injection — check manually"
+fi
 
 if [ -d "$HOME/.config/fish" ]; then
   FISH_CONF="$HOME/.config/fish/conf.d/claws.fish"
-  if [ ! -f "$FISH_CONF" ]; then
-    mkdir -p "$HOME/.config/fish/conf.d" 2>/dev/null
+  mkdir -p "$HOME/.config/fish/conf.d" 2>/dev/null
+  # Write a minimal conf.d loader that sets CLAWS_DIR and sources the
+  # standalone shell-hook.fish (no bass dependency required).
+  {
+    echo "# CLAWS terminal hook (auto-generated — do not edit)"
+    echo "set -gx CLAWS_DIR '$INSTALL_DIR'"
+    echo "set -gx CLAWS_SOCKET '.claws/claws.sock'"
+    echo "if test -f '$INSTALL_DIR/scripts/shell-hook.fish'"
+    echo "    source '$INSTALL_DIR/scripts/shell-hook.fish'"
+    echo "end"
+  } > "$FISH_CONF" && ok "wrote fish conf (native fish, no bass required)" || warn "could not write fish config"
+fi
+
+# ── Nushell hook ─────────────────────────────────────────────────────────────
+# Nushell sources env.nu on startup. We append a CLAWS_DIR assignment if absent.
+_NU_ENV="$HOME/.config/nushell/env.nu"
+_NU_CONFIG="$HOME/.config/nushell/config.nu"
+if [ -f "$_NU_ENV" ] || [ -f "$_NU_CONFIG" ]; then
+  _NU_TARGET="${_NU_ENV:-$_NU_CONFIG}"
+  if ! grep -q "CLAWS_DIR" "$_NU_TARGET" 2>/dev/null; then
     {
-      echo "# CLAWS terminal hook"
-      echo "if status is-interactive"
-      echo "  source $INSTALL_DIR/scripts/shell-hook.sh"
-      echo "end"
-    } > "$FISH_CONF" && ok "added to fish" || warn "could not write fish config"
+      printf '\n# CLAWS terminal hook\n'
+      printf '$env.CLAWS_DIR = "%s"\n' "$INSTALL_DIR"
+      printf '$env.CLAWS_SOCKET = ".claws/claws.sock"\n'
+    } >> "$_NU_TARGET" && ok "wrote nushell env ($( basename "$_NU_TARGET" ))" \
+      || warn "could not write nushell config"
+  else
+    ok "nushell env already has CLAWS_DIR — skipped"
   fi
 fi
+unset _NU_ENV _NU_CONFIG _NU_TARGET
 
 # ─── Step 8: Verify ────────────────────────────────────────────────────────
 step "Verifying"
@@ -683,11 +1068,28 @@ else
 fi
 [ -f "$INSTALL_DIR/extension/dist/extension.js" ] && _ok "Extension bundle built" || warn "Extension bundle missing — fallback to legacy JS active"
 [ -f "$MCP_PATH" ] && _ok "MCP server exists at $MCP_PATH" || _miss "$MCP_PATH missing"
-command -v node &>/dev/null && _ok "Node.js available ($(node --version))" || _miss "node not found"
+if command -v node &>/dev/null; then
+  _ok "Node.js available ($(node --version)) — $(node -e 'process.stdout.write(process.execPath)' 2>/dev/null)"
+  info "Note: GUI-launched VS Code may resolve a different Node.js PATH than this shell"
+else
+  _miss "node not found"
+fi
 
 if [ "$PROJECT_INSTALL" = "1" ]; then
-  [ -f "$PROJECT_ROOT/.mcp.json" ] && _ok "Project .mcp.json" || _miss "project .mcp.json missing"
+  if [ -f "$PROJECT_ROOT/.mcp.json" ] && node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
+    _ok "Project .mcp.json (present and valid JSON)"
+  elif [ -f "$PROJECT_ROOT/.mcp.json" ]; then
+    _miss "Project .mcp.json exists but is invalid JSON — MCP server will fail to load"
+  else
+    _miss "project .mcp.json missing"
+  fi
   [ -f "$PROJECT_ROOT/.claws-bin/mcp_server.js" ] && _ok "Project .claws-bin/mcp_server.js" || _miss "project mcp_server.js copy missing"
+  if [ "${CLAWS_SKIP_EXTENSION_COPY:-0}" != "1" ]; then
+    [ -f "$PROJECT_ROOT/.claws-bin/extension/dist/extension.js" ] \
+      && _ok "Project .claws-bin/extension/ (visible copy)" \
+      || warn "project .claws-bin/extension/ not copied"
+  fi
+  [ -f "$PROJECT_ROOT/.claws-bin/README.md" ] && _ok "Project .claws-bin/README.md" || warn "project .claws-bin/README.md missing"
   [ -f "$PROJECT_ROOT/.vscode/extensions.json" ] && grep -q "neunaha.claws" "$PROJECT_ROOT/.vscode/extensions.json" 2>/dev/null && _ok "Project .vscode/extensions.json recommends claws" || warn "project .vscode/extensions.json missing claws recommendation"
   [ -d "$PROJECT_ROOT/.claude/commands" ] && _ok "Project .claude/commands" || _miss "project commands missing"
   [ -d "$PROJECT_ROOT/.claude/skills" ] && _ok "Project .claude/skills" || _miss "project skills missing"
@@ -725,6 +1127,18 @@ else
   warn "$CHECKS_PASS passed, $CHECKS_FAIL issue(s) — see above"
 fi
 
+# Verify shell hook is active in user's rc files
+_hook_verified=0
+for _rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+  if [ -f "$_rc" ] && grep -q "CLAWS terminal hook" "$_rc" 2>/dev/null; then
+    _hook_verified=1
+    break
+  fi
+done
+if [ "$_hook_verified" = "0" ]; then
+  warn "Shell hook not detected in any rc file — run: source $INSTALL_DIR/scripts/shell-hook.sh"
+fi
+
 # ─── End-of-install banner ─────────────────────────────────────────────────
 cat <<BANNER
 
@@ -748,21 +1162,28 @@ else
 fi
 if [ "${#INSTALLED_EDITORS[@]}" -gt 0 ]; then
   printf '  Extension:   installed in %s\n' "${INSTALLED_EDITORS[*]}"
+  printf '               (method: %s)\n' "$VSIX_INSTALL_METHOD"
+  printf '               (loaded from %s)\n' "$HOME/.vscode/extensions/neunaha.claws-$EXT_VERSION"
+  if [ "$PROJECT_INSTALL" = "1" ] && [ "${CLAWS_SKIP_EXTENSION_COPY:-0}" != "1" ]; then
+    printf '               (visible copy in %s/.claws-bin/extension/)\n' "$PROJECT_ROOT"
+  fi
 else
   printf '  Extension:   ${C_YELLOW}NOT INSTALLED — run /claws-fix${C_RESET}\n'
 fi
 printf '  Install log: %s\n' "$CLAWS_LOG"
 cat <<NEXT
 
-  ${C_BOLD}── Activate Claws ──${C_RESET}
-    1. Reload VS Code:      Cmd+Shift+P → "Developer: Reload Window"
-    2. Restart Claude Code: exit this session and re-open in THIS project
-                            so .mcp.json is picked up
-    3. Try:                 /claws-help    or    /claws-status
+  ${C_BOLD}── One step left to activate ──${C_RESET}
+    ${C_BOLD}Reload VS Code:${C_RESET}   Cmd+Shift+P → "Developer: Reload Window"
+
+  That's it. The extension activates on reload; the MCP tools come online
+  the next time you start a Claude Code session in this project (new
+  sessions auto-pick-up .mcp.json — no manual restart required if Claude
+  Code isn't already running here).
 
   ${C_BOLD}── If something is off ──${C_RESET}
     MCP tools not appearing?   /claws-fix
-    Want to report an issue?   /claws-report  (bundles logs + diagnostics)
+    Want to report an issue?   /claws-report
     Update later:              /claws-update
 
   Docs:    https://github.com/neunaha/claws
@@ -772,4 +1193,4 @@ NEXT
 
 # Source shell hook last so its output doesn't push the banner off-screen.
 # shellcheck disable=SC1090
-source "$INSTALL_DIR/scripts/shell-hook.sh" 2>/dev/null || true
+info "Open a new terminal to activate the shell hook."
