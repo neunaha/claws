@@ -18,7 +18,12 @@
 set -eo pipefail
 
 # If CLAWS_DEBUG=1, trace every line.
+# Unset any env vars that may contain secrets before enabling xtrace
+# so they don't appear in the trace log.
 if [ "${CLAWS_DEBUG:-0}" = "1" ]; then
+  { unset AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID \
+         GITHUB_TOKEN NPM_TOKEN ANTHROPIC_API_KEY OPENAI_API_KEY \
+         CLAWS_TOKEN HOMEBREW_GITHUB_API_TOKEN; } 2>/dev/null || true
   set -x
 fi
 
@@ -102,6 +107,12 @@ echo ""
 # Fatal checks (die) are things Claws literally cannot work without. Warning
 # checks are things that degrade specific features.
 echo "Checking dependencies..."
+# Disk space: clone + npm install + native build + VSIX needs ~500MB
+_avail_kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2{print $4}' || echo "")
+if [ -n "$_avail_kb" ] && [ "$_avail_kb" -lt 512000 ] 2>/dev/null; then
+  warn "Low disk space: $(( _avail_kb / 1024 ))MB free in \$HOME — Claws needs ~500MB for clone, build, and VSIX packaging"
+fi
+unset _avail_kb
 
 # ── Required: git ──────────────────────────────────────────────────────────
 if command -v git &>/dev/null; then
@@ -370,7 +381,16 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
       BUILD_OK=1
     else
       bad "extension build failed — see $CLAWS_LOG for the full compile log."
-      bad "Common causes: Xcode CLT not fully installed, Python 3 missing, offline during @electron/rebuild's Electron headers fetch."
+      # Scan the log to give a targeted hint
+      if grep -qi "xcode\|xcrun\|CLT\|command line tools" "$CLAWS_LOG" 2>/dev/null; then
+        bad "Likely cause: Xcode Command Line Tools missing or incomplete — run: xcode-select --install"
+      elif grep -qi "electron.*header\|ENOTFOUND\|ETIMEDOUT\|network\|fetch" "$CLAWS_LOG" 2>/dev/null; then
+        bad "Likely cause: network error fetching Electron headers — check internet connectivity and proxy settings"
+      elif grep -qi "python\|gyp" "$CLAWS_LOG" 2>/dev/null; then
+        bad "Likely cause: Python 3 or node-gyp issue — run: brew install python3  OR  sudo apt install python3"
+      else
+        bad "Common causes: Xcode CLT missing, Python 3 missing, or network error during @electron/rebuild's Electron headers fetch"
+      fi
       bad "After fixing, re-run: bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)"
       exit 1
     fi
@@ -444,6 +464,12 @@ fi
 
 INSTALLED_EDITORS=()
 VSIX_INSTALL_METHOD=""  # "vsix" or "symlink" — reported in the banner
+
+# Zed uses a proprietary extension format (.zedbundle) — not VSIX-compatible.
+# Claws extension is VS Code-only. If Zed is detected, inform the user.
+if command -v zed &>/dev/null; then
+  info "Zed editor detected — Claws extension is VS Code/Cursor/Windsurf-only (VSIX format). Zed is not supported."
+fi
 
 # Editor CLI discovery. Checks $PATH first, then macOS app bundle paths.
 _find_editor_cli() {
@@ -727,6 +753,11 @@ if (!cfg.mcpServers) cfg.mcpServers = {};
 cfg.mcpServers.claws = {
   command: 'node',
   args: ['./.claws-bin/mcp_server.js'],
+  // CLAWS_SOCKET is relative to the CWD when the MCP server process starts.
+  // Claude Code sets CWD to the workspace root, so this resolves to
+  // <project>/.claws/claws.sock — the socket the VS Code extension creates.
+  // If Claude Code is launched from a different directory, set CLAWS_SOCKET
+  // to an absolute path in your .mcp.json.
   env: { CLAWS_SOCKET: '.claws/claws.sock' }
 };
 fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
