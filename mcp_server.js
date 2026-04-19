@@ -377,7 +377,27 @@ async function runBlockingWorker(sock, args) {
 // ─── Tool handlers ─────────────────────────────────────────────────────────
 
 function getSocket() {
-  return process.env.CLAWS_SOCKET || '.claws/claws.sock';
+  // Absolute override wins immediately.
+  const envSock = process.env.CLAWS_SOCKET;
+  if (envSock && path.isAbsolute(envSock)) return envSock;
+
+  // Walk up from CWD to find .claws/claws.sock — the extension creates the
+  // socket at <workspace-root>/.claws/claws.sock. The MCP server CWD is
+  // normally the workspace root, but users can launch Claude Code from any
+  // directory, so we walk up rather than assume CWD is always the root.
+  let dir = process.cwd();
+  while (true) {
+    const candidate = path.join(dir, '.claws', 'claws.sock');
+    try {
+      if (fs.statSync(candidate).isSocket()) return candidate;
+    } catch { /* not found at this level */ }
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // reached filesystem root
+    dir = parent;
+  }
+
+  // Fall back to env var (may be relative) or the conventional default.
+  return envSock || '.claws/claws.sock';
 }
 
 async function handleTool(name, args) {
@@ -399,7 +419,7 @@ async function handleTool(name, args) {
   if (name === 'claws_create') {
     const resp = await clawsRpc(sock, {
       cmd: 'create', name: args.name || 'claws',
-      cwd: args.cwd, wrapped: args.wrapped || false, show: true,
+      cwd: args.cwd, wrapped: args.wrapped !== false, show: true,
     });
     if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error}` }];
     let text = `created terminal id=${resp.id}`;
