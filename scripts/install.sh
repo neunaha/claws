@@ -115,13 +115,13 @@ fi
 
 # ── Required: Node.js 18+ (for MCP server + extension build) ───────────────
 if ! command -v node &>/dev/null; then
+  [ -d "$HOME/.nvm" ] && info "nvm detected — run: nvm use --lts  then re-run this installer."
+  [ -d "$HOME/.fnm" ] && info "fnm detected — run: fnm use --lts  then re-run this installer."
   case "$PLATFORM" in
     Darwin) die "node not found — install with: brew install node  (or from https://nodejs.org/)" ;;
     Linux)  die "node not found — install with: sudo apt install nodejs  (or use nvm: https://github.com/nvm-sh/nvm)" ;;
     *)      die "node not found — install from https://nodejs.org/" ;;
   esac
-  [ -d "$HOME/.nvm" ] && info "nvm detected — run: nvm use --lts  then re-run this installer."
-  [ -d "$HOME/.fnm" ] && info "fnm detected — run: fnm use --lts  then re-run this installer."
 fi
 NODE_MAJOR=$(node -e "console.log(process.versions.node.split('.')[0])" 2>/dev/null || echo "0")
 if [ "$NODE_MAJOR" -lt 18 ] 2>/dev/null; then
