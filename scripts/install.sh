@@ -308,6 +308,42 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
     exit 1
   fi
 
+  # Pre-detect Electron version from installed editors before building.
+  # bundle-native.mjs detects this too, but surfacing it here lets users
+  # see the ABI target before a potentially long compile.
+  _ELECTRON_PRE=""
+  case "$PLATFORM" in
+    Darwin)
+      for _plist in \
+        "/Applications/Visual Studio Code.app/Contents/Resources/app/package.json" \
+        "/Applications/Cursor.app/Contents/Resources/app/package.json" \
+        "/Applications/Windsurf.app/Contents/Resources/app/package.json"; do
+        if [ -f "$_plist" ]; then
+          _v=$(node -e "try{console.log(require('$_plist').electronVersion||'')}catch{}" 2>/dev/null || true)
+          if [ -n "$_v" ]; then
+            _label=$(basename "$(dirname "$(dirname "$(dirname "$_plist")")")" | sed 's/\.app//')
+            info "Detected Electron $_v from $_label"
+            _ELECTRON_PRE="$_v"
+            break
+          fi
+        fi
+      done
+      ;;
+    Linux)
+      for _ep in /usr/share/code/electron /snap/code/current/usr/share/code/electron /opt/visual-studio-code/electron; do
+        if [ -x "$_ep" ]; then
+          _v=$("$_ep" --version 2>/dev/null | sed 's/^v//' || true)
+          if [ -n "$_v" ]; then
+            info "Detected Electron $_v from $_ep"
+            _ELECTRON_PRE="$_v"
+            break
+          fi
+        fi
+      done
+      ;;
+  esac
+  [ -z "$_ELECTRON_PRE" ] && info "Electron version not pre-detected — bundle-native.mjs will detect at build time"
+
   needs_rebuild_native=0
   [ ! -f "$NATIVE_PTY_BIN" ] && needs_rebuild_native=1
   [ "${CLAWS_FORCE_REBUILD_NPTY:-0}" = "1" ] && needs_rebuild_native=1
@@ -327,6 +363,8 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
     # diagnostic that tells them what to fix.
     if ( cd "$INSTALL_DIR/extension" \
          && npm install --no-audit --no-fund --loglevel=error \
+         && { node -e "require.resolve('@electron/rebuild')" >/dev/null 2>&1 \
+              || warn "@electron/rebuild not found after npm install — pty.node build will likely fail"; true; } \
          && npm run build ); then
       echo "$CURRENT_SHA" > "$BUILD_SHA_FILE" 2>/dev/null || true
       BUILD_OK=1
