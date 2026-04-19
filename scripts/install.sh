@@ -429,6 +429,33 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
     file "$NATIVE_PTY_BIN" 2>/dev/null | grep -qi "$(uname -m)" \
       || warn "pty.node architecture may not match current machine ($(uname -m)) — check bundle-native.mjs output in $CLAWS_LOG"
   fi
+
+  # R3.7: Check if other installed editors use a different Electron version.
+  # The VSIX ships ONE binary built for one Electron ABI. If Cursor/Windsurf
+  # ship a different Electron than VS Code, the binary may load in pipe-mode
+  # for those editors. Warn so the user knows and can rebuild with CLAWS_ELECTRON_VERSION.
+  if [ -n "$NATIVE_PTY_ELECTRON" ] && [ "$NATIVE_PTY_ELECTRON" != "?" ]; then
+    _check_editor_electron() {
+      local app_label="$1"
+      local pkg_json="$2"
+      if [ -f "$pkg_json" ]; then
+        local editor_ver
+        editor_ver=$(node -e "try{console.log(require('$pkg_json').electronVersion||'')}catch{}" 2>/dev/null || true)
+        if [ -n "$editor_ver" ] && [ "$editor_ver" != "$NATIVE_PTY_ELECTRON" ]; then
+          warn "$app_label uses Electron $editor_ver but pty.node was built for Electron $NATIVE_PTY_ELECTRON"
+          warn "  node-pty will load in pipe-mode in $app_label — rebuild with: CLAWS_ELECTRON_VERSION=$editor_ver bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)"
+        fi
+      fi
+    }
+    case "$PLATFORM" in
+      Darwin)
+        _check_editor_electron "Cursor"   "/Applications/Cursor.app/Contents/Resources/app/package.json"
+        _check_editor_electron "Windsurf" "/Applications/Windsurf.app/Contents/Resources/app/package.json"
+        _check_editor_electron "VS Code Insiders" "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/package.json"
+        ;;
+    esac
+    unset -f _check_editor_electron
+  fi
 else
   bad "npm or extension/package.json missing — cannot build extension."
   bad "Install Node.js 18+ and re-run: bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)"
