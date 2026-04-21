@@ -55,7 +55,7 @@ The installer is **project-local** — it writes `.mcp.json`, `.claws-bin/mcp_se
 
 ### Step 3 — Restart Claude Code in this project
 
-Exit your current Claude Code session and re-open `claude` from the project root so it picks up the project-local `.mcp.json` and registers the 8 Claws tools. If the tools don't appear, run `/claws-fix`.
+Exit your current Claude Code session and re-open `claude` from the project root so it picks up the project-local `.mcp.json` and registers the 14 Claws tools (8 terminal-control + 6 claws/2 multi-agent). If the tools don't appear, run `/claws-fix`.
 
 ### Step 4 — You're ready
 
@@ -178,19 +178,35 @@ All seven commands are also reachable from the command palette under the `Claws:
 As of v0.4, every project you install into gets its own `.mcp.json` pointing at a vendored `mcp_server.js` under `.claws-bin/`. Each project's Claws setup is independent — customize per-project, commit with the repo, or gitignore it. The installer handles this automatically.
 
 ```json
-// <project>/.mcp.json
+// <project>/.mcp.json  (generated at install time — absolute paths, machine-specific)
 {
   "mcpServers": {
     "claws": {
-      "command": "node",
-      "args": ["./.claws-bin/mcp_server.js"],
-      "env": { "CLAWS_SOCKET": ".claws/claws.sock" }
+      "command": "/absolute/path/to/node",
+      "args": ["/absolute/path/to/.claws-bin/mcp_server.js"],
+      "cwd": "/absolute/path/to/project",
+      "env": { "CLAWS_SOCKET": "/absolute/path/to/.claws/claws.sock" }
     }
   }
 }
 ```
 
-**Tools:** `claws_list` · `claws_create` · `claws_send` · `claws_exec` · `claws_read_log` · `claws_poll` · `claws_close` · `claws_worker`
+The installer pins absolute paths at install time so the server resolves correctly regardless of which directory Claude Code is launched from.
+
+**Tools (claws/1 — terminal control):** `claws_list` · `claws_create` · `claws_send` · `claws_exec` · `claws_read_log` · `claws_poll` · `claws_close` · `claws_worker`
+
+**Tools (claws/2 — multi-agent):** `claws_hello` · `claws_subscribe` · `claws_publish` · `claws_broadcast` · `claws_ping` · `claws_peers`
+
+### Claws/2 — Multi-Agent Orchestration Protocol
+
+As of v0.6, Claws includes a built-in coordination layer so an **orchestrator Claude** can spawn and manage a **fleet of worker Claudes** over the same socket — no extra infrastructure required.
+
+- **Peer identity** — each agent registers with `claws_hello` (role: orchestrator | worker | observer) and gets a stable `peerId` for the session
+- **Pub/sub message bus** — `claws_subscribe` / `claws_publish` / `claws_broadcast` with `*` and `**` wildcard topic patterns; server-push frames delivered without polling
+- **Task registry** — orchestrator assigns tasks via `claws_task_assign`; workers report progress with `claws_task_update` and `claws_task_complete`; full lifecycle: pending → running → succeeded / failed / skipped
+- **Backward compatible** — all claws/1 terminal-control commands continue to work unchanged
+
+Quick start: type `/claws-v2-orchestrate` in an orchestrator Claude session to see the step-by-step bootstrap guide.
 
 ### AI Worker Orchestration (blocking lifecycle)
 <p align="center">
@@ -234,7 +250,7 @@ The installer writes files in **two scopes**: the machine (once) and the project
 | What | Where | Purpose |
 |---|---|---|
 | Cloned source | `~/.claws-src/` | Full repo clone — used by `/claws-update` |
-| VS Code extension | `~/.vscode/extensions/neunaha.claws-0.5.0` | Symlink → `~/.claws-src/extension` |
+| VS Code extension | `~/.vscode/extensions/neunaha.claws-0.6.0` | Symlink → `~/.claws-src/extension` |
 | Extension bundle | `~/.claws-src/extension/dist/extension.js` | Built from TypeScript on install |
 | Bundled native PTY | `~/.claws-src/extension/native/node-pty/` | Self-contained `node-pty` — keeps wrapped terminals glitch-free without a global install |
 | Shell hook | `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.config/fish/conf.d/claws.fish` | CLAWS banner + `claws-*` shell commands |
@@ -245,7 +261,7 @@ The installer writes files in **two scopes**: the machine (once) and the project
 |---|---|---|
 | MCP registration | `<project>/.mcp.json` | Registers Claws MCP for this project |
 | Self-contained MCP | `<project>/.claws-bin/mcp_server.js` | Vendored copy — relative-path registration |
-| Slash commands | `<project>/.claude/commands/claws-*.md` | 19 commands: `/claws`, `/claws-do`, `/claws-go`, `/claws-worker`, `/claws-fleet`, `/claws-fix`, `/claws-update`, … |
+| Slash commands | `<project>/.claude/commands/claws-*.md` | 22 commands: `/claws`, `/claws-do`, `/claws-go`, `/claws-worker`, `/claws-fleet`, `/claws-fix`, `/claws-update`, … |
 | Behavior rule | `<project>/.claude/rules/claws-default-behavior.md` | Claude prefers visible terminals in this project |
 | Orchestration skill | `<project>/.claude/skills/claws-orchestration-engine/` | 7 patterns + lifecycle protocol |
 | Prompt templates | `<project>/.claude/skills/claws-prompt-templates/` | 7 mission templates |
@@ -286,7 +302,8 @@ Claws was designed for and tested with Claude Opus — the model with the deepes
 - **v0.3** ✅ Zero dependencies — Node.js only
 - **v0.4** ✅ TypeScript rewrite, Pseudoterminal (no glitching), blocking `claws_worker`, project-local install, dynamic CLAUDE.md, automatic legacy migration
 - **v0.5** ✅ Hardening sweep — `introspect` command, status bar item, Health Check / Uninstall Cleanup, chord keybindings, UUID profile adoption, hot-reloadable config, bundled `node-pty`, 57 automated checks
-- **v0.6** — MCP server Layer 2 rewrite, WebSocket transport, cross-device control, team config, device discovery, web dashboard, VS Code Marketplace publish
+- **v0.6** ✅ Agentic SDLC Protocol — claws/2 peer registry, pub/sub message bus, task assignment engine (orchestrator→worker), 6 new MCP tools, 33 new automated checks
+- **v0.7** — WebSocket transport, cross-device control, team config, device discovery, web dashboard, VS Code Marketplace publish
 
 ---
 
