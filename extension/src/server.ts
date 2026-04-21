@@ -11,6 +11,7 @@ import {
   defaultServerConfig,
 } from './server-config';
 import { PeerConnection, ClawsRole, allocPeerId, matchTopic } from './peer-registry';
+import { TaskRecord, allocTaskId } from './task-registry';
 
 /**
  * Per-connection context threaded into `handle()`. Holds the raw socket
@@ -87,6 +88,10 @@ export class ClawsServer {
   private readonly subscriptionIndex = new Map<string, Set<string>>();
   /** Monotonic subscriptionId counter. */
   private subSeq = 0;
+  /** claws/2 task registry. Keyed by taskId. Cleared on stop(). */
+  private readonly tasks = new Map<string, TaskRecord>();
+  /** Monotonic taskId counter (wire id is "t_" + zero-padded 3 digits). */
+  private taskSeq = 0;
 
   constructor(private readonly opts: ServerOptions) {}
 
@@ -131,6 +136,8 @@ export class ClawsServer {
     this.peers.clear();
     this.subscriptionIndex.clear();
     this.subSeq = 0;
+    this.tasks.clear();
+    this.taskSeq = 0;
   }
 
   getSocketPath(): string | null { return this.socketPath; }
@@ -699,6 +706,128 @@ export class ClawsServer {
         }
       }
       return { ok: true, deliveredTo: count };
+    }
+
+    if (cmd === 'task.assign') {
+      const denied = this.requireRole(ctx, ['orchestrator']);
+      if (denied) return denied;
+      const r = req as import('./protocol').TaskAssignRequest;
+      if (!r.title || !r.assignee || !r.prompt) {
+        return { ok: false, error: 'title, assignee, and prompt are required' };
+      }
+      if (!this.peers.has(r.assignee)) {
+        return { ok: false, error: `assignee peer not found: ${r.assignee}` };
+      }
+      const taskId = allocTaskId(++this.taskSeq);
+      const now = Date.now();
+      const task: TaskRecord = {
+        taskId,
+        title: r.title,
+        prompt: r.prompt,
+        assignee: r.assignee,
+        assignedBy: ctx.getPeerId()!,
+        status: 'pending',
+        assignedAt: now,
+        updatedAt: now,
+        timeoutMs: r.timeoutMs,
+      };
+      this.tasks.set(taskId, task);
+      const deliver = r.deliver ?? 'publish';
+      // Publish task.assigned.<assignee> so the worker learns about the task
+      if (deliver === 'publish' || deliver === 'both') {
+        this.fanOut(`task.assigned.${r.assignee}`, 'server', { ...task }, false);
+      }
+      // Inject prompt into the worker's terminal if requested
+      if (deliver === 'inject' || deliver === 'both') {
+        const assigneePeer = this.peers.get(r.assignee);
+        if (assigneePeer?.terminalId) {
+          const rec = this.opts.terminalManager.recordById(String(assigneePeer.terminalId));
+          if (rec) {
+            if (rec.pty) {
+              rec.pty.writeInjected(r.prompt, true, true);
+            } else {
+              rec.terminal.sendText(r.prompt, true);
+            }
+          }
+        }
+      }
+      this.opts.logger(`[claws/2] task assigned: ${taskId} to ${r.assignee}`);
+      return { ok: true, taskId, assignedAt: now };
+    }
+
+    if (cmd === 'task.update') {
+      const denied = this.requireRole(ctx, ['worker']);
+      if (denied) return denied;
+      const r = req as import('./protocol').TaskUpdateRequest;
+      const task = this.tasks.get(r.taskId);
+      if (!task) return { ok: false, error: `task not found: ${r.taskId}` };
+      if (task.assignee !== ctx.getPeerId()) return { ok: false, error: 'not your task' };
+      if (['succeeded', 'failed', 'skipped'].includes(task.status)) {
+        return { ok: false, error: 'task already completed' };
+      }
+      task.status = r.status;
+      if (r.progressPct !== undefined) task.progressPct = r.progressPct;
+      if (r.note !== undefined) task.note = r.note;
+      task.updatedAt = Date.now();
+      // Publish task.status for orchestrator subscribers
+      this.fanOut('task.status', 'server', {
+        taskId: task.taskId,
+        assignee: task.assignee,
+        status: task.status,
+        progressPct: task.progressPct,
+        note: task.note,
+      }, false);
+      return { ok: true };
+    }
+
+    if (cmd === 'task.complete') {
+      const denied = this.requireRole(ctx, ['worker']);
+      if (denied) return denied;
+      const r = req as import('./protocol').TaskCompleteRequest;
+      const task = this.tasks.get(r.taskId);
+      if (!task) return { ok: false, error: `task not found: ${r.taskId}` };
+      if (task.assignee !== ctx.getPeerId()) return { ok: false, error: 'not your task' };
+      // Idempotent: if already completed, return ok without re-firing a push
+      if (['succeeded', 'failed', 'skipped'].includes(task.status)) return { ok: true };
+      const now = Date.now();
+      task.status = r.status;
+      task.result = r.result;
+      task.artifacts = r.artifacts;
+      task.completedAt = now;
+      task.updatedAt = now;
+      this.fanOut('task.completed', 'server', {
+        taskId: task.taskId,
+        status: task.status,
+        result: task.result,
+        artifacts: task.artifacts,
+      }, false);
+      this.opts.logger(`[claws/2] task completed: ${task.taskId} status=${task.status}`);
+      return { ok: true };
+    }
+
+    if (cmd === 'task.cancel') {
+      const denied = this.requireRole(ctx, ['orchestrator']);
+      if (denied) return denied;
+      const r = req as import('./protocol').TaskCancelRequest;
+      const task = this.tasks.get(r.taskId);
+      if (!task) return { ok: false, error: `task not found: ${r.taskId}` };
+      task.cancelRequested = true;
+      task.cancelReason = r.reason;
+      task.updatedAt = Date.now();
+      this.fanOut(`task.cancel_requested.${task.assignee}`, 'server', {
+        taskId: task.taskId,
+        reason: r.reason,
+      }, false);
+      return { ok: true };
+    }
+
+    if (cmd === 'task.list') {
+      const r = req as import('./protocol').TaskListRequest;
+      let list = Array.from(this.tasks.values());
+      if (r.assignee) list = list.filter((t) => t.assignee === r.assignee);
+      if (r.status) list = list.filter((t) => t.status === r.status);
+      if (r.since) list = list.filter((t) => t.updatedAt >= r.since!);
+      return { ok: true, tasks: list };
     }
 
     return { ok: false, error: `unknown cmd: ${cmd}` };

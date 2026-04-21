@@ -166,6 +166,50 @@ export interface BroadcastRequest extends BaseRequest {
   inject?: boolean;
 }
 
+/** Orchestrator: create a task and assign it to a worker peer. */
+export interface TaskAssignRequest extends BaseRequest {
+  cmd: 'task.assign';
+  title: string;
+  assignee: string;
+  prompt: string;
+  timeoutMs?: number;
+  /** How to deliver the task to the worker. 'publish' sends a pub/sub message; 'inject' also sends the prompt into the terminal; 'both' does both. */
+  deliver?: 'publish' | 'inject' | 'both';
+}
+
+/** Worker: report progress on an assigned task (also acts as a heartbeat). */
+export interface TaskUpdateRequest extends BaseRequest {
+  cmd: 'task.update';
+  taskId: string;
+  status: 'pending' | 'running' | 'blocked';
+  progressPct?: number;
+  note?: string;
+}
+
+/** Worker: mark a task as finished. Idempotent if already completed. */
+export interface TaskCompleteRequest extends BaseRequest {
+  cmd: 'task.complete';
+  taskId: string;
+  status: 'succeeded' | 'failed' | 'skipped';
+  result?: unknown;
+  artifacts?: Array<{ type: string; path: string }>;
+}
+
+/** Orchestrator: request cancellation of a task. */
+export interface TaskCancelRequest extends BaseRequest {
+  cmd: 'task.cancel';
+  taskId: string;
+  reason?: string;
+}
+
+/** Any role: list tasks with optional filters. */
+export interface TaskListRequest extends BaseRequest {
+  cmd: 'task.list';
+  assignee?: string;
+  status?: string;
+  since?: number;
+}
+
 export type ClawsRequest =
   | ListRequest
   | CreateRequest
@@ -183,6 +227,11 @@ export type ClawsRequest =
   | UnsubscribeRequest
   | PublishRequest
   | BroadcastRequest
+  | TaskAssignRequest
+  | TaskUpdateRequest
+  | TaskCompleteRequest
+  | TaskCancelRequest
+  | TaskListRequest
   | BaseRequest;
 
 export interface TerminalDescriptor {
