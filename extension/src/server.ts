@@ -4,12 +4,26 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CaptureStore } from './capture-store';
 import { TerminalManager } from './terminal-manager';
-import { ClawsRequest, ClawsResponse, HistoryEvent, PROTOCOL_VERSION } from './protocol';
+import { ClawsRequest, ClawsResponse, HistoryEvent, PROTOCOL_VERSION, PROTOCOL_VERSION_V2 } from './protocol';
 import { stripAnsi } from './ansi-strip';
 import {
   ServerConfigProvider,
   defaultServerConfig,
 } from './server-config';
+import { PeerConnection, ClawsRole, allocPeerId } from './peer-registry';
+
+/**
+ * Per-connection context threaded into `handle()`. Holds the raw socket
+ * plus closures for reading/writing the peerId and negotiated protocol
+ * captured in the `handleConnection` local scope.
+ */
+interface ConnCtx {
+  socket: net.Socket;
+  getPeerId(): string | null;
+  setPeerId(id: string): void;
+  getNegotiatedProtocol(): string;
+  setNegotiatedProtocol(p: string): void;
+}
 
 const MAX_READLOG_BYTES = 512 * 1024;
 const DEFAULT_SOCKET_REL = '.claws/claws.sock';
@@ -63,6 +77,14 @@ export class ClawsServer {
   private readonly startedAt: number = Date.now();
   /** Client versions we've already warned about — one warning per run per version. */
   private readonly versionWarned = new Set<string>();
+  /** claws/2 peer registry. Keyed by peerId. Cleared on stop(). */
+  private readonly peers = new Map<string, PeerConnection>();
+  /** Back-reference from raw socket → peerId, used during connection teardown. */
+  private readonly socketToPeer = new WeakMap<net.Socket, string>();
+  /** Monotonic peerId counter (the wire id itself is "p_" + hex). */
+  private peerSeq = 0;
+  /** topicPattern string → set of subscribing peerIds. Used by publish fan-out. */
+  private readonly subscriptionIndex = new Map<string, Set<string>>();
 
   constructor(private readonly opts: ServerOptions) {}
 
@@ -104,6 +126,8 @@ export class ClawsServer {
     try { this.server?.close(); } catch { /* ignore */ }
     try { if (this.socketPath) fs.unlinkSync(this.socketPath); } catch { /* ignore */ }
     this.server = null;
+    this.peers.clear();
+    this.subscriptionIndex.clear();
   }
 
   getSocketPath(): string | null { return this.socketPath; }
@@ -180,6 +204,19 @@ export class ClawsServer {
 
   private handleConnection(socket: net.Socket): void {
     let buf = '';
+    // Per-connection state. `_peerId` is set by the `hello` handler once
+    // the peer registers; remains null for plain claws/1 clients. The
+    // negotiated protocol starts at 'claws/1' and is upgraded to 'claws/2'
+    // on a successful hello handshake.
+    let _peerId: string | null = null;
+    let _protocol = 'claws/1';
+    const ctx: ConnCtx = {
+      socket,
+      getPeerId: () => _peerId,
+      setPeerId: (id) => { _peerId = id; },
+      getNegotiatedProtocol: () => _protocol,
+      setNegotiatedProtocol: (p) => { _protocol = p; },
+    };
     socket.on('data', (data) => {
       buf += data.toString('utf8');
       if (buf.length > MAX_LINE_BYTES) {
@@ -203,18 +240,18 @@ export class ClawsServer {
           socket.write(this.encode(undefined, { ok: false, error: 'bad json' }) + '\n');
           continue;
         }
-        // Protocol tag check (v1 only for now). Absent = claws/1.
-        if (req.protocol && req.protocol !== PROTOCOL_VERSION) {
-          socket.write(this.encode(req.id, {
-            ok: false,
-            error: `incompatible protocol version (server: ${PROTOCOL_VERSION}, client: ${req.protocol})`,
-          }) + '\n');
+        // Protocol tag check. Absent = claws/1. Both v1 and v2 are accepted
+        // on the wire; v2-only commands (hello/ping/publish/etc) enforce
+        // stricter protocol requirements inside their individual handlers.
+        const SUPPORTED_PROTOCOLS = ['claws/1', 'claws/2'];
+        if (req.protocol && !SUPPORTED_PROTOCOLS.includes(req.protocol)) {
+          socket.write(this.encode(req.id, { ok: false, error: 'incompatible protocol version' }) + '\n');
           continue;
         }
         // Client-version drift detection — warn once per version per run.
         const asAny = req as ClawsRequest & { clientVersion?: string; clientName?: string };
         if (asAny.clientVersion) this.maybeWarnClientVersion(asAny.clientVersion, asAny.clientName);
-        this.handle(req).then((resp) => {
+        this.handle(req, ctx).then((resp) => {
           socket.write(this.encode(req.id, resp) + '\n');
         }).catch((err) => {
           socket.write(this.encode(req.id, {
@@ -225,17 +262,41 @@ export class ClawsServer {
       }
     });
     socket.on('error', (err) => this.opts.logger(`[socket error] ${err}`));
+    socket.on('close', () => this.handleDisconnect(socket));
+  }
+
+  /**
+   * Tear down all claws/2 bookkeeping for a socket that has closed. Plain
+   * claws/1 connections were never registered and are a no-op. Removes the
+   * peer from `peers` and prunes the subscription index.
+   */
+  private handleDisconnect(socket: net.Socket): void {
+    const peerId = this.socketToPeer.get(socket);
+    if (!peerId) return;
+    const peer = this.peers.get(peerId);
+    this.peers.delete(peerId);
+    if (peer) {
+      for (const pattern of peer.subscriptions.values()) {
+        const set = this.subscriptionIndex.get(pattern);
+        if (set) { set.delete(peerId); if (set.size === 0) this.subscriptionIndex.delete(pattern); }
+      }
+    }
+    // Close may fire after extension deactivate has torn down the output
+    // channel; guard the logger so a teardown log line never crashes node.
+    try { this.opts.logger(`[claws/2] peer disconnected: ${peerId}`); } catch { /* ignore */ }
   }
 
   // Emit a response frame. Includes `id` (legacy correlation key), `rid`
-  // (guaranteed-unshadowed request id), and `protocol` tag. Fields from
-  // `body` can override everything EXCEPT `rid` and `protocol`.
+  // (guaranteed-unshadowed request id), and `protocol` tag. `rid` is
+  // forced at the end so body cannot shadow it. `protocol` defaults to
+  // claws/1 but body may override (e.g. the `hello` handler tags its
+  // reply with claws/2 so the client can confirm negotiation).
   private encode(reqId: number | string | undefined, body: ClawsResponse | Record<string, unknown>): string {
     return JSON.stringify({
       id: reqId,
+      protocol: PROTOCOL_VERSION,
       ...body,
       rid: reqId,
-      protocol: PROTOCOL_VERSION,
     });
   }
 
@@ -264,7 +325,33 @@ export class ClawsServer {
     }
   }
 
-  private async handle(req: ClawsRequest): Promise<ClawsResponse> {
+  /** True if some peer has already registered with role 'orchestrator'. */
+  private hasOrchestrator(): boolean {
+    for (const p of this.peers.values()) if (p.role === 'orchestrator') return true;
+    return false;
+  }
+
+  /** Allocate the next peerId for this server instance. */
+  private allocPeerId(): string { return allocPeerId(++this.peerSeq); }
+
+  /**
+   * Reject a request if the peer hasn't completed `hello` or is not in
+   * one of the accepted roles. Returns null when the peer is allowed to
+   * proceed, or a ready-to-send error response otherwise. Unused by the
+   * W3 handshake but the v2 handlers that follow (publish, task dispatch)
+   * will rely on this gate.
+   */
+  // @ts-expect-error — retained for upcoming v2 handlers; noUnusedLocals fires otherwise.
+  private requireRole(ctx: ConnCtx, roles: ClawsRole[]): ClawsResponse | null {
+    const pid = ctx.getPeerId();
+    if (!pid) return { ok: false, error: 'call hello first' };
+    const peer = this.peers.get(pid);
+    if (!peer) return { ok: false, error: 'peer unknown' };
+    if (!roles.includes(peer.role)) return { ok: false, error: `requires role: ${roles.join('|')}` };
+    return null;
+  }
+
+  private async handle(req: ClawsRequest, ctx: ConnCtx): Promise<ClawsResponse> {
     const { cmd } = req;
     const tm = this.opts.terminalManager;
 
@@ -471,6 +558,42 @@ export class ClawsServer {
         terminals: snap?.terminals ?? 0,
         uptime_ms: this.uptimeMs(),
       };
+    }
+
+    if (cmd === 'hello') {
+      const r = req as import('./protocol').HelloRequest;
+      if (r.protocol !== 'claws/2') return { ok: false, error: 'hello requires protocol: claws/2' };
+      if (r.role === 'orchestrator' && this.hasOrchestrator()) {
+        return { ok: false, error: 'orchestrator already registered' };
+      }
+      const peerId = this.allocPeerId();
+      const peer: PeerConnection = {
+        peerId,
+        role: r.role as ClawsRole,
+        peerName: r.peerName ?? 'unnamed',
+        terminalId: r.terminalId,
+        capabilities: r.capabilities ?? [],
+        socket: ctx.socket,
+        subscriptions: new Map(),
+        lastSeen: Date.now(),
+        connectedAt: Date.now(),
+      };
+      this.peers.set(peerId, peer);
+      this.socketToPeer.set(ctx.socket, peerId);
+      ctx.setPeerId(peerId);
+      ctx.setNegotiatedProtocol('claws/2');
+      this.opts.logger(`[claws/2] peer registered: ${peerId} role=${peer.role} name=${peer.peerName}`);
+      return {
+        ok: true,
+        peerId,
+        protocol: PROTOCOL_VERSION_V2,
+        serverCapabilities: ['push', 'broadcast', 'tasks'],
+        orchestratorPresent: this.hasOrchestrator(),
+      };
+    }
+
+    if (cmd === 'ping') {
+      return { ok: true, serverTime: Date.now() };
     }
 
     return { ok: false, error: `unknown cmd: ${cmd}` };

@@ -11,6 +11,7 @@
 // returns a terminal `id`).
 
 export const PROTOCOL_VERSION = 'claws/1';
+export const PROTOCOL_VERSION_V2 = 'claws/2';
 
 export interface BaseRequest {
   id?: number | string;
@@ -112,6 +113,29 @@ export interface IntrospectRequest extends BaseRequest {
   clientName?: string;
 }
 
+/**
+ * claws/2 handshake. Must be the first frame a peer sends on a new
+ * connection when speaking the v2 protocol. Server replies with the
+ * allocated peerId and its capability set. A second `hello` with
+ * `role: 'orchestrator'` while one is already registered is rejected.
+ */
+export interface HelloRequest extends BaseRequest {
+  cmd: 'hello';
+  /** MUST be 'claws/2' — the server rejects any other value on hello. */
+  protocol: string;
+  role: 'orchestrator' | 'worker' | 'observer';
+  peerName: string;
+  terminalId?: string;
+  capabilities?: string[];
+}
+
+/**
+ * Liveness probe. No state change, server responds with `serverTime`.
+ */
+export interface PingRequest extends BaseRequest {
+  cmd: 'ping';
+}
+
 export type ClawsRequest =
   | ListRequest
   | CreateRequest
@@ -123,6 +147,8 @@ export type ClawsRequest =
   | CloseRequest
   | ReadLogRequest
   | IntrospectRequest
+  | HelloRequest
+  | PingRequest
   | BaseRequest;
 
 export interface TerminalDescriptor {

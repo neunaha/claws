@@ -61,7 +61,8 @@
     "test:pty-lifecycle": "node test/pty-lifecycle.test.js",
     "test:profile": "node test/profile-provider.test.js",
     "test:multiconn": "node test/multi-connection.test.js",
-    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:native && npm run test:config && npm run test:capture-store && npm run test:oversized && npm run test:pty-lifecycle && npm run test:profile && npm run test:multiconn"
+    "test:v2-hello": "node test/claws-v2-hello.test.js",
+    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:native && npm run test:config && npm run test:capture-store && npm run test:oversized && npm run test:pty-lifecycle && npm run test:profile && npm run test:multiconn && npm run test:v2-hello"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
