@@ -17,7 +17,9 @@
  *     }
  *
  * Tools: claws_list, claws_create, claws_send, claws_exec,
- *        claws_read_log, claws_poll, claws_close, claws_worker
+ *        claws_read_log, claws_poll, claws_close, claws_worker,
+ *        claws_hello, claws_subscribe, claws_publish, claws_broadcast,
+ *        claws_ping, claws_peers
  */
 
 const net = require('net');
@@ -230,6 +232,85 @@ const TOOLS = [
         close_on_complete: { type: 'boolean', description: 'Auto-close the terminal after completion (default true).' },
       },
       required: ['name'],
+    },
+  },
+  {
+    name: 'claws_hello',
+    description: 'Register this Claude session with the Claws server as an orchestrator or worker peer. Must be called before subscribe, publish, or task commands. Returns a peerId for this session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        role: {
+          type: 'string',
+          enum: ['orchestrator', 'worker', 'observer'],
+          description: 'Peer role. Orchestrator may assign/cancel/broadcast; worker may publish status and claim tasks; observer is read-only.',
+        },
+        peerName: { type: 'string', description: "Human label for this peer (e.g. 'sdlc-lead', 'test-worker-1')." },
+        terminalId: { type: 'string', description: 'Optional: associate this peer with a specific terminal id so the server can correlate logs and do inject fan-out.' },
+        capabilities: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional list of capability strings the peer advertises (server intersects with its own).',
+        },
+      },
+      required: ['role', 'peerName'],
+    },
+  },
+  {
+    name: 'claws_subscribe',
+    description: "Subscribe to a topic pattern on the Claws message bus. Patterns support wildcards: '*' matches one segment, '**' matches many. Examples: 'task.status', 'worker.*', 'task.**'. Returns a subscriptionId.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topic: { type: 'string', description: 'Topic pattern to subscribe to (dot-namespaced, supports * and ** wildcards).' },
+      },
+      required: ['topic'],
+    },
+  },
+  {
+    name: 'claws_publish',
+    description: 'Publish a payload to a topic on the Claws message bus. All peers subscribed to a matching pattern will receive a push frame.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topic: { type: 'string', description: 'Topic to publish on.' },
+        payload: { type: 'object', description: 'The message payload (arbitrary JSON object).' },
+        echo: { type: 'boolean', description: 'If true, sender also receives the message (default false).' },
+      },
+      required: ['topic', 'payload'],
+    },
+  },
+  {
+    name: 'claws_broadcast',
+    description: "Orchestrator-only: send a text message to all workers (or all peers). Optionally inject the text directly into each worker's terminal via bracketed paste. Useful as a kill-switch or coordination signal.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The text payload to broadcast.' },
+        targetRole: {
+          type: 'string',
+          enum: ['worker', 'orchestrator', 'observer', 'all'],
+          description: "Which role(s) to target (default 'worker').",
+        },
+        inject: { type: 'boolean', description: "If true, text is also sent into each peer's associated terminal via bracketed paste (default false)." },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'claws_ping',
+    description: "Check that the Claws server is reachable. Returns the server's current timestamp. Useful as a heartbeat.",
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'claws_peers',
+    description: 'List all currently registered peers on the Claws server (claws/2 connections that have called hello). Returns role, peerName, terminalId, and lastSeen for each peer.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
     },
   },
 ];
@@ -477,6 +558,122 @@ async function handleTool(name, args) {
     const resp = await clawsRpc(sock, { cmd: 'close', id: args.id });
     if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error}` }];
     return [{ type: 'text', text: `closed terminal ${args.id}` }];
+  }
+
+  /**
+   * claws_hello — register this Claude session with the Claws server.
+   * Calls the claws/2 `hello` command. Must be invoked before any
+   * subscribe/publish/task/broadcast call so the server can allocate a
+   * stable peerId for this connection.
+   * Role requirements: none (any role may hello).
+   * Returns: peerId, serverCapabilities, orchestratorPresent.
+   */
+  if (name === 'claws_hello') {
+    const resp = await clawsRpc(sock, {
+      cmd: 'hello',
+      protocol: 'claws/2',
+      role: args.role,
+      peerName: args.peerName,
+      terminalId: args.terminalId,
+      capabilities: Array.isArray(args.capabilities) ? args.capabilities : undefined,
+    });
+    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'hello failed'}` }];
+    const out = {
+      peerId: resp.peerId,
+      serverCapabilities: resp.serverCapabilities || [],
+      orchestratorPresent: !!resp.orchestratorPresent,
+    };
+    return [{ type: 'text', text: JSON.stringify(out, null, 2) }];
+  }
+
+  /**
+   * claws_subscribe — subscribe this client to a topic pattern on the bus.
+   * Calls the claws/2 `subscribe` command. Server-pushed frames for matching
+   * topics will be delivered on this socket thereafter.
+   * Role requirements: none (orchestrator, worker, and observer may all subscribe).
+   * Returns: subscriptionId (opaque string used with unsubscribe).
+   */
+  if (name === 'claws_subscribe') {
+    const resp = await clawsRpc(sock, { cmd: 'subscribe', topic: args.topic });
+    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'subscribe failed'}` }];
+    return [{ type: 'text', text: JSON.stringify({ subscriptionId: resp.subscriptionId }, null, 2) }];
+  }
+
+  /**
+   * claws_publish — publish a payload to a topic on the Claws message bus.
+   * Calls the claws/2 `publish` command. Delivered to every peer whose
+   * subscription pattern matches the topic; the sender receives the message
+   * too only when `echo: true`.
+   * Role requirements: none (any peer may publish).
+   * Returns: deliveredTo (number of subscribers who received the frame).
+   */
+  if (name === 'claws_publish') {
+    const resp = await clawsRpc(sock, {
+      cmd: 'publish',
+      topic: args.topic,
+      payload: args.payload || {},
+      echo: !!args.echo,
+    });
+    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'publish failed'}` }];
+    return [{ type: 'text', text: JSON.stringify({ deliveredTo: resp.deliveredTo || 0 }, null, 2) }];
+  }
+
+  /**
+   * claws_broadcast — orchestrator-only fan-out to all workers (or all peers).
+   * Calls the claws/2 `broadcast` command. With `inject: true` the server also
+   * sends the text into each target peer's associated terminal via bracketed
+   * paste — this is the kill-switch path for workers that are deep in a tool
+   * call and not reading their socket.
+   * Role requirements: caller must have handshaked with role='orchestrator'.
+   * Returns: deliveredTo (number of peers the broadcast reached).
+   */
+  if (name === 'claws_broadcast') {
+    const resp = await clawsRpc(sock, {
+      cmd: 'broadcast',
+      text: args.text,
+      targetRole: args.targetRole || 'worker',
+      inject: !!args.inject,
+    });
+    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'broadcast failed'}` }];
+    return [{ type: 'text', text: JSON.stringify({ deliveredTo: resp.deliveredTo || 0 }, null, 2) }];
+  }
+
+  /**
+   * claws_ping — liveness check.
+   * Calls the claws/2 `ping` command. Also acts as an implicit heartbeat —
+   * the server refreshes the caller's `lastSeen` so it is not reaped as
+   * offline.
+   * Role requirements: none.
+   * Returns: serverTime (ms since epoch as reported by the server).
+   */
+  if (name === 'claws_ping') {
+    const resp = await clawsRpc(sock, { cmd: 'ping' });
+    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'ping failed'}` }];
+    return [{ type: 'text', text: JSON.stringify({ serverTime: resp.serverTime }, null, 2) }];
+  }
+
+  /**
+   * claws_peers — list all registered claws/2 peers.
+   * There is no dedicated `peers` command on the server yet, so this tool
+   * calls `introspect` and surfaces whatever peer info is included in the
+   * snapshot (claws/2 Phase A exposes a peers map on the connection server).
+   * Role requirements: none.
+   * Returns: an array of peer records with { peerId, role, peerName, terminalId, lastSeen }.
+   *
+   * TODO: server-side 'peers' command needed in claws/2 Phase C — until then
+   * we synthesise the list from `introspect` output. If the server already
+   * has a `peers` command available we fall back to that first.
+   */
+  if (name === 'claws_peers') {
+    // Prefer a direct `peers` command if the server implements it;
+    // fall back to `introspect` otherwise.
+    let resp = await clawsRpc(sock, { cmd: 'peers' });
+    if (!resp.ok) {
+      resp = await clawsRpc(sock, { cmd: 'introspect' });
+    }
+    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'peers lookup failed'}` }];
+    const peers = resp.peers || (resp.snapshot && resp.snapshot.peers) || [];
+    return [{ type: 'text', text: JSON.stringify({ peers }, null, 2) }];
   }
 
   if (name === 'claws_worker') {
