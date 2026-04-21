@@ -78,10 +78,12 @@ Claws/
 │   │                   #            terminal-manager.ts, capture-store.ts,
 │   │                   #            server-config.ts, status-bar.ts,
 │   │                   #            uninstall-cleanup.ts, protocol.ts,
-│   │                   #            ansi-strip.ts, safety.ts
+│   │                   #            ansi-strip.ts, safety.ts,
+│   │                   #            peer-registry.ts, task-registry.ts
 │   ├── test/           #   smoke, native-bundle, config-reload, capture-store,
 │   │                   #   oversized-line, pty-lifecycle, profile-provider,
-│   │                   #   multi-connection (57 checks across 8 suites)
+│   │                   #   multi-connection, claws-v2-hello, claws-v2-pubsub, claws-v2-tasks
+│   │                   #   (90+ checks across 11 suites)
 │   ├── native/         #   bundled node-pty (self-contained, no global install)
 │   ├── package.json    #   manifest, build scripts, deps (node-pty optional)
 │   ├── tsconfig.json   #   strict TS config
@@ -128,8 +130,8 @@ See `.local/README.md` for the full rubric.
 
 ## Current state
 
-- **Version**: 0.5.0 — Phase 6 hardening sweep (6A + 6B) closed out. 57 automated checks across 8 suites. 50-point audit cleared.
-- **Phase**: 2 — TypeScript rewrite, Pseudoterminal, config hot-reload, status bar, Uninstall Cleanup, chord keybindings, bundled `node-pty`, UUID profile adoption all landed. Marketplace publish is the remaining Phase 2 item.
+- **Version**: 0.6.0 — claws/2 Agentic SDLC Protocol shipped (Phase A + B). Peer registry, pub/sub message bus, task registry, 6 new MCP tools. 33 new checks → 90 total across 11 suites.
+- **Phase**: 2 (complete) + Phase A/B (claws/2). All Phase 2 items landed. Phase A: peer registry + pub/sub. Phase B: task registry + MCP tools. Marketplace publish and WebSocket transport are Phase 3.
 - **Transport**: Unix socket only (per-folder sockets for multi-root workspaces). WebSocket transport planned (Phase 3).
 - **Cross-device**: not yet. SSH tunnel pattern documented as interim. WebSocket + token auth planned.
 - **Marketplace**: not published yet. Needs publisher account + final VSIX validation.
@@ -162,6 +164,18 @@ See `.local/README.md` for the full rubric.
 - [ ] First marketplace publish
 - [ ] PyPI publish for claws-client
 
+### Phase A/B — claws/2 Agentic SDLC Protocol (shipped in v0.6.0)
+- [x] Peer registry (`peer-registry.ts`) — in-memory map keyed by peerId, role, peerName; WeakMap<Socket, peerId> for O(1) disconnect cleanup
+- [x] hello / ping — handshake + heartbeat
+- [x] subscribe / unsubscribe / publish / broadcast — pub/sub with wildcard topic patterns (`*` / `**`)
+- [x] Server-push frames — `{ push: 'message', ... }` without `rid`; clients distinguish by absence of rid
+- [x] Task registry (`task-registry.ts`) — assign / update / complete / cancel / list with five-state lifecycle
+- [x] MCP tools — `claws_hello`, `claws_subscribe`, `claws_publish`, `claws_broadcast`, `claws_ping`, `claws_peers`
+- [x] inject-claude-md.js — TOOLS_V2 array + claws/2 subsection emitted into CLAUDE.md
+- [x] Three new slash commands — `/claws-v2-orchestrate`, `/claws-v2-worker`, `/claws-v2-task-demo`
+- [x] 33 new automated checks (claws-v2-hello: 6, claws-v2-pubsub: 11, claws-v2-tasks: 16)
+- [ ] `peers` server command — Phase C (claws_peers currently returns stub `[]`)
+
 ### Phase 3 — Cross-device
 - [ ] WebSocket transport (opt-in, alongside Unix socket)
 - [ ] Token-based authentication
@@ -186,7 +200,15 @@ See `.local/README.md` for the full rubric.
 - Extension must have **zero npm dependencies** — everything stdlib or VS Code API.
 - Python client exists in `clients/python/` as an **optional** convenience — not on the install path.
 - `script(1)` wrapper must work on macOS and Linux (BSD vs GNU `script` flags differ).
-- Protocol is versioned: `{ protocol: "claws/1", ... }` in handshake.
+- Protocol is versioned: `{ protocol: "claws/1", ... }` in handshake. claws/2 extends this with peer identity, pub/sub, and task assignment — all backward compatible with claws/1 clients.
+
+**claws/2 additions** (v0.6.0):
+- `hello` — register as orchestrator / worker / observer; returns peerId
+- `ping` — heartbeat, refreshes lastSeen
+- `subscribe` / `unsubscribe` / `publish` — topic pub/sub with `*` and `**` wildcards
+- `broadcast` — orchestrator-only fan-out to all workers
+- `task.assign` / `task.update` / `task.complete` / `task.cancel` / `task.list` — full task lifecycle
+- Server-push frames: `{ push: 'message', protocol: 'claws/2', topic, from, payload, sentAt }` — no `rid` field
 - MIT license. All contributions welcome.
 - Commit messages: conventional commits (`feat:`, `fix:`, `docs:`, `perf:`, `test:`).
 
