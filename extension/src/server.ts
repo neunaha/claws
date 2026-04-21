@@ -10,7 +10,7 @@ import {
   ServerConfigProvider,
   defaultServerConfig,
 } from './server-config';
-import { PeerConnection, ClawsRole, allocPeerId } from './peer-registry';
+import { PeerConnection, ClawsRole, allocPeerId, matchTopic } from './peer-registry';
 
 /**
  * Per-connection context threaded into `handle()`. Holds the raw socket
@@ -85,6 +85,8 @@ export class ClawsServer {
   private peerSeq = 0;
   /** topicPattern string → set of subscribing peerIds. Used by publish fan-out. */
   private readonly subscriptionIndex = new Map<string, Set<string>>();
+  /** Monotonic subscriptionId counter. */
+  private subSeq = 0;
 
   constructor(private readonly opts: ServerOptions) {}
 
@@ -128,6 +130,7 @@ export class ClawsServer {
     this.server = null;
     this.peers.clear();
     this.subscriptionIndex.clear();
+    this.subSeq = 0;
   }
 
   getSocketPath(): string | null { return this.socketPath; }
@@ -300,6 +303,46 @@ export class ClawsServer {
     });
   }
 
+  /**
+   * Sends an unsolicited push frame to a peer socket.
+   * Push frames intentionally omit `rid` so clients can distinguish them
+   * from responses (a frame with `rid` is a response; without is a push).
+   */
+  private pushFrame(socket: net.Socket, topic: string, from: string, payload: unknown): void {
+    const frame = JSON.stringify({
+      push: 'message',
+      protocol: PROTOCOL_VERSION_V2,
+      topic,
+      from,
+      payload,
+      sentAt: Date.now(),
+    }) + '\n';
+    try {
+      socket.write(frame);
+    } catch (err) {
+      this.opts.logger(`[claws/2] push write failed for ${from}: ${err}`);
+    }
+  }
+
+  /**
+   * Delivers a published message to all peers subscribed to a matching pattern.
+   * Returns the count of peers that received the message.
+   */
+  private fanOut(topic: string, from: string, payload: unknown, echo: boolean): number {
+    let count = 0;
+    for (const [pattern, peerIds] of this.subscriptionIndex) {
+      if (!matchTopic(topic, pattern)) continue;
+      for (const peerId of peerIds) {
+        if (!echo && peerId === from) continue;
+        const peer = this.peers.get(peerId);
+        if (!peer) continue;
+        this.pushFrame(peer.socket, topic, from, payload);
+        count++;
+      }
+    }
+    return count;
+  }
+
   private getConfig() {
     return this.opts.getConfig ? this.opts.getConfig() : defaultServerConfig;
   }
@@ -341,7 +384,6 @@ export class ClawsServer {
    * W3 handshake but the v2 handlers that follow (publish, task dispatch)
    * will rely on this gate.
    */
-  // @ts-expect-error — retained for upcoming v2 handlers; noUnusedLocals fires otherwise.
   private requireRole(ctx: ConnCtx, roles: ClawsRole[]): ClawsResponse | null {
     const pid = ctx.getPeerId();
     if (!pid) return { ok: false, error: 'call hello first' };
@@ -594,6 +636,69 @@ export class ClawsServer {
 
     if (cmd === 'ping') {
       return { ok: true, serverTime: Date.now() };
+    }
+
+    if (cmd === 'subscribe') {
+      const denied = this.requireRole(ctx, ['orchestrator', 'worker', 'observer']);
+      if (denied) return denied;
+      const r = req as import('./protocol').SubscribeRequest;
+      if (!r.topic || typeof r.topic !== 'string') return { ok: false, error: 'topic required' };
+      const peerId = ctx.getPeerId()!;
+      const peer = this.peers.get(peerId)!;
+      const subId = `s_${(++this.subSeq).toString(16).padStart(4, '0')}`;
+      peer.subscriptions.set(subId, r.topic);
+      if (!this.subscriptionIndex.has(r.topic)) this.subscriptionIndex.set(r.topic, new Set());
+      this.subscriptionIndex.get(r.topic)!.add(peerId);
+      return { ok: true, subscriptionId: subId };
+    }
+
+    if (cmd === 'unsubscribe') {
+      const denied = this.requireRole(ctx, ['orchestrator', 'worker', 'observer']);
+      if (denied) return denied;
+      const r = req as import('./protocol').UnsubscribeRequest;
+      const peerId = ctx.getPeerId()!;
+      const peer = this.peers.get(peerId)!;
+      const pattern = peer.subscriptions.get(r.subscriptionId);
+      if (!pattern) return { ok: false, error: 'subscription not found' };
+      peer.subscriptions.delete(r.subscriptionId);
+      const set = this.subscriptionIndex.get(pattern);
+      if (set) { set.delete(peerId); if (set.size === 0) this.subscriptionIndex.delete(pattern); }
+      return { ok: true };
+    }
+
+    if (cmd === 'publish') {
+      const denied = this.requireRole(ctx, ['orchestrator', 'worker', 'observer']);
+      if (denied) return denied;
+      const r = req as import('./protocol').PublishRequest;
+      if (!r.topic || typeof r.topic !== 'string') return { ok: false, error: 'topic required' };
+      const peerId = ctx.getPeerId()!;
+      const delivered = this.fanOut(r.topic, peerId, r.payload, r.echo ?? false);
+      return { ok: true, deliveredTo: delivered };
+    }
+
+    if (cmd === 'broadcast') {
+      const denied = this.requireRole(ctx, ['orchestrator']);
+      if (denied) return denied;
+      const r = req as import('./protocol').BroadcastRequest;
+      const from = ctx.getPeerId()!;
+      const targetRole = r.targetRole ?? 'worker';
+      let count = 0;
+      for (const peer of this.peers.values()) {
+        if (targetRole !== 'all' && peer.role !== targetRole) continue;
+        this.pushFrame(peer.socket, 'system.broadcast', from, { text: r.text });
+        count++;
+        if (r.inject && peer.terminalId) {
+          const rec = this.opts.terminalManager.recordById(String(peer.terminalId));
+          if (rec) {
+            if (rec.pty) {
+              rec.pty.writeInjected(r.text, true, true);
+            } else {
+              rec.terminal.sendText(r.text, true);
+            }
+          }
+        }
+      }
+      return { ok: true, deliveredTo: count };
     }
 
     return { ok: false, error: `unknown cmd: ${cmd}` };

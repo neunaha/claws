@@ -136,6 +136,36 @@ export interface PingRequest extends BaseRequest {
   cmd: 'ping';
 }
 
+/** Subscribe to a topic pattern. Returns a subscriptionId. */
+export interface SubscribeRequest extends BaseRequest {
+  cmd: 'subscribe';
+  topic: string;
+}
+
+/** Remove a subscription by id. */
+export interface UnsubscribeRequest extends BaseRequest {
+  cmd: 'unsubscribe';
+  subscriptionId: string;
+}
+
+/** Publish a payload to a topic. Server fans out to all matching subscribers. */
+export interface PublishRequest extends BaseRequest {
+  cmd: 'publish';
+  topic: string;
+  payload: unknown;
+  /** If true, also deliver to the sender. Default false. */
+  echo?: boolean;
+}
+
+/** Orchestrator-only: fan out a message to all workers (or all peers). */
+export interface BroadcastRequest extends BaseRequest {
+  cmd: 'broadcast';
+  text: string;
+  targetRole?: 'worker' | 'orchestrator' | 'observer' | 'all';
+  /** If true, also send the text into each target's associated terminalId via bracketed paste. */
+  inject?: boolean;
+}
+
 export type ClawsRequest =
   | ListRequest
   | CreateRequest
@@ -149,6 +179,10 @@ export type ClawsRequest =
   | IntrospectRequest
   | HelloRequest
   | PingRequest
+  | SubscribeRequest
+  | UnsubscribeRequest
+  | PublishRequest
+  | BroadcastRequest
   | BaseRequest;
 
 export interface TerminalDescriptor {
