@@ -784,9 +784,9 @@ The \`extension/\` copy is ~300–400 KB. Common choices:
 - **Ignore it** (\`.claws-bin/extension/\`) if you treat it as an install
   artifact that regenerates on demand.
 
-Either way, \`.mcp.json\`, \`.claude/\`, and this directory's other files are
-safe to commit — they're stable across installs and help teammates get the
-same Claws behavior.
+\`.mcp.json\` is machine-specific (contains absolute paths) and is gitignored.
+Do not commit it. Re-run the installer to regenerate it if node or the
+project moves.
 
 ## Installing Claws from this project
 
@@ -813,26 +813,30 @@ Claws docs: https://github.com/neunaha/claws
 CLAWSBIN
     ok "wrote $PROJECT_ROOT/.claws-bin/README.md"
 
-    # Write or merge .mcp.json with relative-path registration
+    # Write or merge .mcp.json with absolute-path registration.
+    # Absolute paths fix nvm/volta/asdf silent failures (node not on GUI PATH)
+    # and CWD-sensitive launches (Claude Code doesn't chdir to the .mcp.json
+    # dir before spawning the server). .mcp.json becomes machine-specific and
+    # must stay gitignored.
     PROJECT_MCP="$PROJECT_ROOT/.mcp.json"
+    CLAWS_NODE_BIN=$(command -v node 2>/dev/null || echo 'node')
     node --no-deprecation -e "
 const fs = require('fs');
 const p = process.argv[1];
+const projectRoot = process.argv[2];
+const nodeBin = process.argv[3];
 let cfg = {};
 try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
 if (!cfg.mcpServers) cfg.mcpServers = {};
 cfg.mcpServers.claws = {
-  command: 'node',
-  args: ['./.claws-bin/mcp_server.js'],
-  // CLAWS_SOCKET is relative to the CWD when the MCP server process starts.
-  // Claude Code sets CWD to the workspace root, so this resolves to
-  // <project>/.claws/claws.sock — the socket the VS Code extension creates.
-  // If Claude Code is launched from a different directory, set CLAWS_SOCKET
-  // to an absolute path in your .mcp.json.
-  env: { CLAWS_SOCKET: '.claws/claws.sock' }
+  type: 'stdio',
+  command: nodeBin,
+  args: [projectRoot + '/.claws-bin/mcp_server.js'],
+  cwd: projectRoot,
+  env: { CLAWS_SOCKET: projectRoot + '/.claws/claws.sock' }
 };
 fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-" "$PROJECT_MCP"
+" "$PROJECT_MCP" "$PROJECT_ROOT" "$CLAWS_NODE_BIN"
     ok "wrote $PROJECT_MCP"
     if ! node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
       bad ".mcp.json written to $PROJECT_ROOT but is not valid JSON — MCP server will fail to load"
