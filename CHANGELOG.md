@@ -5,6 +5,41 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-04-21
+
+### Added — claws/2 Agentic SDLC Protocol (Phase A + B)
+
+**New protocol version `claws/2`** — a backward-compatible extension of `claws/1` that adds a message bus, peer identity, and a task registry so an orchestrator Claude can coordinate a fleet of worker Claudes over the existing Unix socket.
+
+Key additions (all new commands are additive — `claws/1` clients continue to work unchanged):
+
+- **`hello` handshake** — clients register as `orchestrator`, `worker`, or `observer`. Returns a stable `peerId` for the session. Exactly one orchestrator allowed per socket; a second registration returns an error. Workers that disconnect trigger `worker.offline.<peerId>` events.
+
+- **Peer registry** (`peer-registry.ts`) — in-memory map of live peers keyed by peerId. Tracks role, peerName, terminalId, subscriptions, and lastSeen. Cleared on extension reload. `WeakMap<Socket, peerId>` enables O(1) cleanup on disconnect.
+
+- **`subscribe` / `unsubscribe` / `publish`** — named topic pub/sub over the existing socket. Topic patterns support `*` (one segment) and `**` (many segments). Server fans out to matching subscribers. `echo: true` delivers to the sender too.
+
+- **Server-push frames** — new frame format with `push: 'message'` and no `rid` field. Clients distinguish push frames from responses by the absence of `rid`. Implemented via a dedicated `pushFrame()` helper that catches write errors without crashing the server.
+
+- **`broadcast`** — orchestrator-only shorthand that fans out a text message to all workers (or all peers by role). Optional `inject: true` also sends the text into each peer's associated terminal via bracketed paste — the "kill switch" for hung workers.
+
+- **`ping`** — lightweight heartbeat command. Returns `serverTime`. Any command from a peer refreshes its `lastSeen`.
+
+- **Task registry** (`task-registry.ts`) — in-memory task lifecycle with five commands:
+  - `task.assign` (orchestrator) — creates a task, delivers via pub/sub and/or terminal inject
+  - `task.update` (worker, own tasks only) — reports progress; publishes `task.status`
+  - `task.complete` (worker, own tasks only, idempotent) — finalises the task; publishes `task.completed`
+  - `task.cancel` (orchestrator) — sets `cancelRequested`; publishes `task.cancel_requested.<assignee>`
+  - `task.list` (any role) — filtered snapshot by assignee, status, or updatedAt cursor
+
+- **MCP client tools** (`mcp_server.js`) — six new tools expose claws/2 to Claude Code: `claws_hello`, `claws_subscribe`, `claws_publish`, `claws_broadcast`, `claws_ping`, `claws_peers`.
+
+### Fixed
+- **`.mcp.json` now emits absolute paths** — `command`, `args[0]`, `cwd`, and `CLAWS_SOCKET` are pinned to absolute paths at install time. Eliminates silent failures for nvm/volta/asdf users and CWD-sensitive Claude Code launches. The file is machine-specific and gitignored; the embedded README now says so.
+
+### Tests
+- 11 suites, 90+ checks. Three new suites added: `claws-v2-hello` (hello handshake + peer registry), `claws-v2-pubsub` (subscribe/unsubscribe/publish/broadcast + wildcard matching), `claws-v2-tasks` (full task lifecycle including push-frame delivery assertions).
+
 ## [0.5.11] - 2026-04-19
 
 ### Milestone
