@@ -1,3 +1,10 @@
+> **Scope note**: This file is loaded by the ECC plugin's `SessionStart` hook as a system-reminder.
+> It is NOT auto-loaded by stock Claude Code. The canonical imperative rules that every Claude
+> session sees are in the `CLAWS:BEGIN` block injected into `CLAUDE.md` by `scripts/inject-claude-md.js`.
+> This file is a supplement for ECC users — do not rely on it as the sole enforcement layer.
+
+---
+
 # Claws — Terminal Behavior Override
 
 > Auto-installed by Claws. This rule OVERRIDES default terminal behavior.
