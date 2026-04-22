@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Register Claws lifecycle hooks into ~/.claude/settings.json.
-// Usage: node inject-settings-hooks.js <claws-bin-dir> [--dry-run] [--remove]
+// Usage: node inject-settings-hooks.js [claws-bin-dir] [--dry-run] [--remove]
 //
 // Adds three hooks (all tagged _source:"claws" for clean uninstall):
 //   SessionStart  — emits lifecycle reminder when .claws/claws.sock detected
@@ -9,17 +9,21 @@
 //
 // Idempotent: running twice produces the same result.
 // --remove: strips all _source:"claws" hooks without touching others.
+//
+// claws-bin-dir defaults to <install-dir>/.claws-bin so hooks always point
+// at the global source (~/.claws-src/.claws-bin/hooks/) — not a per-project
+// copy. This means hooks work correctly across multiple Claws projects.
 
 'use strict';
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 
-const CLAWS_BIN = process.argv[2];
-if (!CLAWS_BIN && !process.argv.includes('--remove')) {
-  console.error('usage: inject-settings-hooks.js <claws-bin-dir> [--dry-run] [--remove]');
-  process.exit(2);
-}
+// Default: resolve from this script's location (scripts/ → ../.claws-bin)
+const DEFAULT_CLAWS_BIN = path.join(__dirname, '..', '.claws-bin');
+const CLAWS_BIN = (process.argv[2] && !process.argv[2].startsWith('--'))
+  ? process.argv[2]
+  : DEFAULT_CLAWS_BIN;
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const REMOVE  = process.argv.includes('--remove');
