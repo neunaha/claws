@@ -80,6 +80,35 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 }
 
+const INSTALL_URL = 'https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh';
+
+async function maybePromptInstall(
+  context: vscode.ExtensionContext,
+  wsRoot: string,
+  logger: (msg: string) => void,
+): Promise<void> {
+  if (detectMcpServerVersion(wsRoot).present) return;
+
+  const dismissedKey = `claws.installDismissed:${wsRoot}`;
+  if (context.globalState.get<boolean>(dismissedKey)) return;
+
+  const choice = await vscode.window.showInformationMessage(
+    'Claws is not set up in this workspace. Install now to enable AI terminal orchestration?',
+    'Install Claws',
+    'Not Now',
+  );
+
+  if (choice !== 'Install Claws') {
+    await context.globalState.update(dismissedKey, true);
+    return;
+  }
+
+  const terminal = vscode.window.createTerminal({ name: 'Claws Install', cwd: wsRoot });
+  terminal.show();
+  terminal.sendText(`bash <(curl -fsSL ${INSTALL_URL})`);
+  logger(`[claws] install script launched for ${wsRoot}`);
+}
+
 function activateInner(context: vscode.ExtensionContext, logger: (msg: string) => void): void {
   const folders = vscode.workspace.workspaceFolders ?? [];
   const version = (context.extension?.packageJSON?.version as string) || '0.5.x';
@@ -330,12 +359,18 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
     logger(`[claws] server stopped for folder: ${root}`);
   };
 
-  for (const folder of folders) startServerFor(folder);
+  for (const folder of folders) {
+    startServerFor(folder);
+    void maybePromptInstall(context, folder.uri.fsPath, logger);
+  }
 
   if (typeof vscode.workspace.onDidChangeWorkspaceFolders === 'function') {
     context.subscriptions.push(
       vscode.workspace.onDidChangeWorkspaceFolders((e) => {
-        for (const added of e.added) startServerFor(added);
+        for (const added of e.added) {
+          startServerFor(added);
+          void maybePromptInstall(context, added.uri.fsPath, logger);
+        }
         for (const removed of e.removed) stopServerFor(removed.uri.fsPath);
       }),
     );
