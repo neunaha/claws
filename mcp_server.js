@@ -575,15 +575,15 @@ async function handleTool(name, args) {
 
   if (name === 'claws_list') {
     const resp = await clawsRpc(sock, { cmd: 'list' });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error}` }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error}` }], isError: true };
     const terms = resp.terminals || [];
-    if (!terms.length) return [{ type: 'text', text: '[no terminals open]' }];
+    if (!terms.length) return { content: [{ type: 'text', text: '[no terminals open]' }] };
     const lines = terms.map(t => {
       const wrap = t.logPath ? 'WRAPPED' : 'unwrapped';
       const marker = t.active ? '*' : ' ';
       return `${marker} ${t.id}  ${(t.name || '').padEnd(25)} pid=${t.pid}  [${wrap}]`;
     });
-    return [{ type: 'text', text: lines.join('\n') }];
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
   }
 
   if (name === 'claws_create') {
@@ -591,10 +591,10 @@ async function handleTool(name, args) {
       cmd: 'create', name: args.name || 'claws',
       cwd: args.cwd, wrapped: args.wrapped !== false, show: true,
     });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error}` }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error}` }], isError: true };
     let text = `created terminal id=${resp.id}`;
     if (resp.logPath) text += ` wrapped logPath=${resp.logPath}`;
-    return [{ type: 'text', text }];
+    return { content: [{ type: 'text', text }] };
   }
 
   if (name === 'claws_send') {
@@ -602,8 +602,8 @@ async function handleTool(name, args) {
       cmd: 'send', id: args.id, text: args.text,
       newline: args.newline !== false,
     });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error}` }];
-    return [{ type: 'text', text: 'sent' }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error}` }], isError: true };
+    return { content: [{ type: 'text', text: 'sent' }] };
   }
 
   if (name === 'claws_exec') {
@@ -612,26 +612,26 @@ async function handleTool(name, args) {
     if (!result.ok) {
       let text = `ERROR: ${result.error}`;
       if (result.partial) text += `\n[partial output]\n${result.partial}`;
-      return [{ type: 'text', text }];
+      return { content: [{ type: 'text', text }] };
     }
-    return [{ type: 'text', text: `exit ${result.exit_code}\n${result.output}` }];
+    return { content: [{ type: 'text', text: `exit ${result.exit_code}\n${result.output}` }] };
   }
 
   if (name === 'claws_read_log') {
     const resp = await clawsRpc(sock, { cmd: 'readLog', id: args.id, strip: true });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error}` }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error}` }], isError: true };
     const allLines = (resp.bytes || '').split('\n');
     const n = args.lines || 50;
     const tail = allLines.length > n ? allLines.slice(-n) : allLines;
     const header = `[term ${args.id} · ${resp.totalSize || 0} bytes · showing last ${tail.length} of ${allLines.length} lines]`;
-    return [{ type: 'text', text: header + '\n' + tail.join('\n') }];
+    return { content: [{ type: 'text', text: header + '\n' + tail.join('\n') }] };
   }
 
   if (name === 'claws_poll') {
     const resp = await clawsRpc(sock, { cmd: 'poll', since: args.since || 0 });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error}` }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error}` }], isError: true };
     const events = resp.events || [];
-    if (!events.length) return [{ type: 'text', text: `[no events · cursor ${resp.cursor || 0}]` }];
+    if (!events.length) return { content: [{ type: 'text', text: `[no events · cursor ${resp.cursor || 0}]` }] };
     const lines = events.map(e => {
       let line = `[seq ${e.seq} · ${e.terminalName} · exit ${e.exitCode}] $ ${e.commandLine || ''}`;
       if (e.output) {
@@ -640,13 +640,13 @@ async function handleTool(name, args) {
       }
       return line;
     });
-    return [{ type: 'text', text: lines.join('\n') + `\n[cursor ${resp.cursor}]` }];
+    return { content: [{ type: 'text', text: lines.join('\n') + `\n[cursor ${resp.cursor}]` }] };
   }
 
   if (name === 'claws_close') {
     const resp = await clawsRpc(sock, { cmd: 'close', id: args.id });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error}` }];
-    return [{ type: 'text', text: `closed terminal ${args.id}` }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error}` }], isError: true };
+    return { content: [{ type: 'text', text: `closed terminal ${args.id}` }] };
   }
 
   /**
@@ -670,14 +670,14 @@ async function handleTool(name, args) {
       terminalId: args.terminalId,
       capabilities: Array.isArray(args.capabilities) ? args.capabilities : undefined,
     });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'hello failed'}` }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error || 'hello failed'}` }], isError: true };
     _v2PeerId = resp.peerId;
     const out = {
       peerId: resp.peerId,
       serverCapabilities: resp.serverCapabilities || [],
       orchestratorPresent: !!resp.orchestratorPresent,
     };
-    return [{ type: 'text', text: JSON.stringify(out, null, 2) }];
+    return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] };
   }
 
   /**
@@ -689,8 +689,8 @@ async function handleTool(name, args) {
    */
   if (name === 'claws_subscribe') {
     const resp = await v2Rpc(sock, { cmd: 'subscribe', topic: args.topic });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'subscribe failed'}` }];
-    return [{ type: 'text', text: JSON.stringify({ subscriptionId: resp.subscriptionId }, null, 2) }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error || 'subscribe failed'}` }], isError: true };
+    return { content: [{ type: 'text', text: JSON.stringify({ subscriptionId: resp.subscriptionId }, null, 2) }] };
   }
 
   /**
@@ -708,8 +708,8 @@ async function handleTool(name, args) {
       payload: args.payload || {},
       echo: !!args.echo,
     });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'publish failed'}` }];
-    return [{ type: 'text', text: JSON.stringify({ deliveredTo: resp.deliveredTo || 0 }, null, 2) }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error || 'publish failed'}` }], isError: true };
+    return { content: [{ type: 'text', text: JSON.stringify({ deliveredTo: resp.deliveredTo || 0 }, null, 2) }] };
   }
 
   /**
@@ -728,8 +728,8 @@ async function handleTool(name, args) {
       targetRole: args.targetRole || 'worker',
       inject: !!args.inject,
     });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'broadcast failed'}` }];
-    return [{ type: 'text', text: JSON.stringify({ deliveredTo: resp.deliveredTo || 0 }, null, 2) }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error || 'broadcast failed'}` }], isError: true };
+    return { content: [{ type: 'text', text: JSON.stringify({ deliveredTo: resp.deliveredTo || 0 }, null, 2) }] };
   }
 
   /**
@@ -745,8 +745,8 @@ async function handleTool(name, args) {
     const resp = (_v2Socket && !_v2Socket.destroyed)
       ? await v2Rpc(sock, { cmd: 'ping' })
       : await clawsRpc(sock, { cmd: 'ping' });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'ping failed'}` }];
-    return [{ type: 'text', text: JSON.stringify({ serverTime: resp.serverTime }, null, 2) }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error || 'ping failed'}` }], isError: true };
+    return { content: [{ type: 'text', text: JSON.stringify({ serverTime: resp.serverTime }, null, 2) }] };
   }
 
   /**
@@ -766,20 +766,20 @@ async function handleTool(name, args) {
     if (_v2Socket && !_v2Socket.destroyed) {
       const resp = await v2Rpc(sock, { cmd: 'peers' });
       if (resp.ok) {
-        return [{ type: 'text', text: JSON.stringify({ peers: resp.peers || [] }, null, 2) }];
+        return { content: [{ type: 'text', text: JSON.stringify({ peers: resp.peers || [] }, null, 2) }] };
       }
     }
     const resp = await clawsRpc(sock, { cmd: 'introspect' });
-    if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'peers lookup failed'}` }];
+    if (!resp.ok) return { content: [{ type: 'text', text: `ERROR: ${resp.error || 'peers lookup failed'}` }], isError: true };
     const peers = resp.peers || (resp.snapshot && resp.snapshot.peers) || [];
-    return [{ type: 'text', text: JSON.stringify({ peers }, null, 2) }];
+    return { content: [{ type: 'text', text: JSON.stringify({ peers }, null, 2) }] };
   }
 
   if (name === 'claws_worker') {
     const result = await runBlockingWorker(sock, args);
 
     if (result.status === 'error') {
-      return [{ type: 'text', text: `ERROR: ${result.error}` }];
+      return { content: [{ type: 'text', text: `ERROR: ${result.error}` }], isError: true };
     }
 
     const header = [
@@ -793,14 +793,14 @@ async function handleTool(name, args) {
 
     if (result.status === 'spawned') {
       header.push('', `detached mode — use claws_read_log id=${result.terminal_id} and claws_close when done`);
-      return [{ type: 'text', text: header.join('\n') }];
+      return { content: [{ type: 'text', text: header.join('\n') }] };
     }
 
     const body = result.harvest || '';
-    return [{ type: 'text', text: header.join('\n') + '\n\n── harvest (last lines) ──\n' + body }];
+    return { content: [{ type: 'text', text: header.join('\n') + '\n\n── harvest (last lines) ──\n' + body }] };
   }
 
-  return [{ type: 'text', text: `unknown tool: ${name}` }];
+  return { content: [{ type: 'text', text: `unknown tool: ${name}` }], isError: true };
 }
 
 // ─── MCP server main loop ──────────────────────────────────────────────────
@@ -826,8 +826,8 @@ async function main() {
       respond(id, { tools: TOOLS });
     } else if (method === 'tools/call') {
       try {
-        const content = await handleTool(params.name || '', params.arguments || {});
-        respond(id, { content });
+        const result = await handleTool(params.name || '', params.arguments || {});
+        respond(id, result);
       } catch (e) {
         respond(id, { content: [{ type: 'text', text: `ERROR: ${e.message || e}` }], isError: true });
       }
