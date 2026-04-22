@@ -818,30 +818,19 @@ Claws docs: https://github.com/neunaha/claws
 CLAWSBIN
     ok "wrote $PROJECT_ROOT/.claws-bin/README.md"
 
-    # Write or merge .mcp.json with absolute-path registration.
-    # Absolute paths fix nvm/volta/asdf silent failures (node not on GUI PATH)
-    # and CWD-sensitive launches (Claude Code doesn't chdir to the .mcp.json
-    # dir before spawning the server). .mcp.json becomes machine-specific and
-    # must stay gitignored.
+    # Write or merge .mcp.json with portable relative-path registration.
+    # __dirname-based socket discovery in mcp_server.js makes absolute paths
+    # unnecessary — any user can use the same .mcp.json without modification.
     PROJECT_MCP="$PROJECT_ROOT/.mcp.json"
-    CLAWS_NODE_BIN=$(command -v node 2>/dev/null || echo 'node')
     node --no-deprecation -e "
 const fs = require('fs');
 const p = process.argv[1];
-const projectRoot = process.argv[2];
-const nodeBin = process.argv[3];
 let cfg = {};
 try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
-if (!cfg.mcpServers) cfg.mcpServers = {};
-cfg.mcpServers.claws = {
-  type: 'stdio',
-  command: nodeBin,
-  args: [projectRoot + '/.claws-bin/mcp_server.js'],
-  cwd: projectRoot,
-  env: { CLAWS_SOCKET: projectRoot + '/.claws/claws.sock' }
-};
+cfg.mcpServers = cfg.mcpServers || {};
+cfg.mcpServers.claws = { command: 'node', args: ['./.claws-bin/mcp_server.js'] };
 fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-" "$PROJECT_MCP" "$PROJECT_ROOT" "$CLAWS_NODE_BIN"
+" "$PROJECT_MCP"
     ok "wrote $PROJECT_MCP"
     if ! node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
       bad ".mcp.json written to $PROJECT_ROOT but is not valid JSON — MCP server will fail to load"
@@ -903,11 +892,8 @@ const p = '$HOME/.claude/settings.json';
 let cfg = {};
 try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
 if (!cfg.mcpServers) cfg.mcpServers = {};
-cfg.mcpServers.claws = {
-  command: 'node',
-  args: ['$MCP_PATH'],
-  env: { CLAWS_SOCKET: '.claws/claws.sock' }
-};
+cfg.mcpServers = cfg.mcpServers || {};
+cfg.mcpServers.claws = { command: 'node', args: ['./.claws-bin/mcp_server.js'] };
 fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
 "
     ok "global MCP registered in ~/.claude/settings.json"

@@ -462,18 +462,24 @@ function getSocket() {
   const envSock = process.env.CLAWS_SOCKET;
   if (envSock && path.isAbsolute(envSock)) return envSock;
 
-  // Walk up from CWD to find .claws/claws.sock — the extension creates the
-  // socket at <workspace-root>/.claws/claws.sock. The MCP server CWD is
-  // normally the workspace root, but users can launch Claude Code from any
-  // directory, so we walk up rather than assume CWD is always the root.
-  let dir = process.cwd();
-  while (true) {
+  // Walk up from CWD to find .claws/claws.sock — works when Claude Code chdir'd
+  // to the workspace root before spawning the MCP server.
+  for (let dir = process.cwd();;) {
     const candidate = path.join(dir, '.claws', 'claws.sock');
-    try {
-      if (fs.statSync(candidate).isSocket()) return candidate;
-    } catch { /* not found at this level */ }
+    try { if (fs.statSync(candidate).isSocket()) return candidate; } catch {}
     const parent = path.dirname(dir);
-    if (parent === dir) break; // reached filesystem root
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  // Walk up from __dirname — self-locating regardless of CWD.
+  // Project install: .claws-bin/mcp_server.js -> parent = project root -> .claws/claws.sock
+  // Global install: ~/.claws-src/mcp_server.js -> walks up, finds nothing, falls through.
+  for (let dir = __dirname;;) {
+    const candidate = path.join(dir, '.claws', 'claws.sock');
+    try { if (fs.statSync(candidate).isSocket()) return candidate; } catch {}
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
     dir = parent;
   }
 
@@ -718,7 +724,8 @@ async function main() {
     if (method === 'initialize') {
       respond(id, {
         protocolVersion: '2024-11-05',
-        serverInfo: { name: 'claws', version: '0.5.3' },
+        // Version must match extension/package.json — bump both together on release.
+        serverInfo: { name: 'claws', version: '0.6.0' },
         capabilities: { tools: {} },
       });
     } else if (method === 'notifications/initialized') {
