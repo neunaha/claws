@@ -5,6 +5,56 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-04-22
+
+### Added — Behavioral Injection Enforcement (Lifecycle enforcement overhaul)
+
+Closes the lifecycle enforcement gap identified in `.local/audits/lifecycle-enforcement-gap.md`.
+Prior to this release, Claude Code defaulted to Bash in new sessions because the behavioral
+injection system was advisory wallpaper — the strong imperative content existed in orphaned
+files that nothing auto-loaded.
+
+**Templates (Wave 1)**
+- `templates/CLAUDE.project.md` — replaces orphaned `templates/CLAUDE.claws.md`. New template uses
+  imperative framing (`MUST`/`ALWAYS`/`NEVER`) and includes the full 7-step worker boot sequence,
+  lifecycle phase list, and tool inventory with placeholder substitution.
+- `templates/CLAUDE.global.md` — new machine-wide policy template. Injected into `~/.claude/CLAUDE.md`
+  so every Claude Code session on the machine sees the lifecycle rules, even in non-Claws projects.
+- `.claude/skills/claws-orchestration-engine/SKILL.md` — rewritten with full 8-phase lifecycle
+  (PLAN→SPAWN→DEPLOY→OBSERVE→RECOVER→HARVEST→CLEANUP→REFLECT) inlined. Removed false claim
+  that lifecycle auto-loads on MCP registration. Deleted dead `lifecycle.yaml`.
+- `.claude/commands/claws-boot.md` — new `/claws-boot` slash command codifying the exact 7-step
+  worker boot sequence (create → activate → trust → bypass → mission → CR).
+- `rules/claws-default-behavior.md` — added ECC-only scope note; canonical rules now live in
+  the injected `CLAUDE.md` block.
+
+**Injector scripts (Wave 2)**
+- `scripts/inject-claude-md.js` — rewritten to read from `templates/CLAUDE.project.md` instead of
+  hardcoded advisory copy. Substitutes 8 placeholders (`{PROJECT_NAME}`, `{SOCKET_PATH}`,
+  `{TOOLS_V1_LIST}`, `{TOOLS_V2_LIST}`, `{CMDS_LIST}`, etc.).
+- `scripts/inject-global-claude-md.js` — new script. Writes machine-wide Claws policy to
+  `~/.claude/CLAUDE.md` using `<!-- CLAWS-GLOBAL:BEGIN v1 -->` sentinel. Idempotent.
+- `scripts/inject-settings-hooks.js` — new script. Registers `SessionStart`, `PreToolUse:Bash`,
+  and `Stop` hooks in `~/.claude/settings.json` with `_source:"claws"` tag for clean uninstall.
+  Supports `--remove` flag to strip all Claws hooks without touching others.
+- `.claws-bin/hooks/session-start-claws.js` — fires on every Claude Code session start in a Claws
+  project (socket detected). Emits lifecycle rules as a system-reminder.
+- `.claws-bin/hooks/pre-tool-use-claws.js` — nudges long-running Bash commands toward `claws_create`.
+- `.claws-bin/hooks/stop-claws.js` — reminds model to close terminals before session ends.
+
+**Installer wiring (Wave 3)**
+- `scripts/install.sh` — three additive additions (zero line deletions):
+  - Vendors `hooks/*.js` into project `.claws-bin/hooks/`
+  - Calls `inject-global-claude-md.js` after project CLAUDE.md injection
+  - Calls `inject-settings-hooks.js` to register lifecycle hooks on every install
+  - Adds `.claws-bin/hooks/` to post-install verification checklist
+
+**Testing**
+- `scripts/test-enforcement.sh` — integration test covering the full pipeline:
+  inject-claude-md.js (idempotency + imperative content), inject-global-claude-md.js (dry-run),
+  inject-settings-hooks.js (dry-run + tag verification), session-start hook (socket detection),
+  hook exit codes.
+
 ## [0.6.0] - 2026-04-21
 
 ### Added — claws/2 Agentic SDLC Protocol (Phase A + B)
