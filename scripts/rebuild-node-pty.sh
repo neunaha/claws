@@ -123,9 +123,9 @@ h1 "Rebuilding node-pty for Electron $ELECTRON_VERSION"
 info "removing old binary + ABI marker to force a clean rebuild"
 rm -f "$NPTY_BIN" "$ABI_FILE" 2>/dev/null
 
-info "running: npx --yes @electron/rebuild --version=$ELECTRON_VERSION --which=node-pty --force"
+info "running: npx --yes @electron/rebuild --version=$ELECTRON_VERSION --only=node-pty --force"
 rebuild_log=$(mktemp -t claws-rebuild.XXXXXX.log)
-if ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --which=node-pty --force ) >"$rebuild_log" 2>&1; then
+if ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --only=node-pty --force ) >"$rebuild_log" 2>&1; then
   ok "@electron/rebuild completed"
   info "log: $rebuild_log (last 5 lines below)"
   tail -5 "$rebuild_log" | sed 's/^/    /'
@@ -176,7 +176,7 @@ elif echo "$sys_load" | grep -q "LOADS IN SYSTEM NODE"; then
     echo "    cd $INSTALL_DIR/extension"
     echo "    rm -rf node_modules/node-pty"
     echo "    npm install node-pty"
-    echo "    npx @electron/rebuild --version=$ELECTRON_VERSION --which=node-pty --force"
+    echo "    npx @electron/rebuild --version=$ELECTRON_VERSION --only=node-pty --force"
     echo ""
     exit 1
   else

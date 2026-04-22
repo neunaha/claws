@@ -120,7 +120,7 @@ elif [ -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
   if [ "$(uname)" = "Darwin" ] && ! xcode-select -p &>/dev/null; then
     fail "Xcode Command Line Tools required — run: xcode-select --install"
     ISSUES=$((ISSUES+1))
-  elif ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --which=node-pty --force >/dev/null 2>&1 ) && [ -f "$NPTY_BIN" ]; then
+  elif ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --only=node-pty --force >/dev/null 2>&1 ) && [ -f "$NPTY_BIN" ]; then
     echo "$ELECTRON_VERSION" > "$ELECTRON_ABI_FILE" 2>/dev/null || true
     ok "node-pty rebuilt for Electron $ELECTRON_VERSION — reload VS Code to pick it up"
     FIXED=$((FIXED+1))

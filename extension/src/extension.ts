@@ -738,7 +738,7 @@ async function runRebuildPty(extensionPath: string): Promise<void> {
   const { spawn } = require('child_process') as typeof import('child_process');
   const proc = spawn(
     'npx',
-    ['--yes', '@electron/rebuild', '--version', electronVersion, '--which', 'node-pty', '--force'],
+    ['--yes', '@electron/rebuild', '--version', electronVersion, '--only', 'node-pty', '--force'],
     { cwd: extensionPath, env: process.env },
   );
   proc.stdout?.on('data', (d: Buffer) => logger(`[rebuild] ${d.toString('utf8').trimEnd()}`));

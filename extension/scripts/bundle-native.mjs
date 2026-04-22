@@ -149,18 +149,15 @@ function detectTargetArch() {
 
 // ─── Step 2: @electron/rebuild ───────────────────────────────────────────────
 function runElectronRebuild(electronVersion, targetArch) {
-  const cachePath = join(EXT_ROOT, '..', '.electron-rebuild-cache');
-  log(`running @electron/rebuild --version ${electronVersion} --arch ${targetArch} --which node-pty --force --useCache --cachePath ${cachePath}`);
+  log(`running @electron/rebuild --version ${electronVersion} --arch ${targetArch} --only node-pty --force`);
   const result = spawnSync(
     'npx',
     [
       '--yes', '@electron/rebuild',
       '--version', electronVersion,
       '--arch', targetArch,
-      '--which', 'node-pty',
+      '--only', 'node-pty',
       '--force',
-      '--useCache',
-      '--cachePath', cachePath,
     ],
     {
       cwd: EXT_ROOT,
