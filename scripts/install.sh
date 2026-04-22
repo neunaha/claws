@@ -717,6 +717,11 @@ else
     cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js"
     chmod +x "$PROJECT_ROOT/.claws-bin/mcp_server.js"
     cp "$INSTALL_DIR/scripts/shell-hook.sh" "$PROJECT_ROOT/.claws-bin/shell-hook.sh"
+    # Copy lifecycle hook scripts for inject-settings-hooks.js to reference
+    if [ -d "$INSTALL_DIR/.claws-bin/hooks" ]; then
+      mkdir -p "$PROJECT_ROOT/.claws-bin/hooks"
+      cp "$INSTALL_DIR/.claws-bin/hooks"/*.js "$PROJECT_ROOT/.claws-bin/hooks/" 2>/dev/null || true
+    fi
     ok "vendored $PROJECT_ROOT/.claws-bin/"
 
     # ── Copy the built VS Code extension into the project for visibility ────
@@ -971,6 +976,14 @@ CLAWSCMD
     else
       node --no-deprecation "$INSTALL_DIR/scripts/inject-claude-md.js" "$TARGET" 2>&1 | sed 's/^/  /' || warn "CLAUDE.md injector failed — see $CLAWS_LOG for details"
     fi
+    # Global ~/.claude/CLAUDE.md injection (machine-wide Claws policy)
+    if [ -f "$INSTALL_DIR/scripts/inject-global-claude-md.js" ]; then
+      node --no-deprecation "$INSTALL_DIR/scripts/inject-global-claude-md.js" 2>&1 | sed 's/^/  /' || warn "global CLAUDE.md injector failed"
+    fi
+    # Hook registration in ~/.claude/settings.json (SessionStart / PreToolUse / Stop)
+    if [ -f "$INSTALL_DIR/scripts/inject-settings-hooks.js" ]; then
+      node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$TARGET/.claws-bin" 2>&1 | sed 's/^/  /' || warn "settings hooks injector failed"
+    fi
   fi
 
   ok "$LABEL: $cmd_count commands, rules, skills"
@@ -1094,6 +1107,7 @@ if [ "$PROJECT_INSTALL" = "1" ]; then
       || warn "project .claws-bin/extension/ not copied"
   fi
   [ -f "$PROJECT_ROOT/.claws-bin/README.md" ] && _ok "Project .claws-bin/README.md" || warn "project .claws-bin/README.md missing"
+  [ -d "$PROJECT_ROOT/.claws-bin/hooks" ] && _ok "Project .claws-bin/hooks/ (lifecycle hooks)" || warn "project .claws-bin/hooks/ missing — run installer again"
   [ -f "$PROJECT_ROOT/.vscode/extensions.json" ] && grep -q "neunaha.claws" "$PROJECT_ROOT/.vscode/extensions.json" 2>/dev/null && _ok "Project .vscode/extensions.json recommends claws" || warn "project .vscode/extensions.json missing claws recommendation"
   [ -d "$PROJECT_ROOT/.claude/commands" ] && _ok "Project .claude/commands" || _miss "project commands missing"
   [ -d "$PROJECT_ROOT/.claude/skills" ] && _ok "Project .claude/skills" || _miss "project skills missing"
