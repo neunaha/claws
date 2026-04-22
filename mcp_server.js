@@ -740,4 +740,12 @@ async function main() {
   }
 }
 
+function shutdown() {
+  process.stderr.write('[claws-mcp] shutting down\n');
+  process.exit(0);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
 main().catch(console.error);
