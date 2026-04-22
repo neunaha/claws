@@ -818,19 +818,20 @@ Claws docs: https://github.com/neunaha/claws
 CLAWSBIN
     ok "wrote $PROJECT_ROOT/.claws-bin/README.md"
 
-    # Write or merge .mcp.json with portable relative-path registration.
-    # __dirname-based socket discovery in mcp_server.js makes absolute paths
-    # unnecessary — any user can use the same .mcp.json without modification.
+    # Write or merge .mcp.json with absolute args path so Claude Code can start
+    # the server regardless of its cwd. __dirname walk-up in mcp_server.js
+    # handles socket discovery once the server is running — no CLAWS_SOCKET needed.
     PROJECT_MCP="$PROJECT_ROOT/.mcp.json"
     node --no-deprecation -e "
 const fs = require('fs');
 const p = process.argv[1];
+const projectRoot = process.argv[2];
 let cfg = {};
 try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
 cfg.mcpServers = cfg.mcpServers || {};
-cfg.mcpServers.claws = { command: 'node', args: ['./.claws-bin/mcp_server.js'] };
+cfg.mcpServers.claws = { command: process.argv[3] || 'node', args: [projectRoot + '/.claws-bin/mcp_server.js'] };
 fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-" "$PROJECT_MCP"
+" "$PROJECT_MCP" "$PROJECT_ROOT"
     ok "wrote $PROJECT_MCP"
     if ! node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
       bad ".mcp.json written to $PROJECT_ROOT but is not valid JSON — MCP server will fail to load"
@@ -889,13 +890,13 @@ if (!cfg.recommendations.includes('neunaha.claws')) {
     node --no-deprecation -e "
 const fs = require('fs');
 const p = '$HOME/.claude/settings.json';
+const mcpServerPath = process.argv[1];
 let cfg = {};
 try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
 if (!cfg.mcpServers) cfg.mcpServers = {};
-cfg.mcpServers = cfg.mcpServers || {};
-cfg.mcpServers.claws = { command: 'node', args: ['./.claws-bin/mcp_server.js'] };
+cfg.mcpServers.claws = { command: 'node', args: [mcpServerPath] };
 fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-"
+" "$INSTALL_DIR/mcp_server.js"
     ok "global MCP registered in ~/.claude/settings.json"
   fi
 fi
