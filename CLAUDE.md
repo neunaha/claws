@@ -90,14 +90,20 @@ Claws/
 │   ├── esbuild.mjs     #   bundler entry
 │   └── .vscodeignore   #   VSIX packaging exclusions
 ├── scripts/            # install.sh, shell-hook.sh, terminal-wrapper.sh, test-install.sh
+│                       # inject-claude-md.js      — writes imperative CLAWS:BEGIN block into CLAUDE.md
+│                       # inject-global-claude-md.js — writes machine-wide policy to ~/.claude/CLAUDE.md
+│                       # inject-settings-hooks.js  — registers SessionStart/PreToolUse/Stop hooks
+│                       # test-enforcement.sh        — integration test for full injection pipeline
 ├── mcp_server.js       # MCP server — installer copies into <project>/.claws-bin/
+│                       # .claws-bin/hooks/  — lifecycle hook scripts (session-start, pre-tool-use, stop)
 ├── cli.js              # root CLI entry (package.json bin)
 ├── clients/            # optional language clients (python/ — node/ client is planned, not built yet)
 ├── .claude/            # installer copies these into each project
 │   ├── commands/       #   19 claws-* slash commands
 │   └── skills/         #   orchestration-engine, prompt-templates
 ├── rules/              # claws-default-behavior.md — installer copies it
-├── templates/          # CLAUDE.claws.md — legacy reference for the injector
+├── templates/          # CLAUDE.project.md — imperative project-level injection template
+│                       # CLAUDE.global.md  — machine-wide policy template (~/.claude/CLAUDE.md)
 ├── docs/               # user/architecture docs (protocol.md, guide.md, …)
 ├── examples/           # orchestrator patterns
 ├── .github/            # CI workflows, issue templates
@@ -130,7 +136,8 @@ See `.local/README.md` for the full rubric.
 
 ## Current state
 
-- **Version**: 0.6.0 — claws/2 Agentic SDLC Protocol shipped (Phase A + B). Peer registry, pub/sub message bus, task registry, 6 new MCP tools. 33 new checks → 90 total across 11 suites.
+- **Version**: 0.6.1 — behavioral injection enforcement overhaul (Waves 1–3). Imperative templates, three injector scripts, three hook scripts, install.sh wiring. See `.local/audits/lifecycle-enforcement-gap.md` for the gap analysis this closes.
+- **Previous**: 0.6.0 — claws/2 Agentic SDLC Protocol (Phase A + B). Peer registry, pub/sub message bus, task registry, 6 new MCP tools. 33 new checks → 90 total across 11 suites.
 - **Phase**: 2 (complete) + Phase A/B (claws/2). All Phase 2 items landed. Phase A: peer registry + pub/sub. Phase B: task registry + MCP tools. Marketplace publish and WebSocket transport are Phase 3.
 - **Transport**: Unix socket only (per-folder sockets for multi-root workspaces). WebSocket transport planned (Phase 3).
 - **Cross-device**: not yet. SSH tunnel pattern documented as interim. WebSocket + token auth planned.
@@ -201,6 +208,15 @@ See `.local/README.md` for the full rubric.
 - Python client exists in `clients/python/` as an **optional** convenience — not on the install path.
 - `script(1)` wrapper must work on macOS and Linux (BSD vs GNU `script` flags differ).
 - Protocol is versioned: `{ protocol: "claws/1", ... }` in handshake. claws/2 extends this with peer identity, pub/sub, and task assignment — all backward compatible with claws/1 clients.
+
+**Behavioral injection enforcement** (v0.6.1):
+The enforcement chain — every layer auto-loads, outer layers are fallbacks for inner:
+1. `~/.claude/CLAUDE.md` (global, always loaded) — written by `inject-global-claude-md.js` from `templates/CLAUDE.global.md`
+2. `<project>/CLAUDE.md` CLAWS:BEGIN block (project, always loaded) — written by `inject-claude-md.js` from `templates/CLAUDE.project.md`
+3. `SessionStart` hook in `~/.claude/settings.json` — `session-start-claws.js` fires when `.claws/claws.sock` detected, emits lifecycle reminder
+4. `PreToolUse:Bash` hook — `pre-tool-use-claws.js` nudges long-running commands toward `claws_create`
+5. `Stop` hook — `stop-claws.js` reminds model to close terminals before session ends
+Hooks are registered by `inject-settings-hooks.js` (called from `install.sh`). All tagged `_source:"claws"` for clean removal.
 
 **claws/2 additions** (v0.6.0):
 - `hello` — register as orchestrator / worker / observer; returns peerId
