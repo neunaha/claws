@@ -23,9 +23,14 @@ if (!TARGET) {
 const CLAUDE_MD = path.join(TARGET, 'CLAUDE.md');
 const CMD_DIR = path.join(TARGET, '.claude', 'commands');
 
-const TOOLS = [
+const TOOLS_V1 = [
   'claws_list', 'claws_create', 'claws_send', 'claws_exec',
   'claws_read_log', 'claws_poll', 'claws_close', 'claws_worker',
+];
+const TOOLS_V2 = [
+  'claws_hello', 'claws_subscribe', 'claws_publish', 'claws_broadcast',
+  'claws_ping', 'claws_peers', 'claws_task_assign', 'claws_task_update',
+  'claws_task_complete', 'claws_task_cancel', 'claws_task_list',
 ];
 const BEGIN = '<!-- CLAWS:BEGIN -->';
 const END   = '<!-- CLAWS:END -->';
@@ -38,24 +43,35 @@ try {
     .sort();
 } catch { /* ignore */ }
 
-const block = [
-  BEGIN,
-  '## Claws — Terminal Orchestration',
-  '',
-  'This project has Claws terminal-control tooling installed.',
-  '',
-  `**MCP tools** (${TOOLS.length}): ${TOOLS.map((t) => '`' + t + '`').join(', ')}.`,
-  '',
-  `**Slash commands** (${cmds.length}): ${cmds.map((c) => '`' + c + '`').join(', ')}.`,
-  '',
-  '**Operating principles**:',
-  '- For visible work (builds, tests, deploys, AI workers) spawn wrapped terminals via `claws_create` + `claws_worker`; for quick lookups stay in Bash.',
-  '- Always close terminals you create. Never touch terminals you didn\'t.',
-  '- If MCP tools don\'t appear after a restart, run `/claws-fix`. To report a problem, run `/claws-report`.',
-  '',
-  'Full guide: `/claws-help`. Source: `./.claws-bin/`, `./.claude/`.',
-  END,
-].join('\n');
+function buildBlock(target, cmds) {
+  const tpl = path.join(__dirname, '..', 'templates', 'CLAUDE.project.md');
+  try {
+    const raw = fs.readFileSync(tpl, 'utf8');
+    const toList = (arr) => arr.map((t) => '`' + t + '`').join(', ');
+    return raw
+      .trimEnd()
+      .replace(/\{PROJECT_NAME\}/g, path.basename(target))
+      .replace(/\{SOCKET_PATH\}/g, '.claws/claws.sock')
+      .replace(/\{TOOLS_V1_COUNT\}/g, String(TOOLS_V1.length))
+      .replace(/\{TOOLS_V1_LIST\}/g, toList(TOOLS_V1))
+      .replace(/\{TOOLS_V2_COUNT\}/g, String(TOOLS_V2.length))
+      .replace(/\{TOOLS_V2_LIST\}/g, toList(TOOLS_V2))
+      .replace(/\{CMDS_COUNT\}/g, String(cmds.length))
+      .replace(/\{CMDS_LIST\}/g, cmds.length ? toList(cmds) : '_(none installed)_');
+  } catch (err) {
+    return [
+      BEGIN,
+      '<!-- ERROR: templates/CLAUDE.project.md not found: ' + err.message + ' -->',
+      '## Claws — Terminal Orchestration (MANDATORY)',
+      '',
+      'You are a Claws orchestrator. Use claws_create + claws_send for long-lived processes.',
+      'Always close every terminal you create. Never touch terminals you did not create.',
+      END,
+    ].join('\n');
+  }
+}
+
+const block = buildBlock(TARGET, cmds);
 
 let md = '';
 let existed = false;
