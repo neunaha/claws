@@ -150,13 +150,18 @@ function ensureV2Socket(sockPath) {
   });
 
   sock.on('error', (err) => {
-    for (const resolve of _v2Pending.values()) resolve({ ok: false, error: `socket error: ${err.message}` });
+    // Guard: if claws_hello has already replaced this socket, ignore stale events.
+    if (_v2Socket !== sock) return;
+    process.stderr.write('[claws-mcp] v2 socket error: ' + err.message + '\n');
+    for (const settle of _v2Pending.values()) settle({ ok: false, error: `socket error: ${err.message}` });
     _v2Pending.clear();
     _v2Socket = null;
     _v2PeerId = null;
   });
 
   sock.on('close', () => {
+    // Guard: same stale-socket check — don't overwrite a fresh socket opened by a new hello.
+    if (_v2Socket !== sock) return;
     _v2Socket = null;
     _v2PeerId = null;
   });
@@ -165,16 +170,26 @@ function ensureV2Socket(sockPath) {
 }
 
 // Sends a request over the persistent claws/2 socket and resolves with the response.
-function v2Rpc(sockPath, req) {
+// settle() is idempotent — only the first caller (response, error drain, or timeout) wins.
+function v2Rpc(sockPath, req, timeout = 30000) {
   return new Promise((resolve) => {
     const sock = ensureV2Socket(sockPath);
     counter++;
     req = { id: counter, ...req };
-    _v2Pending.set(req.id, resolve);
+    let fired = false;
+    const settle = (val) => {
+      if (fired) return;
+      fired = true;
+      clearTimeout(timer);
+      _v2Pending.delete(req.id);
+      resolve(val);
+    };
+    const timer = setTimeout(() => settle({ ok: false, error: 'socket timeout' }), timeout);
+    _v2Pending.set(req.id, settle);
     const send = () => sock.write(JSON.stringify(req) + '\n');
     if (sock.connecting) { sock.once('connect', send); }
     else if (sock.writable) { send(); }
-    else { _v2Pending.delete(req.id); resolve({ ok: false, error: 'v2 socket not writable' }); }
+    else { settle({ ok: false, error: 'v2 socket not writable' }); }
   });
 }
 
@@ -726,7 +741,10 @@ async function handleTool(name, args) {
    * Returns: serverTime (ms since epoch as reported by the server).
    */
   if (name === 'claws_ping') {
-    const resp = await v2Rpc(sock, { cmd: 'ping' });
+    // Use the persistent socket if registered (preserves peer lastSeen); otherwise one-shot.
+    const resp = (_v2Socket && !_v2Socket.destroyed)
+      ? await v2Rpc(sock, { cmd: 'ping' })
+      : await clawsRpc(sock, { cmd: 'ping' });
     if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'ping failed'}` }];
     return [{ type: 'text', text: JSON.stringify({ serverTime: resp.serverTime }, null, 2) }];
   }
