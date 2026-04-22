@@ -75,6 +75,17 @@ function respondError(id, code, message) {
 
 let counter = 0;
 
+// ─── Persistent claws/2 socket state ──────────────────────────────────────
+// One long-lived connection is kept open after claws_hello succeeds.
+// All claws/2 commands (subscribe, publish, broadcast, …) reuse it so the
+// peer registration survives between tool calls — the extension ties peer
+// identity to the socket connection and deletes the peer on disconnect.
+
+let _v2Socket = null;    // the persistent net.Socket
+let _v2PeerId = null;    // peerId assigned by the server after hello
+let _v2Buf = '';         // partial-frame accumulator
+const _v2Pending = new Map(); // req id → resolve fn for in-flight RPC calls
+
 function clawsRpc(sockPath, req, timeout = 30000) {
   return new Promise((resolve) => {
     counter++;
@@ -101,6 +112,69 @@ function clawsRpc(sockPath, req, timeout = 30000) {
       resolve({ ok: false, error: 'socket timeout' });
       sock.destroy();
     });
+  });
+}
+
+// Ensures a live persistent socket for claws/2. Creates one if none exists.
+// Handles both RPC responses (have `id`) and unsolicited push frames (have `push`).
+function ensureV2Socket(sockPath) {
+  if (_v2Socket && !_v2Socket.destroyed) return _v2Socket;
+  _v2Buf = '';
+  const sock = net.createConnection(sockPath);
+  sock.setKeepAlive(true, 10000);
+  _v2Socket = sock;
+
+  sock.on('data', (data) => {
+    _v2Buf += data.toString('utf8');
+    let nl;
+    while ((nl = _v2Buf.indexOf('\n')) !== -1) {
+      const line = _v2Buf.slice(0, nl);
+      _v2Buf = _v2Buf.slice(nl + 1);
+      let frame;
+      try { frame = JSON.parse(line); } catch { continue; }
+      if (frame.push === 'message') {
+        // Forward pub/sub push frame as an MCP channel notification.
+        writeMessage({
+          jsonrpc: '2.0',
+          method: 'notifications/claude/channel',
+          params: {
+            content: JSON.stringify(frame.payload),
+            meta: { topic: frame.topic, from: frame.from, sentAt: frame.sentAt },
+          },
+        });
+      } else if (frame.id != null) {
+        const resolve = _v2Pending.get(frame.id);
+        if (resolve) { _v2Pending.delete(frame.id); resolve(frame); }
+      }
+    }
+  });
+
+  sock.on('error', (err) => {
+    for (const resolve of _v2Pending.values()) resolve({ ok: false, error: `socket error: ${err.message}` });
+    _v2Pending.clear();
+    _v2Socket = null;
+    _v2PeerId = null;
+  });
+
+  sock.on('close', () => {
+    _v2Socket = null;
+    _v2PeerId = null;
+  });
+
+  return sock;
+}
+
+// Sends a request over the persistent claws/2 socket and resolves with the response.
+function v2Rpc(sockPath, req) {
+  return new Promise((resolve) => {
+    const sock = ensureV2Socket(sockPath);
+    counter++;
+    req = { id: counter, ...req };
+    _v2Pending.set(req.id, resolve);
+    const send = () => sock.write(JSON.stringify(req) + '\n');
+    if (sock.connecting) { sock.once('connect', send); }
+    else if (sock.writable) { send(); }
+    else { _v2Pending.delete(req.id); resolve({ ok: false, error: 'v2 socket not writable' }); }
   });
 }
 
@@ -569,7 +643,11 @@ async function handleTool(name, args) {
    * Returns: peerId, serverCapabilities, orchestratorPresent.
    */
   if (name === 'claws_hello') {
-    const resp = await clawsRpc(sock, {
+    // Tear down any existing v2 socket — hello always starts a fresh registration.
+    if (_v2Socket && !_v2Socket.destroyed) { _v2Socket.destroy(); _v2Socket = null; }
+    _v2PeerId = null;
+
+    const resp = await v2Rpc(sock, {
       cmd: 'hello',
       protocol: 'claws/2',
       role: args.role,
@@ -578,6 +656,7 @@ async function handleTool(name, args) {
       capabilities: Array.isArray(args.capabilities) ? args.capabilities : undefined,
     });
     if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'hello failed'}` }];
+    _v2PeerId = resp.peerId;
     const out = {
       peerId: resp.peerId,
       serverCapabilities: resp.serverCapabilities || [],
@@ -594,7 +673,7 @@ async function handleTool(name, args) {
    * Returns: subscriptionId (opaque string used with unsubscribe).
    */
   if (name === 'claws_subscribe') {
-    const resp = await clawsRpc(sock, { cmd: 'subscribe', topic: args.topic });
+    const resp = await v2Rpc(sock, { cmd: 'subscribe', topic: args.topic });
     if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'subscribe failed'}` }];
     return [{ type: 'text', text: JSON.stringify({ subscriptionId: resp.subscriptionId }, null, 2) }];
   }
@@ -608,7 +687,7 @@ async function handleTool(name, args) {
    * Returns: deliveredTo (number of subscribers who received the frame).
    */
   if (name === 'claws_publish') {
-    const resp = await clawsRpc(sock, {
+    const resp = await v2Rpc(sock, {
       cmd: 'publish',
       topic: args.topic,
       payload: args.payload || {},
@@ -628,7 +707,7 @@ async function handleTool(name, args) {
    * Returns: deliveredTo (number of peers the broadcast reached).
    */
   if (name === 'claws_broadcast') {
-    const resp = await clawsRpc(sock, {
+    const resp = await v2Rpc(sock, {
       cmd: 'broadcast',
       text: args.text,
       targetRole: args.targetRole || 'worker',
@@ -647,7 +726,7 @@ async function handleTool(name, args) {
    * Returns: serverTime (ms since epoch as reported by the server).
    */
   if (name === 'claws_ping') {
-    const resp = await clawsRpc(sock, { cmd: 'ping' });
+    const resp = await v2Rpc(sock, { cmd: 'ping' });
     if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'ping failed'}` }];
     return [{ type: 'text', text: JSON.stringify({ serverTime: resp.serverTime }, null, 2) }];
   }
@@ -665,12 +744,14 @@ async function handleTool(name, args) {
    * has a `peers` command available we fall back to that first.
    */
   if (name === 'claws_peers') {
-    // Prefer a direct `peers` command if the server implements it;
-    // fall back to `introspect` otherwise.
-    let resp = await clawsRpc(sock, { cmd: 'peers' });
-    if (!resp.ok) {
-      resp = await clawsRpc(sock, { cmd: 'introspect' });
+    // Use persistent v2 socket if registered; fall back to introspect (claws/1) otherwise.
+    if (_v2Socket && !_v2Socket.destroyed) {
+      const resp = await v2Rpc(sock, { cmd: 'peers' });
+      if (resp.ok) {
+        return [{ type: 'text', text: JSON.stringify({ peers: resp.peers || [] }, null, 2) }];
+      }
     }
+    const resp = await clawsRpc(sock, { cmd: 'introspect' });
     if (!resp.ok) return [{ type: 'text', text: `ERROR: ${resp.error || 'peers lookup failed'}` }];
     const peers = resp.peers || (resp.snapshot && resp.snapshot.peers) || [];
     return [{ type: 'text', text: JSON.stringify({ peers }, null, 2) }];
@@ -719,7 +800,7 @@ async function main() {
       respond(id, {
         protocolVersion: '2024-11-05',
         serverInfo: { name: 'claws', version: '0.5.3' },
-        capabilities: { tools: {} },
+        capabilities: { tools: {}, experimental: { 'claude/channel': {} } },
       });
     } else if (method === 'notifications/initialized') {
       // no response needed
@@ -742,6 +823,7 @@ async function main() {
 
 function shutdown() {
   process.stderr.write('[claws-mcp] shutting down\n');
+  if (_v2Socket && !_v2Socket.destroyed) _v2Socket.destroy();
   process.exit(0);
 }
 
