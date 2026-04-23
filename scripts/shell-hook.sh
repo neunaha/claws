@@ -54,28 +54,28 @@ setTimeout(()=>{console.log('?');s.destroy()},2000);
   _R="\033[0m"                # reset
 
   printf "\n"
-  printf "  ${_T}╔═══════════════════════════════════════════════╗${_R}\n"
-  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
+  printf "  ${_T}╔══════════════════════════════════════════════════════════════════╗${_R}\n"
+  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T} ██████╗██╗      █████╗ ██╗    ██╗███████╗${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T}██╔════╝██║     ██╔══██╗██║    ██║██╔════╝${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T}██║     ██║     ███████║██║ █╗ ██║███████╗${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T}██║     ██║     ██╔══██║██║███╗██║╚════██║${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T}╚██████╗███████╗██║  ██║╚███╔███╔╝███████║${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T} ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝${_R} ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_D}Terminal Control Bridge  v0.3.0${_R}             ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_D}Powered by Claude Opus${_R}                     ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   Bridge:    $_CLAWS_STATUS                   ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   Terminals: ${_W}${_CLAWS_TERMS}${_R} active                        ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   This term: $_CLAWS_WRAP                   ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_D}Terminal Control Bridge  v0.6.1${_R}            ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_D}VS Code Extension${_R}                          ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   Bridge:    $_CLAWS_STATUS                            ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   Terminals: ${_W}${_CLAWS_TERMS}${_R} active          ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   This term: $_CLAWS_WRAP                              ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_D}claws-ls${_R}    list terminals                 ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_D}claws-new${_R}   create wrapped terminal        ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_D}claws-run${_R}   exec command in terminal       ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_D}claws-log${_R}   read wrapped terminal log      ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
-  printf "  ${_T}╚═══════════════════════════════════════════════╝${_R}\n"
+  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
+  printf "  ${_T}╚══════════════════════════════════════════════════════════════════╝${_R}\n"
   printf "\n"
 
   unset _CLAWS_STATUS _CLAWS_TERMS _CLAWS_WRAP
@@ -92,33 +92,42 @@ _claws_find_sock() {
     [ -S "$_w/.claws/claws.sock" ] && { echo "$_w/.claws/claws.sock"; return; }
     _w="${_w%/*}"
   done
-  echo ".claws/claws.sock"
+  echo ""
+}
+
+_claws_require_sock() {
+  local _s; _s="$(_claws_find_sock)"
+  if [ -z "$_s" ]; then
+    echo "claws: no socket found — open a Claws project in VS Code first" >&2
+    return 1
+  fi
+  echo "$_s"
 }
 
 claws-ls() {
-  local sock; sock="$(_claws_find_sock)"
+  local sock; sock="$(_claws_require_sock)" || return 1
   node -e "
 const net=require('net');
 const s=net.createConnection('$sock');
 s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'list'})+'\n'));
 let b='';
-s.on('data',d=>{b+=d;if(b.includes('\n')){try{const d2=JSON.parse(b.split('\n')[0]);(d2.terminals||[]).forEach(t=>{const w=t.logPath?'WRAPPED':'       ';const a=t.active?'*':' ';console.log(a+' '+String(t.id).padStart(3)+' '+String(t.name||'').padEnd(25)+' pid='+t.pid+'  ['+w+']')})}catch(e){console.log('error: '+e.message+' — is the Claws extension running?')};s.destroy()}});
-s.on('error',e=>{console.log('error: '+e.message+' — is the Claws extension running?');s.destroy()});
-setTimeout(()=>{console.log('error: timeout');s.destroy()},5000);
+const t=setTimeout(()=>{console.log('error: timeout — is VS Code open with the Claws extension?');s.destroy()},5000);
+s.on('data',d=>{b+=d;if(b.includes('\n')){clearTimeout(t);try{const d2=JSON.parse(b.split('\n')[0]);(d2.terminals||[]).forEach(t=>{const w=t.logPath?'WRAPPED':'       ';const a=t.active?'*':' ';console.log(a+' '+String(t.id).padStart(3)+' '+String(t.name||'').padEnd(25)+' pid='+t.pid+'  ['+w+']')})}catch(e){console.log('error: '+e.message)};s.destroy()}});
+s.on('error',e=>{clearTimeout(t);console.log('error: '+e.message+' — is the Claws extension running?');s.destroy()});
 " 2>/dev/null || echo "error: node not available"
 }
 
 claws-new() {
   local name="${1:-claws}"
-  local sock; sock="$(_claws_find_sock)"
+  local sock; sock="$(_claws_require_sock)" || return 1
   node -e "
 const net=require('net');
 const s=net.createConnection('$sock');
 s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'create',name:'$name',wrapped:true})+'\n'));
 let b='';
-s.on('data',d=>{b+=d;if(b.includes('\n')){try{const d2=JSON.parse(b.split('\n')[0]);if(d2.ok){console.log('created terminal '+d2.id+' — log: '+(d2.logPath||''))}else{console.log('error: '+d2.error)}}catch(e){console.log('error: '+e.message)};s.destroy()}});
-s.on('error',e=>{console.log('error: '+e.message);s.destroy()});
-setTimeout(()=>{console.log('error: timeout');s.destroy()},5000);
+const t=setTimeout(()=>{console.log('error: timeout');s.destroy()},5000);
+s.on('data',d=>{b+=d;if(b.includes('\n')){clearTimeout(t);try{const d2=JSON.parse(b.split('\n')[0]);if(d2.ok){console.log('created terminal '+d2.id+' — log: '+(d2.logPath||'none'))}else{console.log('error: '+d2.error)}}catch(e){console.log('error: '+e.message)};s.destroy()}});
+s.on('error',e=>{clearTimeout(t);console.log('error: '+e.message);s.destroy()});
 " 2>/dev/null || echo "error: node not available"
 }
 
@@ -129,7 +138,7 @@ claws-run() {
   fi
   local id="$1"; shift
   local cmd="$*"
-  local sock; sock="$(_claws_find_sock)"
+  local sock; sock="$(_claws_require_sock)" || return 1
   # Write command to temp file to avoid shell injection via $cmd interpolation
   local tmpf="/tmp/claws-cmd-$$.txt"
   printf '%s' "$cmd" > "$tmpf"
@@ -159,14 +168,14 @@ claws-log() {
     echo "usage: claws-log <terminal-id> [lines]"
     return 1
   fi
-  local sock; sock="$(_claws_find_sock)"
+  local sock; sock="$(_claws_require_sock)" || return 1
   node -e "
 const net=require('net');
 const s=net.createConnection('$sock');
 s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'readLog',id:'$id',strip:true})+'\n'));
 let b='';
-s.on('data',d=>{b+=d;if(b.includes('\n')){try{const d2=JSON.parse(b.split('\n')[0]);if(d2.ok){const lines=(d2.bytes||'').split('\n');lines.slice(-$lines).forEach(l=>console.log(l));console.log('\n['+(d2.totalSize||0)+' bytes total]')}else{console.log('error: '+d2.error)}}catch(e){console.log('error: '+e.message)};s.destroy()}});
-s.on('error',e=>{console.log('error: '+e.message);s.destroy()});
-setTimeout(()=>{console.log('error: timeout');s.destroy()},10000);
+const t=setTimeout(()=>{console.log('error: timeout');s.destroy()},10000);
+s.on('data',d=>{b+=d;if(b.includes('\n')){clearTimeout(t);try{const d2=JSON.parse(b.split('\n')[0]);if(d2.ok){const lines=(d2.bytes||'').split('\n');lines.slice(-$lines).forEach(l=>console.log(l));console.log('\n['+(d2.totalSize||0)+' bytes total]')}else{console.log('error: '+d2.error)}}catch(e){console.log('error: '+e.message)};s.destroy()}});
+s.on('error',e=>{clearTimeout(t);console.log('error: '+e.message);s.destroy()});
 " 2>/dev/null || echo "error: node not available"
 }
