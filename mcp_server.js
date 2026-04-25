@@ -872,7 +872,7 @@ async function main() {
       const negotiated = SUPPORTED_VERSIONS.includes(requested) ? requested : '2024-11-05';
       respond(id, {
         protocolVersion: negotiated,
-        serverInfo: { name: 'claws', version: '0.5.3' },
+        serverInfo: { name: 'claws', version: '0.6.0' },
         capabilities: { tools: {} },
       });
     } else if (method === 'notifications/initialized') {
