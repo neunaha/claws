@@ -125,7 +125,8 @@ require.cache['vscode'] = {
 };
 
 const ext = require(BUNDLE);
-ext.activate({ subscriptions: [], extensionPath: EXT_ROOT });
+const _gs = new Map();
+ext.activate({ subscriptions: [], extensionPath: EXT_ROOT, globalState: { get: (k) => _gs.get(k), update: (k,v) => { _gs.set(k,v); return Promise.resolve(); } } });
 
 const assertions = [];
 function check(name, fn) {

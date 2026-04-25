@@ -49,6 +49,11 @@ function handle(req) {
       totalSize: Buffer.byteLength(text), truncated: false, logPath: null,
     };
   }
+  if (cmd === 'status') {
+    const s = state.get(String(req.id));
+    if (!s) return { ok: false, error: 'unknown id' };
+    return { ok: true, ptyOpen: true, promptSeen: true, ptyMode: 'pty', pid: 12345, wrapped: true };
+  }
   if (cmd === 'close') {
     const s = state.get(String(req.id));
     if (!s) return { ok: false, error: 'unknown id' };

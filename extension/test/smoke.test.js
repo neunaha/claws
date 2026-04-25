@@ -121,9 +121,14 @@ if (typeof ext.activate !== 'function' || typeof ext.deactivate !== 'function') 
 }
 
 const subscriptions = [];
+const _gsMap = new Map();
 const context = {
   subscriptions,
   extensionPath: EXT_ROOT,
+  globalState: {
+    get: (key) => _gsMap.get(key),
+    update: (key, val) => { _gsMap.set(key, val); return Promise.resolve(); },
+  },
 };
 
 ext.activate(context);
