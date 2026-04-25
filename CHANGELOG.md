@@ -5,6 +5,37 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — MCP server persistent socket (PR #19, #20)
+
+Three defects in the claws/2 MCP server layer surfaced during deep UAT of the persistent
+socket implementation (GAP-1). All three are fixed in `mcp_server.js` on the open PR.
+
+- **Signal handlers (GAP-4, PR #19)** — `main()` had no SIGINT/SIGTERM handlers. With the
+  `setInterval` poll timer introduced in GAP-1, an unhandled signal would leave the timer
+  running and delay exit. Added `shutdown()` that destroys the persistent socket and calls
+  `process.exit(0)` cleanly.
+
+- **Stale-socket race in `ensureV2Socket` (Bug 1, PR #20)** — `destroy()` is synchronous
+  but the `close` event fires asynchronously. If `claws_hello` opened a new socket before
+  the old socket's deferred `close` fired, the old handler would set `_v2Socket = null`,
+  severing the fresh connection. Fixed with an identity guard in both `error` and `close`
+  handlers: `if (_v2Socket !== sock) return`.
+
+- **`v2Rpc` hangs forever on non-response (Bug 2, PR #20)** — no timeout existed on the
+  persistent-socket RPC path. A stalled or crashed extension would leave the promise pending
+  indefinitely. Added a `settle` wrapper with a `fired` boolean guard and a 30-second
+  `setTimeout`; only the first of (response / error drain / timeout) resolves the promise.
+
+- **`claws_ping` creates zombie socket (Bug 3, PR #20)** — `claws_ping` unconditionally
+  called `v2Rpc`, which opens a persistent socket even before `claws_hello`. The extension
+  deletes unregistered connections on disconnect, silently leaving a zombie socket. Fixed by
+  routing through one-shot `clawsRpc` when no peer is registered, and through `v2Rpc`
+  (which correctly updates `lastSeen`) when registered.
+
+---
+
 ## [0.6.1] - 2026-04-22
 
 ### Added — Behavioral Injection Enforcement (Lifecycle enforcement overhaul)

@@ -54,28 +54,28 @@ setTimeout(()=>{console.log('?');s.destroy()},2000);
   _R="\033[0m"                # reset
 
   printf "\n"
-  printf "  ${_T}╔═══════════════════════════════════════════════╗${_R}\n"
-  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
+  printf "  ${_T}╔══════════════════════════════════════════════════════════════════╗${_R}\n"
+  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T} ██████╗██╗      █████╗ ██╗    ██╗███████╗${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T}██╔════╝██║     ██╔══██╗██║    ██║██╔════╝${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T}██║     ██║     ███████║██║ █╗ ██║███████╗${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T}██║     ██║     ██╔══██║██║███╗██║╚════██║${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T}╚██████╗███████╗██║  ██║╚███╔███╔╝███████║${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T} ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝${_R} ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_D}Terminal Control Bridge  v0.3.0${_R}             ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_D}Powered by Claude Opus${_R}                     ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   Bridge:    $_CLAWS_STATUS                   ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   Terminals: ${_W}${_CLAWS_TERMS}${_R} active                        ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   This term: $_CLAWS_WRAP                   ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_D}Terminal Control Bridge  v0.5.3${_R}            ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_D}Powered by Claude Sonnet 4.6${_R}               ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   Bridge:    $_CLAWS_STATUS                            ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   Terminals: ${_W}${_CLAWS_TERMS}${_R} active          ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   This term: $_CLAWS_WRAP                              ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_D}claws-ls${_R}    list terminals                 ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_D}claws-new${_R}   create wrapped terminal        ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_D}claws-run${_R}   exec command in terminal       ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_D}claws-log${_R}   read wrapped terminal log      ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                               ${_T}║${_R}\n"
-  printf "  ${_T}╚═══════════════════════════════════════════════╝${_R}\n"
+  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
+  printf "  ${_T}╚══════════════════════════════════════════════════════════════════╝${_R}\n"
   printf "\n"
 
   unset _CLAWS_STATUS _CLAWS_TERMS _CLAWS_WRAP
@@ -144,7 +144,7 @@ const base='/tmp/claws-exec';
 try{fs.mkdirSync(base,{recursive:true})}catch(e){}
 const outF=path.join(base,eid+'.out'),doneF=path.join(base,eid+'.done');
 const wrapper='{ '+cmd+'; } > '+outF+' 2>&1; echo \$? > '+doneF;
-s.on('connect',()=>{s.write(JSON.stringify({id:1,cmd:'send',id:termId,text:wrapper})+'\n')});
+s.on('connect',()=>{s.write(JSON.stringify({cmd:'send',id:termId,text:wrapper})+'\n')});
 let b='';
 s.on('data',d=>{b+=d;if(b.includes('\n')){poll()}});
 function poll(){const deadline=Date.now()+180000;const iv=setInterval(()=>{try{if(fs.existsSync(doneF)){clearInterval(iv);console.log('exit '+fs.readFileSync(doneF,'utf8').trim());try{console.log(fs.readFileSync(outF,'utf8'))}catch(e){};try{fs.unlinkSync(outF)}catch(e){};try{fs.unlinkSync(doneF)}catch(e){};s.destroy()}}catch(e){}if(Date.now()>deadline){clearInterval(iv);console.log('timeout');s.destroy()}},200)}
@@ -163,7 +163,7 @@ claws-log() {
   node -e "
 const net=require('net');
 const s=net.createConnection('$sock');
-s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'readLog',id:'$id',strip:true})+'\n'));
+s.on('connect',()=>s.write(JSON.stringify({cmd:'readLog',id:'$id',strip:true})+'\n'));
 let b='';
 s.on('data',d=>{b+=d;if(b.includes('\n')){try{const d2=JSON.parse(b.split('\n')[0]);if(d2.ok){const lines=(d2.bytes||'').split('\n');lines.slice(-$lines).forEach(l=>console.log(l));console.log('\n['+(d2.totalSize||0)+' bytes total]')}else{console.log('error: '+d2.error)}}catch(e){console.log('error: '+e.message)};s.destroy()}});
 s.on('error',e=>{console.log('error: '+e.message);s.destroy()});

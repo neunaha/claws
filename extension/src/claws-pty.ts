@@ -141,6 +141,8 @@ export class ClawsPty implements vscode.Pseudoterminal {
   private isOpen = false;
   private openedAt: number | null = null;
   private readonly createdAt = Date.now();
+  private pendingWrites: Array<{ text: string; withNewline: boolean; bracketedPaste: boolean }> = [];
+  private promptSeen = false;
 
   constructor(private readonly opts: ClawsPtyOptions) {}
 
@@ -157,6 +159,11 @@ export class ClawsPty implements vscode.Pseudoterminal {
   /** True once VS Code has invoked our `open()` hook. */
   hasOpened(): boolean {
     return this.openedAt != null;
+  }
+
+  /** True once the shell has produced any output — reliable "shell is ready" signal. */
+  hasPrompt(): boolean {
+    return this.promptSeen;
   }
 
   /** Wall-clock ms since this ClawsPty was constructed. */
@@ -237,7 +244,15 @@ export class ClawsPty implements vscode.Pseudoterminal {
   }
 
   writeInjected(text: string, withNewline: boolean, bracketedPaste: boolean): void {
-    if (!this.isOpen) return;
+    if (!this.isOpen) {
+      // Queue writes that arrive before open() fires — replayed on first shell output.
+      this.pendingWrites.push({ text, withNewline, bracketedPaste });
+      return;
+    }
+    this._writeInjectedNow(text, withNewline, bracketedPaste);
+  }
+
+  private _writeInjectedNow(text: string, withNewline: boolean, bracketedPaste: boolean): void {
     let payload = text;
     if (bracketedPaste) payload = `\x1b[200~${payload}\x1b[201~`;
     if (withNewline) payload += '\r';
@@ -249,6 +264,14 @@ export class ClawsPty implements vscode.Pseudoterminal {
   }
 
   private handleOutput(data: string): void {
+    if (!this.promptSeen && data.trim().length > 0) {
+      this.promptSeen = true;
+      // Shell has emitted output — flush any writes queued before open() fired.
+      const queued = this.pendingWrites.splice(0);
+      for (const w of queued) {
+        this._writeInjectedNow(w.text, w.withNewline, w.bracketedPaste);
+      }
+    }
     this.writeEmitter.fire(data);
     this.opts.captureStore.append(this.opts.terminalId, data);
   }

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { CaptureStore } from './capture-store';
 import { TerminalManager } from './terminal-manager';
 import { ClawsRequest, ClawsResponse, HistoryEvent, PROTOCOL_VERSION, PROTOCOL_VERSION_V2 } from './protocol';
@@ -76,6 +77,8 @@ export class ClawsServer {
   private socketPath: string | null = null;
   private startError: Error | null = null;
   private readonly startedAt: number = Date.now();
+  /** On Windows: path to the .claws/claws.pipename discovery file (cleaned up on stop). */
+  private pipeNameFile: string | null = null;
   /** Client versions we've already warned about — one warning per run per version. */
   private readonly versionWarned = new Set<string>();
   /** claws/2 peer registry. Keyed by peerId. Cleared on stop(). */
@@ -109,9 +112,22 @@ export class ClawsServer {
    * on bind completion.
    */
   start(): Promise<void> {
-    const socketRel = this.opts.socketRel || DEFAULT_SOCKET_REL;
-    this.socketPath = path.join(this.opts.workspaceRoot, socketRel);
-    fs.mkdirSync(path.dirname(this.socketPath), { recursive: true });
+    const clawsDir = path.join(this.opts.workspaceRoot, '.claws');
+    fs.mkdirSync(clawsDir, { recursive: true });
+
+    if (process.platform === 'win32') {
+      // Named pipes are required on Windows — file-path sockets are not supported.
+      // Derive a short stable hash from the workspace root so each workspace gets
+      // a unique pipe and multiple VS Code windows don't collide.
+      const hash = crypto.createHash('sha1').update(this.opts.workspaceRoot).digest('hex').slice(0, 8);
+      this.socketPath = `\\\\.\\pipe\\claws-${hash}`;
+      // Write the pipe path to a file so the MCP server can discover it via directory walk.
+      this.pipeNameFile = path.join(clawsDir, 'claws.pipename');
+      try { fs.writeFileSync(this.pipeNameFile, this.socketPath, 'utf8'); } catch { /* ignore */ }
+    } else {
+      const socketRel = this.opts.socketRel || DEFAULT_SOCKET_REL;
+      this.socketPath = path.join(this.opts.workspaceRoot, socketRel);
+    }
 
     // NB: this promise resolves on success OR failure — failure is captured
     // in `startError` for the caller to inspect. Returning a never-rejecting
@@ -131,7 +147,12 @@ export class ClawsServer {
 
   stop(): void {
     try { this.server?.close(); } catch { /* ignore */ }
-    try { if (this.socketPath) fs.unlinkSync(this.socketPath); } catch { /* ignore */ }
+    if (process.platform === 'win32') {
+      // Named pipes are cleaned up by the OS — remove only the discovery file.
+      try { if (this.pipeNameFile) fs.unlinkSync(this.pipeNameFile); } catch { /* ignore */ }
+    } else {
+      try { if (this.socketPath) fs.unlinkSync(this.socketPath); } catch { /* ignore */ }
+    }
     this.server = null;
     this.peers.clear();
     this.subscriptionIndex.clear();
@@ -148,6 +169,17 @@ export class ClawsServer {
    * VS Code windows race each other into client confusion.
    */
   private async prepareSocket(sockPath: string): Promise<void> {
+    if (process.platform === 'win32') {
+      // Named pipes don't exist in the filesystem — probe directly.
+      const occupied = await this.probeSocket(sockPath);
+      if (occupied) {
+        throw new Error(
+          `refusing to start: another server is already listening on ${sockPath}. ` +
+          `Close the other VS Code window.`,
+        );
+      }
+      return;
+    }
     if (!fs.existsSync(sockPath)) return;
     const occupied = await this.probeSocket(sockPath);
     if (occupied) {
@@ -194,10 +226,13 @@ export class ClawsServer {
       // enough to prevent other-user access. We belt-and-brace with an
       // explicit chmod in the listen callback in case VS Code's umask is
       // unusual under Electron.
-      const prevUmask = process.umask(0o077);
+      // process.umask() throws ENOSYS on Windows — skip entirely for named pipes.
+      const prevUmask = process.platform !== 'win32' ? process.umask(0o077) : undefined;
       try {
         this.server.once('listening', () => {
-          try { fs.chmodSync(sockPath, 0o600); } catch { /* ignore */ }
+          if (process.platform !== 'win32') {
+            try { fs.chmodSync(sockPath, 0o600); } catch { /* ignore */ }
+          }
           this.opts.logger(`[claws] listening on ${sockPath}`);
           resolve();
         });
@@ -207,7 +242,7 @@ export class ClawsServer {
         });
         this.server.listen(sockPath);
       } finally {
-        process.umask(prevUmask);
+        if (prevUmask !== undefined) process.umask(prevUmask);
       }
     });
   }
@@ -643,6 +678,20 @@ export class ClawsServer {
 
     if (cmd === 'ping') {
       return { ok: true, serverTime: Date.now() };
+    }
+
+    if (cmd === 'status') {
+      const r = req as ClawsRequest & { id: string | number };
+      const rec = tm.recordById(r.id);
+      if (!rec) return { ok: false, error: `unknown terminal id ${r.id}` };
+      return {
+        ok: true,
+        ptyOpen: rec.pty ? rec.pty.hasOpened() : null,
+        promptSeen: rec.pty ? rec.pty.hasPrompt() : null,
+        ptyMode: rec.pty ? rec.pty.mode : null,
+        pid: rec.pty ? rec.pty.pid : null,
+        wrapped: rec.wrapped,
+      };
     }
 
     if (cmd === 'subscribe') {

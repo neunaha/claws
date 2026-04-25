@@ -30,30 +30,52 @@ const { randomUUID } = require('crypto');
 
 // ─── MCP protocol (stdio, Content-Length framing) ──────────────────────────
 
-let inputBuf = '';
+// Buffer accumulator — Content-Length is a UTF-8 byte count, not a char count.
+// Using a string accumulator and slicing by .length would mis-slice any body
+// containing non-ASCII characters (emoji, Unicode filenames, smart quotes).
+let inputBuf = Buffer.alloc(0);
 
 function readMessage() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const tryParse = () => {
-      const headerEnd = inputBuf.indexOf('\r\n\r\n');
-      if (headerEnd === -1) return false;
-      const headerBlock = inputBuf.slice(0, headerEnd);
-      const match = headerBlock.match(/content-length:\s*(\d+)/i);
+      const sep = inputBuf.indexOf('\r\n\r\n');
+      if (sep === -1) return false;
+      const headerStr = inputBuf.slice(0, sep).toString('ascii');
+      const match = headerStr.match(/content-length:\s*(\d+)/i);
       if (!match) return false;
       const len = parseInt(match[1], 10);
-      const bodyStart = headerEnd + 4;
+      const bodyStart = sep + 4;
       if (inputBuf.length < bodyStart + len) return false;
-      const body = inputBuf.slice(bodyStart, bodyStart + len);
+      const body = inputBuf.slice(bodyStart, bodyStart + len).toString('utf8');
       inputBuf = inputBuf.slice(bodyStart + len);
-      resolve(JSON.parse(body));
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch (e) {
+        // Tag as a parse error so main() can send -32700 and continue rather
+        // than letting the exception kill the process.
+        e._parseError = true;
+        reject(e);
+        return true;
+      }
+      resolve(parsed);
       return true;
     };
     if (tryParse()) return;
     const onData = (chunk) => {
-      inputBuf += chunk.toString('utf8');
-      if (tryParse()) process.stdin.removeListener('data', onData);
+      inputBuf = Buffer.concat([inputBuf, chunk]);
+      if (tryParse()) {
+        process.stdin.removeListener('data', onData);
+        process.stdin.removeListener('end', onEnd);
+      }
+    };
+    // Resolve null on stdin close so main()'s `if (!msg) break` fires cleanly.
+    const onEnd = () => {
+      process.stdin.removeListener('data', onData);
+      resolve(null);
     };
     process.stdin.on('data', onData);
+    process.stdin.once('end', onEnd);
   });
 }
 
@@ -132,20 +154,13 @@ function ensureV2Socket(sockPath) {
       _v2Buf = _v2Buf.slice(nl + 1);
       let frame;
       try { frame = JSON.parse(line); } catch { continue; }
-      if (frame.push === 'message') {
-        // Forward pub/sub push frame as an MCP channel notification.
-        writeMessage({
-          jsonrpc: '2.0',
-          method: 'notifications/claude/channel',
-          params: {
-            content: JSON.stringify(frame.payload),
-            meta: { topic: frame.topic, from: frame.from, sentAt: frame.sentAt },
-          },
-        });
-      } else if (frame.id != null) {
+      if (frame.id != null) {
         const resolve = _v2Pending.get(frame.id);
         if (resolve) { _v2Pending.delete(frame.id); resolve(frame); }
       }
+      // Push frames (frame.push === 'message') are intentionally not forwarded
+      // to Claude Code — unsolicited server-initiated notifications are not part
+      // of standard MCP and Claude Code discards them silently.
     }
   });
 
@@ -440,8 +455,23 @@ async function runBlockingWorker(sock, args) {
   const termId = cr.id;
   const startedAt = Date.now();
 
-  // 2. Give shell a moment to emit prompt
-  await sleep(400);
+  // 2. Poll until the shell has emitted its first prompt (promptSeen via status command).
+  // This replaces the fixed 400ms sleep with a real readiness signal — resolves in
+  // 100–300ms on fast systems and waits correctly on slow login shells or Windows.
+  {
+    const PTY_POLL_MS = 100;
+    const PTY_TIMEOUT_MS = 10000;
+    const ptyDeadline = Date.now() + PTY_TIMEOUT_MS;
+    let ptyReady = false;
+    while (Date.now() < ptyDeadline) {
+      const st = await clawsRpc(sock, { cmd: 'status', id: termId });
+      if (st.ok && st.promptSeen === true) { ptyReady = true; break; }
+      await sleep(PTY_POLL_MS);
+    }
+    if (!ptyReady) {
+      process.stderr.write(`[claws-mcp] shell prompt not seen within ${PTY_TIMEOUT_MS}ms for terminal ${termId} — sending anyway\n`);
+    }
+  }
 
   // 3. Optional claude boot + detection
   let booted = !launchClaude;
@@ -551,23 +581,30 @@ function getSocket() {
   const envSock = process.env.CLAWS_SOCKET;
   if (envSock && path.isAbsolute(envSock)) return envSock;
 
-  // Walk up from CWD to find .claws/claws.sock — the extension creates the
-  // socket at <workspace-root>/.claws/claws.sock. The MCP server CWD is
-  // normally the workspace root, but users can launch Claude Code from any
-  // directory, so we walk up rather than assume CWD is always the root.
+  // Walk up from CWD to find the socket. On Windows the extension writes the
+  // named pipe path into .claws/claws.pipename (named pipes don't appear in
+  // the filesystem). On Unix we check for the socket file directly.
   let dir = process.cwd();
   while (true) {
-    const candidate = path.join(dir, '.claws', 'claws.sock');
-    try {
-      if (fs.statSync(candidate).isSocket()) return candidate;
-    } catch { /* not found at this level */ }
+    if (process.platform === 'win32') {
+      const pipeFile = path.join(dir, '.claws', 'claws.pipename');
+      try {
+        const pipeName = fs.readFileSync(pipeFile, 'utf8').trim();
+        if (pipeName) return pipeName;
+      } catch { /* not found at this level */ }
+    } else {
+      const candidate = path.join(dir, '.claws', 'claws.sock');
+      try {
+        if (fs.statSync(candidate).isSocket()) return candidate;
+      } catch { /* not found at this level */ }
+    }
     const parent = path.dirname(dir);
     if (parent === dir) break; // reached filesystem root
     dir = parent;
   }
 
-  // Fall back to env var (may be relative) or the conventional default.
-  return envSock || '.claws/claws.sock';
+  // Fall back to env var (may be relative) or the platform default.
+  return envSock || (process.platform === 'win32' ? '\\\\.\\pipe\\claws' : '.claws/claws.sock');
 }
 
 async function handleTool(name, args) {
@@ -809,16 +846,34 @@ async function main() {
   process.stdin.resume();
 
   while (true) {
-    const msg = await readMessage();
+    let msg;
+    try {
+      msg = await readMessage();
+    } catch (e) {
+      if (e._parseError) {
+        // Malformed frame — send JSON-RPC parse error and keep running.
+        // Never kill the process over a bad incoming frame.
+        writeMessage({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
+        continue;
+      }
+      throw e;
+    }
     if (!msg) break;
 
     const { method, id, params = {} } = msg;
 
     if (method === 'initialize') {
+      // Echo back the client's requested version if we support it; otherwise
+      // fall back to the oldest supported version. Claude Code now sends
+      // '2025-11-25' and per spec will disconnect if the server responds with
+      // a version it no longer supports.
+      const SUPPORTED_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
+      const requested = params.protocolVersion || '2024-11-05';
+      const negotiated = SUPPORTED_VERSIONS.includes(requested) ? requested : '2024-11-05';
       respond(id, {
-        protocolVersion: '2024-11-05',
+        protocolVersion: negotiated,
         serverInfo: { name: 'claws', version: '0.5.3' },
-        capabilities: { tools: {}, experimental: { 'claude/channel': {} } },
+        capabilities: { tools: {} },
       });
     } else if (method === 'notifications/initialized') {
       // no response needed

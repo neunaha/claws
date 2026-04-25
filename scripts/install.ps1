@@ -87,7 +87,6 @@ if (Test-Path $CLAUDE_SETTINGS) {
             $cfg.mcpServers | Add-Member -NotePropertyName "claws" -NotePropertyValue @{
                 command = "node"
                 args = @($MCP_PATH.Replace('\', '/'))
-                env = @{ CLAWS_SOCKET = ".claws/claws.sock" }
             } -Force
             $cfg | ConvertTo-Json -Depth 10 | Set-Content $CLAUDE_SETTINGS
             Write-Host "  OK MCP server registered globally" -ForegroundColor Green
@@ -102,7 +101,6 @@ if (Test-Path $CLAUDE_SETTINGS) {
             claws = @{
                 command = "node"
                 args = @($MCP_PATH.Replace('\', '/'))
-                env = @{ CLAWS_SOCKET = ".claws/claws.sock" }
             }
         }
     } | ConvertTo-Json -Depth 10 | Set-Content $CLAUDE_SETTINGS
