@@ -59,6 +59,24 @@ Show the result clearly.
 **Complex mission** (refactor, fix bug, audit) → use `claws_worker` which auto-launches Claude Code
 **Multi-step** (test → deploy) → sequential terminals, branch on results
 
+## CRITICAL: Do NOT spawn sub-agents
+
+Call `claws_create`, `claws_send`, `claws_read_log`, `claws_close` yourself directly. Never delegate to the Agent tool or any sub-agent — the point is that YOU execute the boot sequence, not a proxy.
+
+When the task needs Claude Code running inside the terminal, follow this exact boot sequence manually:
+
+1. `claws_create(name="worker-<slug>", wrapped=true)` → get terminal ID N
+2. `claws_send(id=N, text="claude --model claude-sonnet-4-6 --dangerously-skip-permissions")`
+3. Poll `claws_read_log` every 5s until output contains "trust" (~20s)
+4. `claws_send(id=N, text="1", newline=false)` — accept trust
+5. Poll `claws_read_log` every 5s until output contains "bypass" (~10s)
+6. `claws_send(id=N, text="<mission>", newline=false)`
+7. `claws_send(id=N, text="\n", newline=false)` — submit
+8. Poll `claws_read_log` every 10s until MISSION_COMPLETE appears
+9. `claws_close(id=N)` — ALWAYS close when done
+
+If MCP tools are not loaded, use the raw socket via node (Bash tool) ONLY to interact with the socket — not to do the task itself in Bash.
+
 ## NEVER do this
 
 - NEVER use the Bash tool for tasks the user asked /claws-do for

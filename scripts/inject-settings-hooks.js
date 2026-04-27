@@ -78,11 +78,12 @@ if (REMOVE) {
   process.exit(0);
 }
 
-// Define the three hooks to inject
+// Define the four hooks to inject
 const HOOKS_TO_ADD = [
-  { event: 'SessionStart', entry: makeHookEntry('*', 'session-start-claws.js') },
-  { event: 'PreToolUse',   entry: makeHookEntry('Bash', 'pre-tool-use-claws.js') },
-  { event: 'Stop',         entry: makeHookEntry('*', 'stop-claws.js') },
+  { event: 'SessionStart', entry: makeHookEntry('*',            'session-start-claws.js') },
+  { event: 'PreToolUse',   entry: makeHookEntry('*',            'pre-tool-use-claws.js') },
+  { event: 'PostToolUse',  entry: makeHookEntry('mcp__claws__*','post-tool-use-claws.js') },
+  { event: 'Stop',         entry: makeHookEntry('*',            'stop-claws.js') },
 ];
 
 let changed = 0;

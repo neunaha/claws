@@ -19,6 +19,13 @@ Step 7  claws_send id=<N> text="
 
 Never send the mission before "bypass" is detected. Never skip the trust acceptance step.
 
+## Real-time event stream (no polling)
+
+The orchestrator subscribes to a pub/sub event stream via `scripts/stream-events.js`
+under Monitor. Workers publish events at every checkpoint via `claws_publish`. See
+**`docs/event-protocol.md`** for the full convention — schemas, state machine, command
+channel, error recovery, authorization rules.
+
 ## 8-Phase Lifecycle
 
 ### Phase 1 — PLAN

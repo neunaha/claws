@@ -5,6 +5,55 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-04-28
+
+### Added — Lifecycle gate (PLAN→REFLECT) for orchestration
+
+Multi-terminal orchestration via Claws now follows an enforced 8-phase lifecycle:
+PLAN → SPAWN → DEPLOY → OBSERVE → RECOVER → HARVEST → CLEANUP → REFLECT.
+A PreToolUse gate blocks `claws_create` (and any `claws_*` tool) until a PLAN
+file exists at `.claws/lifecycle-state.json`. The `/claws-plan` slash command
+writes this file and unlocks terminal creation.
+
+Why: pre-0.6.2, orchestrators could spawn workers without stating a mission,
+which led to runaway terminals, no audit trail, and no shared memory of what
+each worker was supposed to do. The gate forces a one-paragraph plan before
+any worker is created.
+
+Components:
+- `scripts/hooks/lifecycle-state.js` — shared module that read/writes the
+  state machine.
+- `scripts/hooks/pre-tool-use-claws.js` — gate logic that returns a blocking
+  error when no PLAN exists.
+- `scripts/hooks/post-tool-use-claws.js` — auto-advances phase after each
+  `claws_*` tool call.
+- `scripts/hooks/stop-claws.js` — checks lifecycle state on Stop and reminds
+  the model to close terminals + write REFLECT before session end.
+- `scripts/inject-settings-hooks.js` — registers the new PostToolUse hook
+  matcher (`mcp__claws__*`).
+- `.claude/commands/claws-plan.md` — new `/claws-plan` slash command.
+
+### Added — Event-streaming sidecar protocol
+
+A convention layer over the existing claws/2 pub-sub for real-time, no-polling
+orchestration. Workers emit lifecycle events on well-known topics; orchestrators
+subscribe via a long-lived sidecar process that prints each push frame as one
+JSON line on stdout — designed to be spawned via `run_in_background` and
+consumed by Monitor-style line tailing.
+
+- `docs/event-protocol.md` — event shapes, command channel, state machine.
+- `scripts/stream-events.js` — sidecar implementation. Holds one persistent
+  socket, registers as a peer, subscribes to a topic pattern, emits JSON-line
+  events per push frame.
+
+### Housekeeping
+
+- `scripts/git-hooks/pre-commit` — repo-local hook that enforces CHANGELOG
+  updates for code commits. Installed by `scripts/install.sh` into
+  `.git/hooks/`.
+- `.gitignore` — ignore `.claude/scheduled_tasks.lock` (runtime artifact
+  from the scheduling system).
+
 ## [0.6.1] - 2026-04-22
 
 ### Fixed — MCP server stdio framing (CRITICAL)

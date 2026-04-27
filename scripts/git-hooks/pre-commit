@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Claws pre-commit hook — enforces CHANGELOG.md is updated for code changes.
+# Installed by scripts/install.sh into .git/hooks/pre-commit.
+
+staged=$(git diff --cached --name-only 2>/dev/null)
+
+# Only care about commits that touch code files
+code_files=$(echo "$staged" | grep -E '\.(ts|js|mjs|sh)$' | grep -v '\.d\.ts$' || true)
+
+if [ -z "$code_files" ]; then
+  exit 0
+fi
+
+# CHANGELOG.md must also be staged
+if echo "$staged" | grep -q "^CHANGELOG\.md$"; then
+  exit 0
+fi
+
+echo ""
+echo "  pre-commit: CHANGELOG.md not staged"
+echo ""
+echo "  Code files in this commit:"
+echo "$code_files" | sed 's/^/    /'
+echo ""
+echo "  Update CHANGELOG.md with what changed, then:"
+echo "    git add CHANGELOG.md && git commit"
+echo ""
+echo "  To bypass (chores, docs-only, WIP):"
+echo "    git commit --no-verify"
+echo ""
+exit 1
