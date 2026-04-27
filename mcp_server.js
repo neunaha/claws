@@ -28,25 +28,26 @@ const path = require('path');
 const os = require('os');
 const { randomUUID } = require('crypto');
 
-// ─── MCP protocol (stdio, Content-Length framing) ──────────────────────────
+// ─── MCP protocol (stdio, newline-delimited JSON) ──────────────────────────
+// MCP spec: each JSON-RPC message is a single line on stdin/stdout, terminated
+// by '\n'. (NOT LSP-style Content-Length framing — that was the prior bug.)
 
 let inputBuf = '';
 
 function readMessage() {
   return new Promise((resolve) => {
     const tryParse = () => {
-      const headerEnd = inputBuf.indexOf('\r\n\r\n');
-      if (headerEnd === -1) return false;
-      const headerBlock = inputBuf.slice(0, headerEnd);
-      const match = headerBlock.match(/content-length:\s*(\d+)/i);
-      if (!match) return false;
-      const len = parseInt(match[1], 10);
-      const bodyStart = headerEnd + 4;
-      if (inputBuf.length < bodyStart + len) return false;
-      const body = inputBuf.slice(bodyStart, bodyStart + len);
-      inputBuf = inputBuf.slice(bodyStart + len);
-      resolve(JSON.parse(body));
-      return true;
+      const nl = inputBuf.indexOf('\n');
+      if (nl === -1) return false;
+      const line = inputBuf.slice(0, nl).replace(/\r$/, '');
+      inputBuf = inputBuf.slice(nl + 1);
+      if (line.trim() === '') return tryParse();
+      try {
+        resolve(JSON.parse(line));
+        return true;
+      } catch {
+        return tryParse();
+      }
     };
     if (tryParse()) return;
     const onData = (chunk) => {
@@ -58,9 +59,7 @@ function readMessage() {
 }
 
 function writeMessage(msg) {
-  const body = JSON.stringify(msg);
-  const header = `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n`;
-  process.stdout.write(header + body);
+  process.stdout.write(JSON.stringify(msg) + '\n');
 }
 
 function respond(id, result) {
@@ -738,7 +737,7 @@ async function main() {
       respond(id, {
         protocolVersion: '2024-11-05',
         // Version must match extension/package.json — bump both together on release.
-        serverInfo: { name: 'claws', version: '0.6.0' },
+        serverInfo: { name: 'claws', version: '0.6.1' },
         capabilities: { tools: {} },
       });
     } else if (method === 'notifications/initialized') {

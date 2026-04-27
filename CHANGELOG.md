@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.1] - 2026-04-22
 
+### Fixed — MCP server stdio framing (CRITICAL)
+
+The MCP server was implementing **LSP-style `Content-Length` framing** instead of the
+**newline-delimited JSON** the MCP spec requires for stdio transport. Result: every
+JSON-RPC request from Claude Code (`initialize`, `tools/list`, every tool call) hung
+forever — the server was waiting for `Content-Length: NNN\r\n\r\n` headers that never
+came. `/mcp` showed "claws — needs auth" / "Failed to reconnect"; `mcp__claws__*` tools
+were never actually available in any Claude Code session, regardless of install state.
+
+Fix: `readMessage()` now reads line-by-line; `writeMessage()` appends `\n` instead of a
+Content-Length header. Verified end-to-end: `initialize` → response, `tools/list` →
+all 14 tools, `claws_ping` callable from a real Claude Code session.
+
+The prior "GAP-2 + GAP-3 — MCP spec compliance" commit (b5c2c7c) only fixed the
+`isError` shape and stderr logging — it never tested the JSON-RPC handshake, so the
+framing bug shipped in every release through 0.6.0.
+
+Also bumped `serverInfo.version` from `0.6.0` → `0.6.1`.
+
 ### Added — Behavioral Injection Enforcement (Lifecycle enforcement overhaul)
 
 Closes the lifecycle enforcement gap identified in `.local/audits/lifecycle-enforcement-gap.md`.
