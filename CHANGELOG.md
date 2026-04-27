@@ -5,6 +5,37 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-04-28
+
+### Added — CLAWS_STRICT mode (first Hard enforcement mechanism)
+
+Until v0.6.4 every Claws enforcement layer was advisory: CLAUDE.md blocks,
+SessionStart/PreToolUse/Stop hooks all *suggested* the Claws path but the
+model could still fall back to plain Bash for long-running orchestration
+work. This release ships the first hard block.
+
+When `CLAWS_STRICT=1` is set in the user's environment (or in
+`~/.claude/settings.json` `env` block), the PreToolUse hook returns
+`permissionDecision: "deny"` for Bash commands that match long-running
+patterns (servers, watchers, `nohup`, `nodemon`, `pnpm/bun start|dev|serve|watch`,
+etc.). The deny reason is an actionable four-step recipe: `claws_create` →
+`claws_send` → `claws_read_log` → `claws_close`. Claude Code blocks the
+tool call and the model pivots.
+
+The pattern list is conservative — only commands that are unambiguously
+long-running. Ordinary commands like `ls`, `git status`, one-shot builds,
+or short tests pass through unchanged. `CLAWS_STRICT` defaults to off; no
+behavior change for existing users.
+
+The mechanism uses Claude Code's documented PreToolUse hook protocol
+(`hookSpecificOutput.permissionDecision`); no Claude Code change required.
+
+Files changed:
+- `scripts/hooks/pre-tool-use-claws.js` — added `STRICT` branch with
+  `hookSpecificOutput.permissionDecision: "deny"` + actionable reason.
+  Pattern list expanded with `pnpm`, `bun`, `hypercorn`, `nodemon`,
+  `nohup`. Word-boundary anchored to reduce false positives.
+
 ## [0.6.3] - 2026-04-28
 
 ### Fixed — claws_send submit reliability for TUI workers
