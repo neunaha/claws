@@ -238,13 +238,26 @@ export class ClawsPty implements vscode.Pseudoterminal {
 
   writeInjected(text: string, withNewline: boolean, bracketedPaste: boolean): void {
     if (!this.isOpen) return;
-    let payload = text;
-    if (bracketedPaste) payload = `\x1b[200~${payload}\x1b[201~`;
-    if (withNewline) payload += '\r';
+    const body = bracketedPaste ? `\x1b[200~${text}\x1b[201~` : text;
+    this.writeRaw(body);
+    if (!withNewline) return;
+    // For bracketed paste, the trailing CR must arrive in a separate write
+    // after a short delay so the TUI's paste-detection window closes first.
+    // Otherwise Ink-based TUIs (Claude Code) bundle the CR into the paste
+    // burst and it never registers as a discrete Enter keypress.
+    if (bracketedPaste) {
+      setTimeout(() => this.writeRaw('\r'), 30);
+    } else {
+      this.writeRaw('\r');
+    }
+  }
+
+  private writeRaw(data: string): void {
+    if (!this.isOpen) return;
     if (this.ptyProc) {
-      this.ptyProc.write(payload);
+      this.ptyProc.write(data);
     } else if (this.childProc?.stdin.writable) {
-      this.childProc.stdin.write(payload);
+      this.childProc.stdin.write(data);
     }
   }
 

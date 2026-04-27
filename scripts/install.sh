@@ -613,6 +613,19 @@ _install_via_vsix() {
       esac
       if ls "$ext_dir"/neunaha.claws-* 2>/dev/null | grep -q .; then
         ok "Claws extension installed in $label (verified in $ext_dir)"
+        # Clean stale older-version directories. VS Code itself usually does
+        # this on VSIX install, but if a prior install hit a lock or used a
+        # different CLI, old <publisher>.<name>-X.Y.Z dirs can linger and
+        # confuse VS Code's extension picker. Keep only the just-installed
+        # version (matches EXT_VERSION).
+        local kept_dir="$ext_dir/neunaha.claws-$EXT_VERSION"
+        for stale in "$ext_dir"/neunaha.claws-*; do
+          [ -d "$stale" ] || continue
+          [ "$stale" = "$kept_dir" ] && continue
+          if rm -rf "$stale" 2>/dev/null || sudo rm -rf "$stale" 2>/dev/null; then
+            info "  removed stale install $(basename "$stale")"
+          fi
+        done
       else
         ok "Claws extension installed in $label (via VSIX — extensions dir not found for verification)"
       fi

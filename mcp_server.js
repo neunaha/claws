@@ -524,9 +524,16 @@ async function handleTool(name, args) {
   }
 
   if (name === 'claws_send') {
+    // Auto-enable bracketed paste for multi-line text. Matches the documented
+    // tool behavior and ensures the trailing CR registers as Enter in TUIs
+    // like Claude Code (the extension splits the CR into a separate write
+    // when bracketed paste is used; see claws-pty.ts:writeInjected).
+    const text = args.text ?? '';
+    const isMultiLine = text.includes('\n') || text.includes('\r');
     const resp = await clawsRpc(sock, {
-      cmd: 'send', id: args.id, text: args.text,
+      cmd: 'send', id: args.id, text,
       newline: args.newline !== false,
+      paste: isMultiLine,
     });
     if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
     return { content: [{ type: 'text', text: 'sent' }] };

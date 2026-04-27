@@ -5,6 +5,54 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-04-28
+
+### Fixed — claws_send submit reliability for TUI workers
+
+Multi-line text sent via `claws_send` with `newline=true` was not registering as
+a discrete Enter keypress in Ink-based TUIs (Claude Code). The trailing CR
+arrived in the same write as the bracketed-paste close marker and got bundled
+into the TUI's paste-detection burst, leaving the input populated but never
+submitted. Empirical workaround: send the CR via raw socket as a separate write.
+This release encodes the workaround into the send path itself.
+
+Two-part fix:
+- `extension/src/claws-pty.ts:writeInjected` — when bracketed paste is used and
+  `withNewline=true`, the trailing `\r` is emitted in a separate `write()` call
+  after a 30 ms delay. The pause closes the TUI's paste-detection window before
+  the CR arrives, so it registers as Enter.
+- `mcp_server.js:claws_send` — auto-sets `paste: true` when text contains `\n`
+  or `\r`. The tool description always promised this; the server never
+  enforced it.
+
+End-to-end verified: a multi-line `claws_send` with `newline=true` now submits
+on the first try in a Claude Code worker terminal — no raw-socket CR fallback
+needed.
+
+### Added — npm run deploy:dev for local extension iteration
+
+`extension/scripts/deploy-dev.mjs` (called via `npm run deploy:dev`) copies the
+freshly built `dist/extension.js` and `native/` bundle into every installed
+extension directory under `~/.vscode/extensions/<publisher>.<name>-*/`. Closes
+the silent gap where `npm run build` produced a new bundle that VS Code never
+loaded because the editor only reads from its installed-extensions dir.
+
+### Fixed — install.sh now cleans stale install dirs
+
+After a successful `code --install-extension <vsix>`, the installer now removes
+older `<publisher>.<name>-X.Y.Z` directories so VS Code's extension picker
+isn't confused by lingering versions. Previously, prior installs (e.g. stuck
+on a lock when a window was open) could leave multiple version dirs under
+`~/.vscode/extensions/` indefinitely.
+
+### Fixed — version manifests now track CHANGELOG
+
+`extension/package.json` was stuck at `0.6.0` and root `package.json` at
+`0.5.3` despite CHANGELOG, README, CLAUDE.md, and the `v0.6.1` git tag all
+declaring `0.6.1`. Result: every reinstall packaged a VSIX labeled `0.6.0`,
+and VS Code's extension UI kept showing `0.6.0` even when the bytes had moved
+on. Both manifests now match the CHANGELOG.
+
 ## [0.6.2] - 2026-04-28
 
 ### Added — Lifecycle gate (PLAN→REFLECT) for orchestration
