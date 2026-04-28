@@ -3,6 +3,7 @@ import * as path from 'path';
 
 const SEGMENT_SIZE_THRESHOLD = 10 * 1024 * 1024; // 10 MB
 const SEGMENT_AGE_THRESHOLD_MS = 3600_000;        // 1 hour
+const MANIFEST_FLUSH_INTERVAL = 100;              // write manifest every N appends
 
 export interface AppendResult {
   cursor: string;
@@ -16,6 +17,21 @@ export interface LogRecord {
   sequence?: number;
   payload?: unknown;
   [key: string]: unknown;
+}
+
+interface SegmentEntry {
+  id: string;
+  path: string;
+  size: number;
+  first_ts: string | null;
+  last_ts: string | null;
+}
+
+interface Manifest {
+  stream: string;
+  segments: SegmentEntry[];
+  current_segment: string;
+  current_offset: number;
 }
 
 /**
@@ -36,6 +52,8 @@ export class EventLogWriter {
   protected stream: fs.WriteStream | null = null;
   protected degraded = false;
   protected writeError: Error | null = null;
+  protected segments: SegmentEntry[] = [];
+  private appendCount = 0;
   // Serialised append queue — guarantees ordering under concurrent publishes.
   private appendQueue: Promise<void> = Promise.resolve();
 
@@ -47,11 +65,69 @@ export class EventLogWriter {
       this.degraded = true;
       return Promise.resolve();
     }
-    // Always start a fresh segment on (re)start — never append to a prior-process segment.
-    const maxId = this.scanMaxSegmentId();
-    this.segmentId = maxId + 1;
-    this.openFreshSegment();
+    // Crash recovery: try manifest first; fall back to directory scan.
+    if (!this.tryRecoverFromManifest()) {
+      const maxId = this.scanMaxSegmentId();
+      this.segmentId = maxId + 1;
+      this.openFreshSegment();
+    }
     return Promise.resolve();
+  }
+
+  // Attempts to recover writer state from an existing manifest.json.
+  // Returns true on success (stream opened, state restored), false otherwise.
+  // Recovery rule: trust actual file size over the manifest's current_offset —
+  // the manifest may be stale if the process crashed between appends and a flush.
+  protected tryRecoverFromManifest(): boolean {
+    const manifestPath = path.join(this.streamDir, 'manifest.json');
+    try {
+      const raw = fs.readFileSync(manifestPath, 'utf8');
+      const m = JSON.parse(raw) as Partial<Manifest>;
+      if (
+        typeof m.current_segment !== 'string' ||
+        typeof m.current_offset !== 'number' ||
+        !Array.isArray(m.segments)
+      ) return false;
+      const segEntry = m.segments.find(s => s.id === m.current_segment);
+      if (!segEntry) return false;
+      const segPath = path.join(this.streamDir, segEntry.path);
+      const stat = fs.statSync(segPath); // throws if file missing
+      const segId = parseInt(m.current_segment, 10);
+      if (isNaN(segId) || segId < 1) return false;
+
+      this.segmentId = segId;
+      this.currentSegmentPath = segPath;
+      this.segments = m.segments.map(s => ({ ...s }));
+      this.currentOffset = stat.size; // trust file, not stale manifest offset
+      this.openedAt = Date.now();
+      this.stream = fs.createWriteStream(segPath, { flags: 'a' });
+      this.stream.on('error', (err) => {
+        this.writeError = err;
+        this.degraded = true;
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  protected writeManifest(): void {
+    if (this.degraded || !this.streamDir) return;
+    const manifest: Manifest = {
+      stream: 'default',
+      segments: this.segments.map(s => ({ ...s })),
+      current_segment: this.segmentIdStr(),
+      current_offset: this.currentOffset,
+    };
+    const manifestPath = path.join(this.streamDir, 'manifest.json');
+    const tmpPath = `${manifestPath}.tmp`;
+    try {
+      // Atomic write: temp file in same dir (avoids cross-device rename failures).
+      fs.writeFileSync(tmpPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+      fs.renameSync(tmpPath, manifestPath);
+    } catch {
+      // Non-fatal: manifest write failure must not crash the writer.
+    }
   }
 
   // Scans the stream directory for the highest 4-digit segment ID prefix.
@@ -92,6 +168,13 @@ export class EventLogWriter {
       this.writeError = err;
       this.degraded = true;
     });
+    this.segments.push({
+      id: this.segmentIdStr(),
+      path: name,
+      size: this.currentOffset,
+      first_ts: null,
+      last_ts: null,
+    });
   }
 
   protected needsRotation(): boolean {
@@ -102,6 +185,9 @@ export class EventLogWriter {
   }
 
   protected rotate(): void {
+    // Update the closing segment's final size before moving on.
+    const closing = this.segments[this.segments.length - 1];
+    if (closing) closing.size = this.currentOffset;
     if (this.stream) {
       this.stream.end();
       this.stream = null;
@@ -109,6 +195,7 @@ export class EventLogWriter {
     this.segmentId++;
     this.currentOffset = 0;
     this.openFreshSegment();
+    this.writeManifest();
   }
 
   segmentIdStr(): string {
@@ -142,10 +229,26 @@ export class EventLogWriter {
     const cursor = `${this.segmentIdStr()}:${this.currentOffset}`;
     this.stream.write(line);
     this.currentOffset += bytes;
+
+    // Update current segment metadata for manifest accuracy.
+    const lastSeg = this.segments[this.segments.length - 1];
+    if (lastSeg) {
+      const ts = (record.ts_server as string | undefined) ?? new Date().toISOString();
+      if (!lastSeg.first_ts) lastSeg.first_ts = ts;
+      lastSeg.last_ts = ts;
+      lastSeg.size = this.currentOffset;
+    }
+
+    this.appendCount++;
+    if (this.appendCount % MANIFEST_FLUSH_INTERVAL === 0) {
+      this.writeManifest();
+    }
+
     return { cursor, sequence: -1 }; // sequence added in commit 4
   }
 
   close(): Promise<void> {
+    this.writeManifest();
     return new Promise<void>((resolve) => {
       if (!this.stream) { resolve(); return; }
       this.stream.end(() => {
