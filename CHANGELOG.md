@@ -97,7 +97,8 @@ Files changed:
 - `scripts/inject-settings-hooks.js` — PostToolUse entry removed; 3 hooks remain
 - `scripts/install.sh` — hooks registration updated to `--remove` then re-register
 - `extension/test/lifecycle-store.test.js` — 25 unit tests (all pass)
-- `extension/test/lifecycle-server.test.js` — 6 integration tests (all pass)
+- `extension/test/lifecycle-server.test.js` — 8 integration tests (7 original + 1
+  new illegal-transition test; idempotent:true assertion added to advance test)
 
 ## [0.6.4] - 2026-04-28
 
