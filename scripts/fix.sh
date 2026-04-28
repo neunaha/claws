@@ -122,7 +122,51 @@ elif [ -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
     ISSUES=$((ISSUES+1))
   elif ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --only=node-pty --force >/dev/null 2>&1 ) && [ -f "$NPTY_BIN" ]; then
     echo "$ELECTRON_VERSION" > "$ELECTRON_ABI_FILE" 2>/dev/null || true
-    ok "node-pty rebuilt for Electron $ELECTRON_VERSION — reload VS Code to pick it up"
+    ok "node-pty rebuilt for Electron $ELECTRON_VERSION in source clone"
+
+    # Propagate the rebuilt binary into the source's bundled native/ slot
+    # AND into every installed extension directory. Without this, VS Code
+    # keeps loading the OLD pty.node from ~/.vscode/extensions/neunaha.claws-X/
+    # and the rebuild has no visible effect after reload. (Audit gap #3.)
+    SOURCE_NATIVE_DEST="$INSTALL_DIR/extension/native/node-pty/build/Release/pty.node"
+    if [ -f "$NPTY_BIN" ] && [ -d "$INSTALL_DIR/extension/native/node-pty/build/Release" ]; then
+      cp -f "$NPTY_BIN" "$SOURCE_NATIVE_DEST" 2>/dev/null && ok "propagated to source native/ bundle"
+      # Update the metadata.json electronVersion to match
+      node --no-deprecation -e "
+        const fs=require('fs');
+        const p='$INSTALL_DIR/extension/native/.metadata.json';
+        try { const m=JSON.parse(fs.readFileSync(p,'utf8')); m.electronVersion='$ELECTRON_VERSION'; m.bundledAt=new Date().toISOString(); fs.writeFileSync(p,JSON.stringify(m,null,2)+'\n'); } catch(e){}
+      " 2>/dev/null || true
+    fi
+    PROPAGATED=0
+    for ext_root in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" "$HOME/.cursor/extensions" "$HOME/.windsurf/extensions"; do
+      [ -d "$ext_root" ] || continue
+      for inst in "$ext_root"/neunaha.claws-*; do
+        [ -d "$inst" ] || continue
+        # Skip if this is a symlink pointing back at the source clone (already updated via source propagation above)
+        if [ -L "$inst" ]; then
+          ok "skipped $(basename "$inst") — symlink to source"
+          PROPAGATED=$((PROPAGATED+1))
+          continue
+        fi
+        target_dir="$inst/native/node-pty/build/Release"
+        target="$target_dir/pty.node"
+        if [ -d "$target_dir" ]; then
+          mkdir -p "$target_dir" 2>/dev/null || true
+          if cp -f "$NPTY_BIN" "$target" 2>/dev/null; then
+            ok "propagated to $(basename "$inst")"
+            PROPAGATED=$((PROPAGATED+1))
+          else
+            fail "could not write to $target (permissions?)"
+            ISSUES=$((ISSUES+1))
+          fi
+        fi
+      done
+    done
+    if [ "$PROPAGATED" -eq 0 ]; then
+      printf "  ${C_YELLOW}!${C_RESET} no installed extension dirs found to propagate to — reload VS Code or run install.sh\n"
+    fi
+    fix "reload VS Code now: Cmd+Shift+P → Developer: Reload Window"
     FIXED=$((FIXED+1))
   else
     fail "@electron/rebuild failed — wrapped terminals will use pipe-mode"
