@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "cmd-pause-v1",
+  "$ref": "#/definitions/cmd-pause-v1",
+  "definitions": {
+    "cmd-pause-v1": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  }
+}

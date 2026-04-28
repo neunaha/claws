@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "system-peer-stale-v1",
+  "$ref": "#/definitions/system-peer-stale-v1",
+  "definitions": {
+    "system-peer-stale-v1": {
+      "type": "object",
+      "properties": {
+        "peerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "last_seen": {
+          "type": "number",
+          "minimum": 0
+        },
+        "missed_heartbeats": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "peerId",
+        "last_seen",
+        "missed_heartbeats"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

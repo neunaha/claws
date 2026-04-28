@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "worker-boot-v1",
+  "$ref": "#/definitions/worker-boot-v1",
+  "definitions": {
+    "worker-boot-v1": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "orchestrator",
+            "worker",
+            "observer"
+          ]
+        },
+        "parent_peer_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mission_summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "role",
+        "parent_peer_id",
+        "mission_summary",
+        "capabilities",
+        "cwd",
+        "terminal_id"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

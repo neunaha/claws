@@ -5,6 +5,183 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-04-28 — Phase β: streaming foundation
+
+### Fixed (post-review)
+
+Three issues were found in the Phase β code review and addressed in this
+release before merge:
+
+- **BLOCKING-1** — `claws-sdk.js` `hello()` was overwriting `CLAWS_PEER_ID`
+  with the server-assigned connection peer id, so SDK publishes were
+  routing to `worker.<server-id>.*` instead of the documented
+  `worker.<CLAWS_PEER_ID>.*`. The constructor now captures `CLAWS_PEER_ID`
+  into an immutable `_topicPeerId` field that all publish methods use for
+  topic construction; `hello()` never overwrites it.
+- **BLOCKING-2** — `publishBoot`/`publishPhase`/`publishHeartbeat` (and
+  others) were constructing payloads whose field names did not match the
+  corresponding Zod schemas (`reason` vs `transition_reason`, `phase` vs
+  `current_phase`, missing `model`/`parent_peer_id`/`cwd`/`terminal_id`,
+  etc.). Every SDK publish was triggering `system.malformed.received` even
+  in normal operation. All payload field names now match the schemas
+  exactly. Schema names also switched from PascalCase (`WorkerBootV1`) to
+  kebab-case (`worker-boot-v1`) to match the `SCHEMA_BY_NAME` convention.
+- **MAJOR-1** — `extension/package.json` `build` and `compile` scripts now
+  prepend `npm run schemas` so committed artifacts under `schemas/` cannot
+  silently fall stale relative to `event-schemas.ts`.
+
+### Added
+
+**Schemas-as-code (Zod → committed JSON, TypeScript, docs)**
+- `extension/src/event-schemas.ts`: Zod v3 schema definitions as the single
+  source of truth for all 19 event types — `EnvelopeV1`, 5 worker schemas,
+  8 cmd schemas, 6 system schemas, enums, and `SCHEMA_BY_NAME` lookup
+- `extension/src/topic-registry.ts`: `TOPIC_REGISTRY` (19 entries) and
+  `schemaForTopic()` lookup; `topic-utils.ts` extracted to avoid circular deps
+- `npm run schemas` codegen pipeline: bundles TS via esbuild, then generates
+  `schemas/json/` (20 JSON Schema files), `schemas/types/event-protocol.d.ts`,
+  `docs/event-protocol.md` topic table, and `schemas/mcp-tools.json`
+- All generated files committed — no runtime build step required
+
+**Server-side publish validation (soft-reject mode by default)**
+- `server.ts` publish handler validates `EnvelopeV1` and per-topic data
+  schema before fan-out using the Zod schemas
+- Soft-reject (default): on failure, emits `system.malformed.received` with
+  `{ from, topic, error: ZodIssues }`, then still fans the event out
+- Strict mode (`claws.strictEventValidation=true`): hard-rejects with
+  `{ ok:false, error:'envelope:invalid'|'payload:invalid', details }`;
+  no fan-out occurs
+- Migration note: soft-reject is the default in v0.7.0; flips to strict in
+  v0.8.0 to give existing callers one release cycle to adopt the envelope
+
+**MCP tool descriptors generated from Zod schemas**
+- All 18 MCP tools defined as Zod schemas in `scripts/codegen/gen-mcp-tools.mjs`
+- `schemas/mcp-tools.json` committed and consumed by `mcp_server.js` at startup
+- `tools/list` response is byte-identical to the previous hand-written array
+- `mcp_server.js` startup guard exits clearly if the file is absent
+
+**Claws SDK — zero-dep typed publish helpers**
+- `claws-sdk.js` (repo root, copied to `.claws-bin/` by installer): dual CLI
+  + module API for workers to publish typed `EnvelopeV1` frames
+- CLI verbs: `publish boot|phase|event|heartbeat|complete`
+- Module: `ClawsSDK` class with `connect()`, `hello()`, `publishBoot()`,
+  `publishPhase()`, `publishEvent()`, `publishHeartbeat()`, `publishComplete()`
+- Socket auto-discovery (walks up from `cwd`); reads env `CLAWS_PEER_ID`,
+  `CLAWS_PEER_NAME`, `CLAWS_TERMINAL_ID`
+- Migration note: SDK is opt-in for Phase β — legacy `claws_publish` with raw
+  payloads continues to work in soft-reject mode
+
+**Streaming Worker orchestration pattern**
+- Template 8 in `.claude/skills/prompt-templates/SKILL.md`: full streaming
+  worker mission boilerplate with checkpoint publish table and orchestrator
+  setup guide
+- `.claude/skills/claws-orchestration-engine/SKILL.md` Phase 4 OBSERVE
+  refactored to event-driven sidecar pattern with heartbeat-based stuck
+  detection; legacy `claws_read_log` polling documented as fallback
+- New slash command `.claude/commands/claws-streaming-worker.md`
+
+### Tests
+
+192 checks across 18 suites (all green):
+- 34 unit checks — `event-schemas.test.js`
+- 14 unit checks — `topic-registry.test.js`
+- 7 integration checks — `server-validation.test.js`
+- 7 static + smoke checks — `mcp-tools-codegen.test.js`
+- 7 CLI + integration checks — `sdk-cli.test.js`
+- 123 pre-existing checks (suites 1–13) unchanged
+
+---
+
+## [Unreleased] - Phase β: streaming foundation
+
+### Added — β.5 Claws SDK (commit 5/7)
+
+**Zero-dependency worker publish helper:**
+- `claws-sdk.js` (repo root): dual CLI + module API for workers to publish
+  typed `EnvelopeV1` frames; zero deps (stdlib `net`, `crypto`, `fs` only)
+  - CLI: `node .claws-bin/claws-sdk.js publish boot|phase|event|heartbeat|complete [flags]`
+  - Module: `const { ClawsSDK } = require('.claws-bin/claws-sdk.js')` —
+    `connect()`, `hello()`, `publishBoot()`, `publishPhase()`,
+    `publishEvent()`, `publishHeartbeat()`, `publishComplete()`
+  - Socket auto-discovery: walks up from `cwd` looking for `.claws/claws.sock`
+  - Reads env: `CLAWS_SOCKET`, `CLAWS_PEER_ID` (required for publish),
+    `CLAWS_PEER_NAME`, `CLAWS_TERMINAL_ID`
+  - `--help` / `--version` (`0.7.0`) / clean error on missing `CLAWS_PEER_ID`
+- `scripts/install.sh`: copies `schemas/mcp-tools.json` → `.claws-bin/schemas/`
+  (required by `mcp_server.js` at runtime) and `claws-sdk.js` → `.claws-bin/`
+- 7 checks in `extension/test/sdk-cli.test.js` (static CLI + module API +
+  live server integration via built extension bundle)
+- `extension/package.json`: adds `test:sdk` script, 192 checks across 18 suites
+
+---
+
+### Added — β.4 MCP tool descriptor migration (commit 4/7)
+
+**MCP tool descriptors generated from Zod schemas:**
+- `scripts/codegen/gen-mcp-tools.mjs`: defines all 18 MCP tools as Zod schemas
+  with verbatim descriptions; writes `schemas/mcp-tools.json` at codegen time
+- `schemas/mcp-tools.json`: committed generated file — 18 tool descriptors
+  consumed by `mcp_server.js` at startup
+- `mcp_server.js`: replaced 224-line hand-written `TOOLS` array with
+  `require('./schemas/mcp-tools.json')`; adds startup guard that exits with
+  a clear message when the file is absent
+- 7 checks in `extension/test/mcp-tools-codegen.test.js` (static JSON checks
+  + `mcp_server.js` `tools/list` stdio smoke test)
+- `extension/package.json`: adds `test:mcp-codegen` script and appends it to
+  the `test` chain (185 checks total across 17 suites)
+
+---
+
+### Added — β.1 Schemas + β.1 Server Validation (commits 1–2/7)
+
+**Zod schema definitions as single source of truth for all event types:**
+- `extension/src/event-schemas.ts`: `EnvelopeV1`, 5 worker schemas
+  (`WorkerBootV1`, `WorkerPhaseV1`, `WorkerEventV1`, `WorkerHeartbeatV1`,
+  `WorkerCompleteV1`), 8 cmd schemas, 6 system schemas, enums
+  (`PHASES`, `EventKindEnum`, `ClawsRoleEnum`, `ResultEnum`, `SeverityEnum`),
+  and `SCHEMA_BY_NAME` lookup map
+- `extension/src/topic-utils.ts`: standalone `matchTopic` + `matchSegments`
+  extracted from `peer-registry.ts` (§7.7 refactor — clean dep graph)
+- `extension/src/topic-registry.ts`: `TOPIC_REGISTRY` (19 entries),
+  `schemaForTopic(topic)` lookup
+- `extension/src/peer-registry.ts`: now re-exports `matchTopic` from
+  `topic-utils.ts`; backward compatible for all existing callers
+- 34 unit checks in `test/event-schemas.test.js`
+- 14 unit checks in `test/topic-registry.test.js`
+- `zod@^3` and `zod-to-json-schema@^3` added as devDependencies
+
+**Codegen pipeline (`npm run schemas`):**
+- `scripts/codegen/index.mjs`: bundles `event-schemas.ts` via esbuild → CJS,
+  then calls each generator in sequence
+- `scripts/codegen/gen-json-schema.mjs`: iterates exported Zod schemas, calls
+  `zodToJsonSchema()`, writes 20 files to `schemas/json/`
+- `scripts/codegen/gen-types.mjs`: writes `schemas/types/event-protocol.d.ts`
+  with hand-templated type aliases for all 19 event schemas
+- `scripts/codegen/gen-docs.mjs`: regenerates schema reference table in
+  `docs/event-protocol.md` between `<!-- BEGIN/END GENERATED SCHEMAS -->` markers
+- `extension/package.json`: adds `"schemas"` script; `build` unchanged
+  (codegen is an explicit separate step — run before build for full pipeline)
+- `.gitignore`: adds `extension/dist/event-schemas.bundle.cjs` (temp artifact)
+- `docs/event-protocol.md`: adds `BEGIN/END GENERATED SCHEMAS` markers with
+  initial generated content
+- `schemas/` directory committed with all 20 JSON Schema files and `.d.ts`
+
+**Server-side publish validation with soft-reject mode:**
+- `server.ts` publish handler now validates envelope (`EnvelopeV1`) and data
+  payload (`schemaForTopic`) before fan-out
+- Soft-reject mode (default): on failure, emits `system.malformed.received`
+  with `{ from, topic, error: ZodIssues }`, then still fans out the event
+- Strict mode (`claws.strictEventValidation=true`): hard-rejects with
+  `{ ok:false, error:'envelope:invalid'|'payload:invalid', details }`;
+  no fan-out occurs
+- `server-config.ts`: new `strictEventValidation: boolean` field
+  (default `false`); `DEFAULT_STRICT_EVENT_VALIDATION` constant
+- `extension.ts`: wires `strictEventValidation` from VS Code settings
+- `extension/package.json`: adds `claws.strictEventValidation` VS Code config
+- 7 integration checks in `test/server-validation.test.js`
+
+---
+
 ## [0.6.5] - 2026-04-28
 
 ### Added — Phase α: server-side lifecycle gate

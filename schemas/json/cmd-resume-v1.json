@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "cmd-resume-v1",
+  "$ref": "#/definitions/cmd-resume-v1",
+  "definitions": {
+    "cmd-resume-v1": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  }
+}

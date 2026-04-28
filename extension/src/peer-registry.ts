@@ -2,10 +2,11 @@
 //
 // The registry holds one `PeerConnection` per active socket that has
 // completed the `hello` handshake. It is owned by the `ClawsServer` and
-// cleared on `stop()`. Helper `matchTopic` implements the wildcard rules
-// that `publish` / `subscribe` handlers rely on.
+// cleared on `stop()`. matchTopic is defined in topic-utils.ts and
+// re-exported here for backward compatibility with existing callers.
 
 import * as net from 'net';
+export { matchTopic } from './topic-utils';
 
 /**
  * Role declared by a peer during the `hello` handshake. The role gates
@@ -52,47 +53,3 @@ export function allocPeerId(seq: number): string {
   return 'p_' + seq.toString(16).padStart(6, '0');
 }
 
-/**
- * Match a concrete dot-delimited topic against a subscription pattern.
- *
- * Rules (segments separated by `.`):
- *   - `*`  matches exactly one segment
- *   - `**` matches one or more segments (greedy; at least one segment)
- *   - any other segment must match literally
- *
- * Examples:
- *   matchTopic('task.started.p1', 'task.*.p1')   === true
- *   matchTopic('task.started.p1', 'task.**')     === true
- *   matchTopic('task.started',    'task.**')     === true
- *   matchTopic('task',            'task.**')     === false
- *   matchTopic('worker.online',   'worker.*')    === true
- *   matchTopic('worker.online.p1','worker.*')    === false
- */
-export function matchTopic(topic: string, pattern: string): boolean {
-  const t = topic.split('.');
-  const p = pattern.split('.');
-  return matchSegments(t, 0, p, 0);
-}
-
-function matchSegments(t: string[], ti: number, p: string[], pi: number): boolean {
-  while (pi < p.length) {
-    const seg = p[pi];
-    if (seg === '**') {
-      // `**` requires at least one remaining topic segment, then consumes
-      // one or more. If this is the last pattern segment, any non-empty
-      // remainder matches; otherwise we have to try every split point.
-      if (pi === p.length - 1) {
-        return ti < t.length;
-      }
-      for (let k = ti + 1; k <= t.length; k++) {
-        if (matchSegments(t, k, p, pi + 1)) return true;
-      }
-      return false;
-    }
-    if (ti >= t.length) return false;
-    if (seg !== '*' && seg !== t[ti]) return false;
-    ti++;
-    pi++;
-  }
-  return ti === t.length;
-}

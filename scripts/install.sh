@@ -730,6 +730,16 @@ else
     mkdir -p "$PROJECT_ROOT/.claws-bin"
     cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js"
     chmod +x "$PROJECT_ROOT/.claws-bin/mcp_server.js"
+    # Copy generated MCP tool descriptors (mcp_server.js loads these at startup)
+    if [ -f "$INSTALL_DIR/schemas/mcp-tools.json" ]; then
+      mkdir -p "$PROJECT_ROOT/.claws-bin/schemas"
+      cp "$INSTALL_DIR/schemas/mcp-tools.json" "$PROJECT_ROOT/.claws-bin/schemas/mcp-tools.json"
+    fi
+    # Copy Claws SDK (v0.7.0+) for typed publish helpers in worker scripts
+    if [ -f "$INSTALL_DIR/claws-sdk.js" ]; then
+      cp "$INSTALL_DIR/claws-sdk.js" "$PROJECT_ROOT/.claws-bin/claws-sdk.js"
+      chmod +x "$PROJECT_ROOT/.claws-bin/claws-sdk.js" 2>/dev/null || true
+    fi
     cp "$INSTALL_DIR/scripts/shell-hook.sh" "$PROJECT_ROOT/.claws-bin/shell-hook.sh"
     # Copy event-streaming sidecar (v0.6.2+) so Bash run_in_background + Monitor can stream pub/sub frames
     if [ -f "$INSTALL_DIR/scripts/stream-events.js" ]; then

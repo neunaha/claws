@@ -13,6 +13,8 @@ import {
 import { PeerConnection, ClawsRole, allocPeerId, matchTopic } from './peer-registry';
 import { TaskRecord, allocTaskId } from './task-registry';
 import { LifecycleStore } from './lifecycle-store';
+import { EnvelopeV1 } from './event-schemas';
+import { schemaForTopic } from './topic-registry';
 
 /**
  * Per-connection context threaded into `handle()`. Holds the raw socket
@@ -691,6 +693,33 @@ export class ClawsServer {
       const r = req as import('./protocol').PublishRequest;
       if (!r.topic || typeof r.topic !== 'string') return { ok: false, error: 'topic required' };
       const peerId = ctx.getPeerId()!;
+      const strict = this.getConfig().strictEventValidation;
+
+      const dataSchema = schemaForTopic(r.topic);
+      if (dataSchema !== null) {
+        const envelopeResult = EnvelopeV1.safeParse(r.payload);
+        if (!envelopeResult.success) {
+          this.opts.logger(`[claws/schema] malformed envelope from ${peerId} on ${r.topic}`);
+          this.fanOut('system.malformed.received', 'server', {
+            from: peerId, topic: r.topic, error: envelopeResult.error.issues,
+          }, false);
+          if (strict) {
+            return { ok: false, error: 'envelope:invalid', details: envelopeResult.error.issues };
+          }
+        } else {
+          const dataResult = dataSchema.safeParse(envelopeResult.data.data);
+          if (!dataResult.success) {
+            this.opts.logger(`[claws/schema] malformed data from ${peerId} on ${r.topic}`);
+            this.fanOut('system.malformed.received', 'server', {
+              from: peerId, topic: r.topic, error: dataResult.error.issues,
+            }, false);
+            if (strict) {
+              return { ok: false, error: 'payload:invalid', details: dataResult.error.issues };
+            }
+          }
+        }
+      }
+
       const delivered = this.fanOut(r.topic, peerId, r.payload, r.echo ?? false);
       return { ok: true, deliveredTo: delivered };
     }

@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "cmd-set-phase-v1",
+  "$ref": "#/definitions/cmd-set-phase-v1",
+  "definitions": {
+    "cmd-set-phase-v1": {
+      "type": "object",
+      "properties": {
+        "phase": {
+          "type": "string",
+          "enum": [
+            "PLAN",
+            "SPAWN",
+            "DEPLOY",
+            "OBSERVE",
+            "RECOVER",
+            "HARVEST",
+            "CLEANUP",
+            "REFLECT",
+            "FAILED"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "phase",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

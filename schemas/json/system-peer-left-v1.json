@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "system-peer-left-v1",
+  "$ref": "#/definitions/system-peer-left-v1",
+  "definitions": {
+    "system-peer-left-v1": {
+      "type": "object",
+      "properties": {
+        "peerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "orchestrator",
+            "worker",
+            "observer"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "clean",
+            "crash",
+            "timeout"
+          ]
+        }
+      },
+      "required": [
+        "peerId",
+        "role",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

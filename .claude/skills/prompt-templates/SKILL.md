@@ -228,6 +228,97 @@ when done, print MISSION_COMPLETE [slug] on its own line. go.
 
 ---
 
+## Template 8 — Streaming Worker (Real-time Event Publishing)
+
+**Use when**: the orchestrator must track the worker's progress in real-time via the pub/sub bus rather than polling the pty log. Required when running ≥3 parallel workers or when latency matters.
+
+The worker MUST publish at every checkpoint:
+
+| Checkpoint | SDK call | Notes |
+|---|---|---|
+| Process start | `publish boot` | First action after accepting the trust prompt |
+| Phase transition | `publish phase` | Every lifecycle phase change |
+| Significant decision | `publish event --kind DECISION` | Blocking choices |
+| Blocker hit | `publish event --kind BLOCKED` | Before asking orchestrator |
+| Every ~10s | `publish heartbeat` | Keeps orchestrator alive even during silent work |
+| Final outcome | `publish complete` | Last action before printing MISSION_COMPLETE |
+
+**Mission prompt template**:
+
+```
+streaming worker mission. you are worker <slug>, peerId will be assigned at connect.
+
+env contract (already set in this terminal):
+  CLAWS_PEER_ID   — your registered peer id
+  CLAWS_PEER_NAME — <slug>
+
+sdk: node ./.claws-bin/claws-sdk.js publish <type> [flags]
+
+REQUIRED PUBLISH SEQUENCE:
+1. publish boot immediately (before doing any work):
+   node ./.claws-bin/claws-sdk.js publish boot \
+     --mission "<one-sentence mission summary>" \
+     --role worker
+
+2. publish phase at every lifecycle transition:
+   node ./.claws-bin/claws-sdk.js publish phase --phase PLAN
+   node ./.claws-bin/claws-sdk.js publish phase --phase DEPLOY --prev PLAN
+   (etc.)
+
+3. publish heartbeat every ~10 seconds during long-running steps:
+   node ./.claws-bin/claws-sdk.js publish heartbeat --phase <current-phase>
+
+4. publish event for sentinels:
+   node ./.claws-bin/claws-sdk.js publish event \
+     --kind BLOCKED --summary "<what you are waiting for>" --severity warn
+   node ./.claws-bin/claws-sdk.js publish event \
+     --kind DECISION --summary "<what you decided and why>"
+
+5. publish complete as the very last step before MISSION_COMPLETE:
+   node ./.claws-bin/claws-sdk.js publish complete \
+     --result ok --summary "<what was accomplished>"
+
+context: [2-3 sentences the worker needs]
+
+your job: [clear objective in one sentence]
+
+steps:
+1. publish boot (above — do this first)
+2. [first concrete action]
+3. [second concrete action]
+4. [verification step]
+5. publish complete (above — do this last)
+
+constraints:
+- stay inside [scope]
+- do not commit unless instructed
+- do not skip publish steps — the orchestrator relies on them
+
+when done, print MISSION_COMPLETE <slug> on its own line. go.
+```
+
+**Orchestrator setup** (before sending the mission):
+
+```
+# 1. Register orchestrator peer
+peerId = claws_hello(role="orchestrator", peerName="orch")
+
+# 2. Subscribe to all worker events
+claws_subscribe(topic="worker.**")
+
+# 3. Launch stream-events sidecar (keeps pub/sub frames arriving)
+#    (in a separate bash terminal or background Monitor)
+
+# 4. Boot worker terminal via standard 7-step sequence
+# 5. Set CLAWS_PEER_ID + CLAWS_PEER_NAME env in the worker terminal:
+claws_send(id=<termId>, text='export CLAWS_PEER_ID=<workerPeerId>')
+claws_send(id=<termId>, text='export CLAWS_PEER_NAME=<slug>')
+
+# 6. Send the streaming worker mission
+```
+
+---
+
 ## Anti-patterns — What NOT to Do
 
 **Don't send vague missions**:

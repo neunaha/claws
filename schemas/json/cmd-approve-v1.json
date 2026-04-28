@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "cmd-approve-v1",
+  "$ref": "#/definitions/cmd-approve-v1",
+  "definitions": {
+    "cmd-approve-v1": {
+      "type": "object",
+      "properties": {
+        "correlation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "correlation_id"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
