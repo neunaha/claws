@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Claws PreToolUse hook — lifecycle gate + Bash long-running enforcement.
+// Claws PreToolUse hook — Bash long-running enforcement.
 //
 // Default mode: long-running Bash patterns get a soft nudge on stderr, the
 // tool call proceeds. Existing behavior since v0.6.1.
@@ -9,11 +9,10 @@
 // PreToolUse hookSpecificOutput. Claude Code blocks the tool call and shows
 // the reason — which tells the model exactly what to use instead.
 //
-// Lifecycle gate (PLAN-required) is unchanged in both modes.
+// Lifecycle gate moved server-side in v0.6.5 — removed from this hook.
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const { readState } = require('./lifecycle-state');
 
 // Patterns that almost always indicate orchestration work — long-running
 // servers, watchers, or background processes — where a wrapped Claws terminal
@@ -48,10 +47,10 @@ function denyBash(matchedPattern, command) {
     `[claws strict] Bash command matches a long-running pattern (${matchedPattern}).`,
     `Use Claws instead so the work runs in a visible, monitorable terminal:`,
     ``,
-    `  1. mcp__claws__claws_create({ name: "<slug>", wrapped: true })`,
-    `  2. mcp__claws__claws_send({ id: <N>, text: ${JSON.stringify(command)} })`,
-    `  3. mcp__claws__claws_read_log({ id: <N>, lines: 50 }) — to observe`,
-    `  4. mcp__claws__claws_close({ id: <N> }) — when done`,
+    `  1. claws_create({ name: "<slug>", wrapped: true })`,
+    `  2. claws_send({ id: <N>, text: ${JSON.stringify(command)} })`,
+    `  3. claws_read_log({ id: <N>, lines: 50 }) — to observe`,
+    `  4. claws_close({ id: <N> }) — when done`,
     ``,
     `If you genuinely need a one-shot, short-running Bash call, narrow the command.`,
   ].join('\n');
@@ -95,31 +94,6 @@ process.stdin.on('end', () => {
       );
     }
     process.exit(0);
-  }
-
-  // --- Lifecycle gate: block claws_create when no PLAN exists ---
-  if (toolName === 'mcp__claws__claws_create') {
-    const state = readState(cwd);
-    if (!state || state.phase === 'PLAN-REQUIRED') {
-      process.stdout.write(JSON.stringify({
-        type: 'error',
-        content: '[LIFECYCLE GATE — PLAN REQUIRED] Run /claws-plan first to document your mission. This unlocks terminal creation.',
-      }));
-      process.exit(2);
-    }
-    process.exit(0);
-  }
-
-  // --- Lifecycle gate: block any claws_* tool when phase is PLAN-REQUIRED ---
-  if (toolName.startsWith('mcp__claws__')) {
-    const state = readState(cwd);
-    if (!state || state.phase === 'PLAN-REQUIRED') {
-      process.stdout.write(JSON.stringify({
-        type: 'error',
-        content: '[LIFECYCLE GATE — PLAN REQUIRED] Run /claws-plan first to document your mission. This unlocks terminal creation.',
-      }));
-      process.exit(2);
-    }
   }
 
   process.exit(0);
