@@ -71,6 +71,16 @@ re-registering. This cleanly removes the stale PostToolUse entry from
 > will not find it. Verify your `~/.claude/settings.json` has no PostToolUse
 > entry for `post-tool-use-claws.js` after upgrading.
 
+**Post-review fixes (M1+M2+M3 — applied as immediate follow-up):**
+Three issues found in the post-merge review have been addressed in this release.
+M1: `lifecycle.advance` (and `lifecycle.reflect`) error responses now return the
+stable machine-readable code in `error` and the human-readable detail in a
+separate `message` field, matching the §2.3 contract already implemented by the
+other lifecycle handlers. M2: `lifecycle.advance` returns `idempotent: true` when
+the requested phase equals the current phase (no-op transition), as specified in
+§2.3. M3: All remaining "or raw socket" bypass phrasing in `claws-do.md` is
+removed; the affected prohibition lines are rephrased without the term.
+
 Files changed:
 - `extension/src/lifecycle-store.ts` — new `LifecycleStore` class (pure Node.js)
 - `extension/src/protocol.ts` — `LifecycleState`, `LifecyclePlanRequest`,

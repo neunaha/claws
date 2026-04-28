@@ -856,10 +856,17 @@ export class ClawsServer {
     if (cmd === 'lifecycle.advance') {
       const r = req as import('./protocol').LifecycleAdvanceRequest;
       try {
+        const prevPhase = this.lifecycleStore.snapshot()?.phase;
         const state = this.lifecycleStore.advance(r.to as import('./lifecycle-store').Phase, r.reason);
+        // Return idempotent:true when the phase did not change (no-op transition)
+        if (prevPhase === r.to) return { ok: true, state, idempotent: true };
         return { ok: true, state };
       } catch (err) {
-        return { ok: false, error: (err as Error).message };
+        // Split "lifecycle:code — human message" into stable code + readable detail (M1)
+        const msg = (err as Error).message;
+        const sepIdx = msg.indexOf(' — ');
+        if (sepIdx !== -1) return { ok: false, error: msg.slice(0, sepIdx), message: msg.slice(sepIdx + 3) };
+        return { ok: false, error: msg, message: msg };
       }
     }
 
@@ -876,7 +883,11 @@ export class ClawsServer {
         const state = this.lifecycleStore.reflect(r.reflect);
         return { ok: true, state };
       } catch (err) {
-        return { ok: false, error: (err as Error).message };
+        // Split "lifecycle:code — human message" into stable code + readable detail
+        const msg = (err as Error).message;
+        const sepIdx = msg.indexOf(' — ');
+        if (sepIdx !== -1) return { ok: false, error: msg.slice(0, sepIdx), message: msg.slice(sepIdx + 3) };
+        return { ok: false, error: msg, message: msg };
       }
     }
 

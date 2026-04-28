@@ -71,7 +71,7 @@ export class LifecycleStore {
    * Illegal transitions throw with 'lifecycle:invalid-transition' prefix.
    */
   advance(toPhase: Phase, _reason?: string): LifecycleState {
-    if (!this.state) throw new Error('lifecycle:plan-required');
+    if (!this.state) throw new Error('lifecycle:plan-required — no PLAN logged; call lifecycle.plan first');
     if (this.state.phase === toPhase) return this.state;
     const allowed = TRANSITIONS[this.state.phase];
     if (!allowed.includes(toPhase)) {

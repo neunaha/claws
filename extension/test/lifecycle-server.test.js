@@ -232,6 +232,17 @@ function check(name, fn) {
     assert.strictEqual(r2.state.phase, 'SPAWN');
     const mtime2 = fs.statSync(sf).mtimeMs;
     assert.strictEqual(mtime1, mtime2, 'idempotent advance should not re-write file');
+    assert.strictEqual(r2.idempotent, true, 'idempotent advance should have idempotent:true');
+  });
+
+  // M1: lifecycle.advance illegal transition → stable error code + separate message field
+  await check('lifecycle.advance illegal transition → stable error code + message field', async () => {
+    // State is at SPAWN; REFLECT is not legal from SPAWN (allowed: DEPLOY, RECOVER, FAILED)
+    const r = await rpc({ cmd: 'lifecycle.advance', to: 'REFLECT' });
+    assert.strictEqual(r.ok, false, `expected ok:false, got: ${JSON.stringify(r)}`);
+    assert.strictEqual(r.error, 'lifecycle:invalid-transition', `expected stable error code, got: ${r.error}`);
+    assert.strictEqual(typeof r.message, 'string', 'expected message field to be a string');
+    assert(r.message.length > 0, 'expected non-empty message');
   });
 
   // 6. lifecycle.plan twice → second returns ok with original plan, idempotent:true
