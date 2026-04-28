@@ -93,6 +93,9 @@ function toolError(message) {
 
 let counter = 0;
 
+// Per-call socket — stateless claws/1 commands (list, create, send, close,
+// readLog, poll, exec, introspect, ping, lifecycle.*). Each call opens a
+// fresh socket, sends one frame, receives one response, destroys the socket.
 function clawsRpc(sockPath, req, timeout = 30000) {
   return new Promise((resolve) => {
     counter++;
@@ -122,6 +125,148 @@ function clawsRpc(sockPath, req, timeout = 30000) {
       sock.destroy();
     });
   });
+}
+
+// ─── Persistent connection for stateful claws/2 commands ─────────────────────
+// claws/2 peer state (registered by hello, consumed by publish/subscribe/
+// broadcast/task.*) is bound to a single TCP connection on the server. Per-call
+// sockets break multi-step flows: hello registers on socket A, then A is
+// destroyed; the next call opens socket B which has no peer, and publish fails
+// with "call hello first". One persistent socket is shared across all stateful
+// tool calls for the lifetime of this MCP server process.
+
+const _pconn = {
+  socket: null,           // net.Socket | null
+  pending: new Map(),     // rid → { resolve, reject, timer }
+  buf: '',                // line-buffered receive buffer
+  nextRid: 1_000_000,    // high range avoids collision with per-call counter
+  peerId: null,           // allocated by server after successful hello
+  role: null,             // cached for reconnect re-registration
+  peerName: null,
+  capabilities: null,
+  sockPath: null,         // set on first successful connect
+  connected: false,
+};
+
+let _pconnConnecting = null; // Promise | null — guards concurrent connect attempts
+
+function _pconnHandleData(data) {
+  _pconn.buf += data.toString('utf8');
+  let nl;
+  while ((nl = _pconn.buf.indexOf('\n')) !== -1) {
+    const line = _pconn.buf.slice(0, nl);
+    _pconn.buf = _pconn.buf.slice(nl + 1);
+    if (!line.trim()) continue;
+    try {
+      const msg = JSON.parse(line);
+      // Server encodes both `id` and `rid`; match on `rid` first.
+      const rid = msg.rid != null ? msg.rid : msg.id;
+      if (rid != null && _pconn.pending.has(rid)) {
+        const { resolve, timer } = _pconn.pending.get(rid);
+        clearTimeout(timer);
+        _pconn.pending.delete(rid);
+        resolve(msg);
+      }
+      // Push frames (no rid) are silently dropped for now.
+    } catch { /* ignore malformed frames */ }
+  }
+}
+
+function _pconnHandleClose() {
+  _pconn.connected = false;
+  _pconn.socket = null;
+  _pconn.buf = '';
+  _pconn.peerId = null;
+  for (const [, { reject, timer }] of _pconn.pending) {
+    clearTimeout(timer);
+    reject(new Error('persistent socket closed'));
+  }
+  _pconn.pending.clear();
+  // Schedule reconnect; on success, re-issue hello if we had a prior identity.
+  if (_pconn.sockPath) {
+    const sp = _pconn.sockPath;
+    setTimeout(async () => {
+      try {
+        await _pconnEnsure(sp);
+        if (_pconn.role && !_pconn.peerId) {
+          const resp = await _pconnWrite({
+            cmd: 'hello', protocol: 'claws/2',
+            role: _pconn.role, peerName: _pconn.peerName,
+            capabilities: _pconn.capabilities || undefined,
+          }, 5000);
+          if (resp.ok) {
+            _pconn.peerId = resp.peerId;
+            log(`reconnected and re-registered as ${resp.peerId} role=${_pconn.role}`);
+          }
+        }
+      } catch { /* reconnect failed; next stateful call will retry */ }
+    }, 1000);
+  }
+}
+
+function _pconnConnect(sockPath) {
+  return new Promise((resolve, reject) => {
+    const sock = net.createConnection(sockPath);
+    sock.on('connect', () => {
+      _pconn.socket = sock;
+      _pconn.sockPath = sockPath;
+      _pconn.connected = true;
+      resolve();
+    });
+    sock.on('data', _pconnHandleData);
+    sock.on('error', (err) => {
+      if (!_pconn.connected) {
+        reject(err);
+      } else {
+        log('persistent socket error: ' + err.message);
+      }
+    });
+    sock.on('close', _pconnHandleClose);
+  });
+}
+
+function _pconnEnsure(sockPath) {
+  if (_pconn.connected) return Promise.resolve();
+  if (_pconnConnecting) return _pconnConnecting;
+  _pconnConnecting = _pconnConnect(sockPath).finally(() => { _pconnConnecting = null; });
+  return _pconnConnecting;
+}
+
+function _pconnWrite(req, timeout) {
+  return new Promise((resolve, reject) => {
+    if (!_pconn.socket || !_pconn.connected) {
+      return reject(new Error('persistent socket not connected'));
+    }
+    const rid = _pconn.nextRid++;
+    const ms = timeout || 30000;
+    const timer = setTimeout(() => {
+      _pconn.pending.delete(rid);
+      reject(new Error('stateful socket timeout'));
+    }, ms);
+    _pconn.pending.set(rid, { resolve, reject, timer });
+    try {
+      _pconn.socket.write(JSON.stringify({ ...req, id: rid }) + '\n');
+    } catch (err) {
+      clearTimeout(timer);
+      _pconn.pending.delete(rid);
+      reject(err);
+    }
+  });
+}
+
+// Persistent-socket RPC for stateful claws/2 commands. Connects the persistent
+// socket on first call; reuses it for all subsequent calls.
+async function clawsRpcStateful(sockPath, req, timeout) {
+  try {
+    await _pconnEnsure(sockPath);
+  } catch (err) {
+    return { ok: false, error: `persistent socket connect failed: ${err.message}` };
+  }
+  try {
+    return await _pconnWrite(req, timeout);
+  } catch (err) {
+    return { ok: false, error: `persistent socket error: ${err.message}` };
+  }
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -422,7 +567,15 @@ async function handleTool(name, args) {
    * Returns: peerId, serverCapabilities, orchestratorPresent.
    */
   if (name === 'claws_hello') {
-    const resp = await clawsRpc(sock, {
+    // Connect the persistent socket if not already connected. All subsequent
+    // stateful calls (publish, subscribe, broadcast) share this socket so that
+    // the server's per-connection peer state survives across tool calls.
+    try {
+      await _pconnEnsure(sock);
+    } catch (err) {
+      return toolError(`ERROR: cannot connect to Claws server: ${err.message}`);
+    }
+    const resp = await _pconnWrite({
       cmd: 'hello',
       protocol: 'claws/2',
       role: args.role,
@@ -431,6 +584,11 @@ async function handleTool(name, args) {
       capabilities: Array.isArray(args.capabilities) ? args.capabilities : undefined,
     });
     if (!resp.ok) return toolError(`ERROR: ${resp.error || 'hello failed'}`);
+    // Cache identity so we can re-register after a socket reconnect.
+    _pconn.peerId = resp.peerId;
+    _pconn.role = args.role;
+    _pconn.peerName = args.peerName;
+    _pconn.capabilities = Array.isArray(args.capabilities) ? args.capabilities : null;
     log(`registered as peer ${resp.peerId} role=${args.role}`);
     const out = {
       peerId: resp.peerId,
@@ -448,7 +606,7 @@ async function handleTool(name, args) {
    * Returns: subscriptionId (opaque string used with unsubscribe).
    */
   if (name === 'claws_subscribe') {
-    const resp = await clawsRpc(sock, { cmd: 'subscribe', topic: args.topic });
+    const resp = await clawsRpcStateful(sock, { cmd: 'subscribe', topic: args.topic });
     if (!resp.ok) return toolError(`ERROR: ${resp.error || 'subscribe failed'}`);
     return { content: [{ type: 'text', text: JSON.stringify({ subscriptionId: resp.subscriptionId }, null, 2) }] };
   }
@@ -462,7 +620,7 @@ async function handleTool(name, args) {
    * Returns: deliveredTo (number of subscribers who received the frame).
    */
   if (name === 'claws_publish') {
-    const resp = await clawsRpc(sock, {
+    const resp = await clawsRpcStateful(sock, {
       cmd: 'publish',
       topic: args.topic,
       payload: args.payload || {},
@@ -482,7 +640,7 @@ async function handleTool(name, args) {
    * Returns: deliveredTo (number of peers the broadcast reached).
    */
   if (name === 'claws_broadcast') {
-    const resp = await clawsRpc(sock, {
+    const resp = await clawsRpcStateful(sock, {
       cmd: 'broadcast',
       text: args.text,
       targetRole: args.targetRole || 'worker',
@@ -519,9 +677,9 @@ async function handleTool(name, args) {
    * has a `peers` command available we fall back to that first.
    */
   if (name === 'claws_peers') {
-    // Prefer a direct `peers` command if the server implements it;
-    // fall back to `introspect` otherwise.
-    let resp = await clawsRpc(sock, { cmd: 'peers' });
+    // Prefer a direct `peers` command via the persistent socket (requires hello).
+    // Fall back to `introspect` via a per-call socket for Phase C parity.
+    let resp = await clawsRpcStateful(sock, { cmd: 'peers' });
     if (!resp.ok) {
       resp = await clawsRpc(sock, { cmd: 'introspect' });
     }

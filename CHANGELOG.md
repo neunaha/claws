@@ -5,6 +5,52 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-04-28 — Phase γ (reverse channel + event log) + MCP socket fix
+
+This release integrates Phase γ (γ.1 reverse channel + γ.2 persistent event log)
+and fixes a high-severity architectural bug in `mcp_server.js` that made all
+stateful claws/2 MCP flows fail silently.
+
+### Fixed (CRITICAL — issue 09)
+
+- **`mcp_server.js` now maintains a single persistent socket** for stateful
+  claws/2 commands (`claws_hello`, `claws_subscribe`, `claws_publish`,
+  `claws_broadcast`, `claws_peers`). Previously each MCP tool call opened a
+  fresh socket, sent one frame, and destroyed it. The claws/2 protocol binds
+  peer state to a single connection; hello on socket A registered a peer and
+  closed; publish on socket B had no peer and returned "call hello first".
+  Stateless claws/1 commands (`list`, `create`, `send`, `close`, `readLog`,
+  `poll`, `exec`, `lifecycle.*`) continue to use per-call sockets.
+  Fix: module-level `_pconn` object with `_pconnEnsure()` / `_pconnWrite()` /
+  `clawsRpcStateful()`. Auto-reconnects on socket close; re-issues hello if a
+  prior identity was cached.
+
+### Added (Phase γ.1 — reverse channel, integrated from branch)
+
+- **`[CLAWS_CMD]` reverse channel**: orchestrator can broadcast a command token
+  into every worker's terminal via `{ inject: true }` on `claws_broadcast`.
+  Extension writes the text directly into the pty using `writeInjected()` with
+  bracketed paste. Worker skill (`/claws-streaming-worker`) scans its log for
+  the `[CLAWS_CMD]` prefix and routes to a named handler. Slash command
+  `/claws-broadcast` exposes the pattern. Integration test: `reverse-channel.test.js`
+  (12 checks). Commits: `80893ab`, `36bfece`, `d9c883a`, `4c434f9`.
+
+### Added (Phase γ.2 — persistent event log, integrated from branch)
+
+- **Append-only event log** (`EventLogWriter` in `extension/src/event-log.ts`).
+  Every `publish` call is durably written to `.claws/events/default/*.jsonl`
+  before fan-out. Segment rotation on size (10 MB) and age (1 hour). Atomic
+  manifest updates (`manifest.json`) for crash recovery. Sequence counter
+  monotonically increasing across segment boundaries. 15-check test suite:
+  `event-log.test.js`. Commits: `37acac1`, `0150572`, `f16f399`.
+
+### Tests
+
+- New: `extension/test/mcp-publish-flow.test.js` — spawns `mcp_server.js` as
+  a child process, calls `claws_hello` + `claws_publish` via MCP JSON-RPC,
+  asserts ok:true and event record on disk. Guards issue 09 regression.
+- Suite total: 224 checks across 21 suites (was 219 across 20).
+
 ## [0.7.3] - 2026-04-28 — Bulletproof `/claws-update`
 
 User-reported breakage on a real upgrade: `/claws-update` ran cleanly but
