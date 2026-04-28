@@ -289,6 +289,25 @@ steps:
 4. [verification step]
 5. publish complete (above — do this last)
 
+RECEIVING ORCHESTRATOR COMMANDS:
+The orchestrator may inject a command into this terminal at any time. When you
+see a line matching the pattern below, process it immediately and then continue
+your mission:
+
+  [CLAWS_CMD r=<id>] <action>: <json-payload>
+
+Rules:
+- Correlate <id> against any request_id you published in a BLOCKED or REQUEST
+  event. Ignore any [CLAWS_CMD] whose r value does not match a request_id you
+  are currently waiting on.
+- Do NOT echo this line back as output or include it in any publish payload.
+- Process these five actions:
+    approve_request  — you are unblocked; proceed with the approved path
+    reject_request   — your request was denied; stop or use your fallback
+    abort            — stop the current task immediately; publish complete --result failed
+    pause            — suspend at the next safe checkpoint; wait for resume
+    resume           — continue from your paused state
+
 constraints:
 - stay inside [scope]
 - do not commit unless instructed

@@ -63,7 +63,19 @@ When workers use the Streaming Worker pattern (Template 8), the orchestrator rec
 
 **Stuck detection** (replaces polling):
 - No `heartbeat` from a worker for >30s → check `claws_read_log` to diagnose
-- `event.kind=BLOCKED` received → inspect `summary`, decide whether to unblock via `claws_send` or `claws_broadcast`
+- `event.kind=BLOCKED` or `event.kind=REQUEST` received → extract `request_id`
+  from the push frame and dispatch a `[CLAWS_CMD]` reply (see Command dispatch below)
+
+**Command dispatch** (see `/claws-broadcast` for full reference):
+```
+# Extract request_id from the push frame payload, then:
+claws_broadcast(
+  text="[CLAWS_CMD r=<request_id>] <action>: <json-payload>",
+  targetRole="worker",
+  inject=true
+)
+# Actions: approve_request | reject_request | abort | pause | resume
+```
 
 **Legacy fallback** (when workers do NOT publish events):
 - Poll `claws_read_log` on each terminal every 30s
@@ -72,8 +84,10 @@ When workers use the Streaming Worker pattern (Template 8), the orchestrator rec
 ### Phase 5 — RECOVER
 - If a worker is stuck (no new bytes for 5+ min, no MISSION_COMPLETE):
   1. Read the last 2000 bytes to diagnose
-  2. If recoverable: send a nudge via `claws_send`
-  3. If not: close the terminal and respawn from Phase 2
+  2. If recoverable and worker published a `request_id`: dispatch
+     `[CLAWS_CMD r=<request_id>] resume: {}` via `claws_broadcast(inject=true)`
+  3. If recoverable without a `request_id`: send a plain nudge via `claws_send`
+  4. If not recoverable: close the terminal and respawn from Phase 2
 
 ### Phase 6 — HARVEST
 - Worker signals completion by printing `MISSION_COMPLETE`
