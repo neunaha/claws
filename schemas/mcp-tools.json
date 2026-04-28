@@ -1,0 +1,413 @@
+[
+  {
+    "name": "claws_list",
+    "description": "List all open VS Code terminals with their ID, name, PID, shell integration status, active state, and pty log path (null if not wrapped). Use this to discover what's running before sending commands.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_create",
+    "description": "Create a new VS Code terminal. Set wrapped=true to enable full pty logging — this lets you read everything that happens in the terminal including TUI sessions (Claude Code, vim, htop, REPLs). The terminal appears visibly in VS Code's panel.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Terminal display name"
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory (absolute path)"
+        },
+        "wrapped": {
+          "type": "boolean",
+          "description": "Enable script(1) pty logging for full read-back. Defaults to true — all worker terminals should be wrapped for observability. Set false only for interactive UI terminals where logging is undesired."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_send",
+    "description": "Send text into a terminal. The text arrives at whatever input is active — shell prompt, TUI input field, REPL prompt. Multi-line text is auto-wrapped in bracketed paste mode. Set newline=false to send raw keystrokes without Enter.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Terminal ID from claws_list or claws_create"
+        },
+        "text": {
+          "type": "string",
+          "description": "Text to send"
+        },
+        "newline": {
+          "type": "boolean",
+          "description": "Append Enter after text (default true)"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_exec",
+    "description": "Execute a shell command in a terminal and capture the output (stdout + stderr + exit code). Uses file-based capture — works in any terminal type. Waits for the command to finish.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Terminal ID"
+        },
+        "command": {
+          "type": "string",
+          "description": "Shell command to execute"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Max wait time in ms (default 180000)"
+        }
+      },
+      "required": [
+        "id",
+        "command"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_read_log",
+    "description": "Read a wrapped terminal's pty log with ANSI escapes stripped. Returns clean, readable text of everything that happened — including TUI sessions, build output, AI coding assistant transcripts. Only works for terminals created with wrapped=true.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Terminal ID (must be wrapped)"
+        },
+        "lines": {
+          "type": "integer",
+          "description": "Number of lines to return from the tail (default 50)"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_poll",
+    "description": "Stream shell-integration command-completion events across all terminals. Pass since=cursor to get only new events. Note: unreliable in wrapped terminals — use claws_read_log instead.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "since": {
+          "type": "integer",
+          "description": "Sequence cursor — return only events after this (default 0)"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_close",
+    "description": "Close and dispose a terminal. Always close terminals you created when the work is done.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Terminal ID to close"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_worker",
+    "description": "Run a complete worker lifecycle in one blocking call: creates a wrapped terminal, optionally launches Claude Code with --dangerously-skip-permissions, sends the mission prompt, polls the capture buffer for a completion marker (default MISSION_COMPLETE) or error markers, harvests the final output, and auto-closes. Returns a structured result. Set detach=true for the legacy fire-and-forget behavior.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Worker name (terminal tab)"
+        },
+        "mission": {
+          "type": "string",
+          "description": "Mission prompt sent to Claude Code. Include your completion marker (default MISSION_COMPLETE) so the blocker knows when to stop."
+        },
+        "command": {
+          "type": "string",
+          "description": "Alternative to mission: raw shell command sent to a wrapped terminal. Implies launch_claude=false."
+        },
+        "launch_claude": {
+          "type": "boolean",
+          "description": "Launch claude --dangerously-skip-permissions before sending mission (default: true if mission present, false if command present)"
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Return immediately after spawning (legacy behavior, default false)."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Max wait for completion in ms (default 1800000 = 30 min)."
+        },
+        "boot_wait_ms": {
+          "type": "integer",
+          "description": "Max wait for Claude Code boot before sending mission (default 8000)."
+        },
+        "boot_marker": {
+          "type": "string",
+          "description": "Substring that indicates Claude booted (default \"Claude Code\")."
+        },
+        "complete_marker": {
+          "type": "string",
+          "description": "Substring that signals success (default \"MISSION_COMPLETE\")."
+        },
+        "error_markers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Substrings that signal failure (default [\"MISSION_FAILED\"])."
+        },
+        "poll_interval_ms": {
+          "type": "integer",
+          "description": "How often to check the capture buffer (default 1500)."
+        },
+        "harvest_lines": {
+          "type": "integer",
+          "description": "Tail N lines of output to return on completion (default 200)."
+        },
+        "close_on_complete": {
+          "type": "boolean",
+          "description": "Auto-close the terminal after completion (default true)."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_hello",
+    "description": "Register this Claude session with the Claws server as an orchestrator or worker peer. Must be called before subscribe, publish, or task commands. Returns a peerId for this session.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": [
+            "orchestrator",
+            "worker",
+            "observer"
+          ],
+          "description": "Peer role. Orchestrator may assign/cancel/broadcast; worker may publish status and claim tasks; observer is read-only."
+        },
+        "peerName": {
+          "type": "string",
+          "description": "Human label for this peer (e.g. 'sdlc-lead', 'test-worker-1')."
+        },
+        "terminalId": {
+          "type": "string",
+          "description": "Optional: associate this peer with a specific terminal id so the server can correlate logs and do inject fan-out."
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional list of capability strings the peer advertises (server intersects with its own)."
+        }
+      },
+      "required": [
+        "role",
+        "peerName"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_subscribe",
+    "description": "Subscribe to a topic pattern on the Claws message bus. Patterns support wildcards: '*' matches one segment, '**' matches many. Examples: 'task.status', 'worker.*', 'task.**'. Returns a subscriptionId.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string",
+          "description": "Topic pattern to subscribe to (dot-namespaced, supports * and ** wildcards)."
+        }
+      },
+      "required": [
+        "topic"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_publish",
+    "description": "Publish a payload to a topic on the Claws message bus. All peers subscribed to a matching pattern will receive a push frame.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string",
+          "description": "Topic to publish on."
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "The message payload (arbitrary JSON object)."
+        },
+        "echo": {
+          "type": "boolean",
+          "description": "If true, sender also receives the message (default false)."
+        }
+      },
+      "required": [
+        "topic",
+        "payload"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_broadcast",
+    "description": "Orchestrator-only: send a text message to all workers (or all peers). Optionally inject the text directly into each worker's terminal via bracketed paste. Useful as a kill-switch or coordination signal.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "The text payload to broadcast."
+        },
+        "targetRole": {
+          "type": "string",
+          "enum": [
+            "worker",
+            "orchestrator",
+            "observer",
+            "all"
+          ],
+          "description": "Which role(s) to target (default 'worker')."
+        },
+        "inject": {
+          "type": "boolean",
+          "description": "If true, text is also sent into each peer's associated terminal via bracketed paste (default false)."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_ping",
+    "description": "Check that the Claws server is reachable. Returns the server's current timestamp. Useful as a heartbeat.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_peers",
+    "description": "List all currently registered peers on the Claws server (claws/2 connections that have called hello). Returns role, peerName, terminalId, and lastSeen for each peer.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_lifecycle_plan",
+    "description": "Log the PLAN phase — required before any claws_create call. The server-side lifecycle gate blocks terminal creation until this succeeds. Provide a 1–3 sentence summary of what you are about to do. Idempotent: safe to call twice.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "type": "string",
+          "description": "1–3 sentence mission summary. What you are doing, why, and what success looks like."
+        }
+      },
+      "required": [
+        "plan"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_lifecycle_advance",
+    "description": "Advance the server-side lifecycle state machine to the next phase. Legal transitions per event-protocol.md §4: PLAN→SPAWN, SPAWN→DEPLOY|RECOVER|FAILED, DEPLOY→OBSERVE|RECOVER|FAILED, OBSERVE→HARVEST|RECOVER|FAILED, RECOVER→DEPLOY|OBSERVE|FAILED, HARVEST→CLEANUP|FAILED, CLEANUP→REFLECT|FAILED. Idempotent: advancing to the current phase is a no-op.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "string",
+          "enum": [
+            "SPAWN",
+            "DEPLOY",
+            "OBSERVE",
+            "RECOVER",
+            "HARVEST",
+            "CLEANUP",
+            "REFLECT",
+            "FAILED"
+          ],
+          "description": "Target phase."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional human-readable transition reason (logged in state)."
+        }
+      },
+      "required": [
+        "to"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_lifecycle_snapshot",
+    "description": "Read the current server-side lifecycle state without changing it. Returns null when no PLAN has been logged yet. Use this to check what phase you are in before sending lifecycle commands.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_lifecycle_reflect",
+    "description": "Terminal lifecycle transition: advance to REFLECT and persist your retrospective text. Call this after CLEANUP when all workers are closed and you have assessed the session. The REFLECT phase is terminal — no further transitions are allowed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reflect": {
+          "type": "string",
+          "description": "Retrospective text: what succeeded, what failed, what to improve next time."
+        }
+      },
+      "required": [
+        "reflect"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

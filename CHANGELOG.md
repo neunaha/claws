@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - Phase β: streaming foundation
 
+### Added — β.4 MCP tool descriptor migration (commit 4/7)
+
+**MCP tool descriptors generated from Zod schemas:**
+- `scripts/codegen/gen-mcp-tools.mjs`: defines all 18 MCP tools as Zod schemas
+  with verbatim descriptions; writes `schemas/mcp-tools.json` at codegen time
+- `schemas/mcp-tools.json`: committed generated file — 18 tool descriptors
+  consumed by `mcp_server.js` at startup
+- `mcp_server.js`: replaced 224-line hand-written `TOOLS` array with
+  `require('./schemas/mcp-tools.json')`; adds startup guard that exits with
+  a clear message when the file is absent
+- 7 checks in `extension/test/mcp-tools-codegen.test.js` (static JSON checks
+  + `mcp_server.js` `tools/list` stdio smoke test)
+- `extension/package.json`: adds `test:mcp-codegen` script and appends it to
+  the `test` chain (185 checks total across 17 suites)
+
+---
+
 ### Added — β.1 Schemas + β.1 Server Validation (commits 1–2/7)
 
 **Zod schema definitions as single source of truth for all event types:**

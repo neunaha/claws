@@ -32,9 +32,11 @@ execSync(
 const { default: genJsonSchema } = await import('./gen-json-schema.mjs');
 const { default: genTypes }      = await import('./gen-types.mjs');
 const { default: genDocs }       = await import('./gen-docs.mjs');
+const { default: genMcpTools }   = await import('./gen-mcp-tools.mjs');
 
 await genJsonSchema(bundlePath, repoRoot, extRoot);
 await genTypes(bundlePath, repoRoot);
 await genDocs(repoRoot);
+await genMcpTools(bundlePath, repoRoot, extRoot);
 
 console.log('[codegen] schemas generated successfully');
