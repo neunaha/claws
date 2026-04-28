@@ -210,6 +210,41 @@ export interface TaskListRequest extends BaseRequest {
   since?: number;
 }
 
+/** Lifecycle state shape — server-owned, never written by clients. */
+export interface LifecycleState {
+  v: 1;
+  phase: string;
+  phases_completed: string[];
+  plan: string;
+  workers: Array<{ id: string; closed: boolean }>;
+  started_at: string;
+  reflect?: string;
+}
+
+/** Start or reset the lifecycle. plan text must be non-empty. */
+export interface LifecyclePlanRequest extends BaseRequest {
+  cmd: 'lifecycle.plan';
+  plan: string;
+}
+
+/** Advance the phase state machine one step. */
+export interface LifecycleAdvanceRequest extends BaseRequest {
+  cmd: 'lifecycle.advance';
+  to: string;
+  reason?: string;
+}
+
+/** Read-only snapshot of current lifecycle state. */
+export interface LifecycleSnapshotRequest extends BaseRequest {
+  cmd: 'lifecycle.snapshot';
+}
+
+/** Terminal transition to REFLECT with persisted reflection text. */
+export interface LifecycleReflectRequest extends BaseRequest {
+  cmd: 'lifecycle.reflect';
+  reflect: string;
+}
+
 export type ClawsRequest =
   | ListRequest
   | CreateRequest
@@ -232,6 +267,10 @@ export type ClawsRequest =
   | TaskCompleteRequest
   | TaskCancelRequest
   | TaskListRequest
+  | LifecyclePlanRequest
+  | LifecycleAdvanceRequest
+  | LifecycleSnapshotRequest
+  | LifecycleReflectRequest
   | BaseRequest;
 
 export interface TerminalDescriptor {
