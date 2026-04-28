@@ -65,7 +65,9 @@
     "test:v2-hello": "node test/claws-v2-hello.test.js",
     "test:v2-pubsub": "node test/claws-v2-pubsub.test.js",
     "test:v2-tasks": "node test/claws-v2-tasks.test.js",
-    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:native && npm run test:config && npm run test:capture-store && npm run test:oversized && npm run test:pty-lifecycle && npm run test:profile && npm run test:multiconn && npm run test:v2-hello && npm run test:v2-pubsub && npm run test:v2-tasks"
+    "test:lifecycle-store": "node test/lifecycle-store.test.js",
+    "test:lifecycle-server": "node test/lifecycle-server.test.js",
+    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:native && npm run test:config && npm run test:capture-store && npm run test:oversized && npm run test:pty-lifecycle && npm run test:profile && npm run test:multiconn && npm run test:v2-hello && npm run test:v2-pubsub && npm run test:v2-tasks && npm run test:lifecycle-store && npm run test:lifecycle-server"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
