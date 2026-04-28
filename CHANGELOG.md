@@ -36,6 +36,19 @@ Files changed:
   Pattern list expanded with `pnpm`, `bun`, `hypercorn`, `nodemon`,
   `nohup`. Word-boundary anchored to reduce false positives.
 
+### Fixed — settings.json schema URL + install.sh housekeeping
+
+- `.claude/settings.json` — `$schema` URL was `json-schema.store.org` (typo);
+  corrected to `json.schemastore.org`. Closes the "Found 1 settings issue"
+  warning surfaced by `/doctor`.
+- `scripts/install.sh` — copies `scripts/stream-events.js` into `.claws-bin/`
+  during install so the event-streaming sidecar (referenced in
+  `docs/event-protocol.md`) is available out of the box. Documents
+  `CLAWS_STRICT` env var in the header. Fixes the install-time MCP
+  handshake probe to use newline-delimited JSON (matches the v0.6.1 server
+  framing fix; the probe was still using LSP `Content-Length` framing and
+  failing silently).
+
 ## [0.6.3] - 2026-04-28
 
 ### Fixed — claws_send submit reliability for TUI workers

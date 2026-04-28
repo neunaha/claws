@@ -10,6 +10,7 @@
 #   CLAWS_GLOBAL_CONFIG=1       Also write commands/skills/rules into ~/.claude/
 #   CLAWS_DEBUG=1               Enable bash -x trace
 #   CLAWS_NO_LOG=1              Disable the /tmp/claws-install-*.log file
+#   CLAWS_STRICT=1              Hard-block long-running Bash via PreToolUse hook (v0.6.4+)
 
 # ─── Strict-ish mode ────────────────────────────────────────────────────────
 # -e: exit on unhandled error
@@ -730,6 +731,11 @@ else
     cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js"
     chmod +x "$PROJECT_ROOT/.claws-bin/mcp_server.js"
     cp "$INSTALL_DIR/scripts/shell-hook.sh" "$PROJECT_ROOT/.claws-bin/shell-hook.sh"
+    # Copy event-streaming sidecar (v0.6.2+) so Bash run_in_background + Monitor can stream pub/sub frames
+    if [ -f "$INSTALL_DIR/scripts/stream-events.js" ]; then
+      cp "$INSTALL_DIR/scripts/stream-events.js" "$PROJECT_ROOT/.claws-bin/stream-events.js"
+      chmod +x "$PROJECT_ROOT/.claws-bin/stream-events.js" 2>/dev/null || true
+    fi
     # Copy lifecycle hook scripts for inject-settings-hooks.js to reference
     if [ -d "$INSTALL_DIR/.claws-bin/hooks" ]; then
       mkdir -p "$PROJECT_ROOT/.claws-bin/hooks"
@@ -1123,7 +1129,7 @@ if command -v node &>/dev/null && [ -f "$VERIFY_MCP" ]; then
 const { spawn } = require("child_process");
 const mcp = spawn("node", [process.argv[1]], { stdio: ["pipe", "pipe", "ignore"] });
 const req = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-const msg = `Content-Length: ${Buffer.byteLength(req)}\r\n\r\n${req}`;
+const msg = req + "\n";
 let buf = "";
 const done = (code, out) => { try { mcp.kill(); } catch {} ; process.stdout.write(out); process.exit(code); };
 const timer = setTimeout(() => done(1, "TIMEOUT"), 5000);
@@ -1203,6 +1209,8 @@ cat <<NEXT
     MCP tools not appearing?   /claws-fix
     Want to report an issue?   /claws-report
     Update later:              /claws-update
+
+  ${C_DIM}Optional: export CLAWS_STRICT=1 to hard-block long-running Bash via PreToolUse hook${C_RESET}
 
   Docs:    https://github.com/neunaha/claws
   Website: https://neunaha.github.io/claws/
