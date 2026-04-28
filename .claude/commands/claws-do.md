@@ -16,37 +16,25 @@ If `claws_create` MCP tool is available, use it:
 claws_create(name="<descriptive-name>", wrapped=true)
 ```
 
-If MCP tools are NOT loaded yet, use the raw socket via node:
-```bash
-node -e "
-const net=require('net');
-const s=net.createConnection('.claws/claws.sock');
-s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'create',name:'<NAME>',wrapped:true})+'\n'));
-let b='';s.on('data',d=>{b+=d;const nl=b.indexOf('\n');if(nl!==-1){console.log(JSON.parse(b.slice(0,nl)));s.destroy()}});
-"
-```
-
-If the socket doesn't exist, tell the user: "Reload VS Code first: Cmd+Shift+P → Developer: Reload Window"
+If `claws_create` MCP tool is not available, MCP failed to load — do NOT attempt a workaround.
+Tell the user: "Reload VS Code (Cmd+Shift+P → Developer: Reload Window) and restart
+Claude Code in this project. The Claws MCP server is not connected." Stop here.
 
 ### Step 2 — Send the command
 
-Use `claws_send` or raw socket:
-```bash
-node -e "
-const net=require('net');
-const s=net.createConnection('.claws/claws.sock');
-s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'send',id:'TERM_ID',text:'THE_COMMAND'})+'\n'));
-let b='';s.on('data',d=>{b+=d;if(b.indexOf('\n')!==-1)s.destroy()});
-"
+Use `claws_send`:
 ```
+claws_send(id=TERM_ID, text="THE_COMMAND")
+```
+If `claws_send` is not available, MCP failed to load — reload VS Code and restart. Do NOT attempt to bypass this requirement.
 
 ### Step 3 — Wait and read the result
 
-Use `claws_read_log` or raw socket to read the output. Wait appropriate time for the command to finish.
+Use `claws_read_log` to read the output. Wait appropriate time for the command to finish.
 
 ### Step 4 — Close the terminal
 
-Use `claws_close` or raw socket. NEVER leave terminals open.
+Use `claws_close`. NEVER leave terminals open.
 
 ### Step 5 — Report to user
 
@@ -75,7 +63,7 @@ When the task needs Claude Code running inside the terminal, follow this exact b
 8. Poll `claws_read_log` every 10s until MISSION_COMPLETE appears
 9. `claws_close(id=N)` — ALWAYS close when done
 
-If MCP tools are not loaded, use the raw socket via node (Bash tool) ONLY to interact with the socket — not to do the task itself in Bash.
+If MCP tools are not loaded, reload VS Code and restart Claude Code. Do NOT attempt to bypass this requirement.
 
 ## NEVER do this
 

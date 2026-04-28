@@ -3,9 +3,10 @@
 // Usage: node inject-settings-hooks.js [claws-bin-dir] [--dry-run] [--remove]
 //
 // Adds three hooks (all tagged _source:"claws" for clean uninstall):
-//   SessionStart  — emits lifecycle reminder when .claws/claws.sock detected
-//   PreToolUse:Bash — nudges long-running commands toward claws_create
-//   Stop          — reminds model to close terminals before session ends
+//   SessionStart — emits lifecycle reminder when .claws/claws.sock detected
+//   PreToolUse   — nudges long-running Bash commands toward claws_create
+//   Stop         — reminds model to close terminals before session ends
+// (PostToolUse removed in v0.6.5 — lifecycle gate moved server-side)
 //
 // Idempotent: running twice produces the same result.
 // --remove: strips all _source:"claws" hooks without touching others.
@@ -78,12 +79,11 @@ if (REMOVE) {
   process.exit(0);
 }
 
-// Define the four hooks to inject
+// Define the three hooks to inject (PostToolUse removed in v0.6.5 — gate moved server-side)
 const HOOKS_TO_ADD = [
-  { event: 'SessionStart', entry: makeHookEntry('*',            'session-start-claws.js') },
-  { event: 'PreToolUse',   entry: makeHookEntry('*',            'pre-tool-use-claws.js') },
-  { event: 'PostToolUse',  entry: makeHookEntry('mcp__claws__*','post-tool-use-claws.js') },
-  { event: 'Stop',         entry: makeHookEntry('*',            'stop-claws.js') },
+  { event: 'SessionStart', entry: makeHookEntry('*', 'session-start-claws.js') },
+  { event: 'PreToolUse',   entry: makeHookEntry('*', 'pre-tool-use-claws.js') },
+  { event: 'Stop',         entry: makeHookEntry('*', 'stop-claws.js') },
 ];
 
 let changed = 0;

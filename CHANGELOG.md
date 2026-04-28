@@ -5,6 +5,101 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5] - 2026-04-28
+
+### Added — Phase α: server-side lifecycle gate
+
+The lifecycle enforcement trust boundary moves from Claude Code hooks (which do
+not reliably fire on MCP tool calls) into the socket server itself. Every
+transport — MCP, raw Bash socket, and future WebSocket — is gated by the same
+server-side check.
+
+**Server-owned lifecycle state (`LifecycleStore`):**
+A new `LifecycleStore` class holds lifecycle state in memory (authoritative) and
+persists it atomically to `.claws/lifecycle-state.json` via tmp-rename. The
+server constructs the store on startup and is the only writer. No client — not
+even the model — can write the state file to bypass the gate.
+
+**Server-side gate on `create`:**
+The `create` command handler now calls `lifecycleStore.hasPlan()` as its first
+action. When no plan exists, `create` is rejected immediately with:
+```json
+{ "ok": false, "error": "lifecycle:plan-required", "message": "..." }
+```
+This error is identical regardless of whether the caller is the MCP server, a
+raw Bash `node -e` snippet, or a future WebSocket client.
+
+**Four new socket commands:**
+- `lifecycle.plan` — log the PLAN phase; idempotent; returns state + `idempotent` flag
+- `lifecycle.advance` — advance the state machine one step; enforces legal transitions
+- `lifecycle.snapshot` — read-only state query; no side effects
+- `lifecycle.reflect` — terminal REFLECT transition with persisted retrospective text
+
+**Four new MCP tools:**
+`claws_lifecycle_plan`, `claws_lifecycle_advance`, `claws_lifecycle_snapshot`,
+`claws_lifecycle_reflect`. All wrap the new socket commands. The plan tool's
+description explains the server gate so the model knows to call it first.
+
+**`/claws-plan` now uses MCP tool, not Write:**
+Step 2 of `/claws-plan` previously instructed the model to write
+`.claws/lifecycle-state.json` directly. It now invokes
+`mcp__claws__claws_lifecycle_plan(plan="...")` — the server writes the file
+under its own ownership.
+
+**PostToolUse hook removed:**
+`scripts/hooks/post-tool-use-claws.js` is deleted. This hook never reliably
+fired on MCP tool calls (issue 06) and phase advancement now happens at the
+server dispatch layer. Keeping it was dead code.
+
+**PreToolUse hook simplified:**
+`scripts/hooks/pre-tool-use-claws.js` no longer contains lifecycle gate blocks
+for `mcp__claws__*` tools. The Bash long-running pattern guard (soft nudge /
+CLAWS_STRICT hard-block) is retained — it remains useful for observability.
+
+**Raw-socket bypass instructions removed from claws-do.md:**
+All `net.createConnection` / "raw socket via node" fallback instructions are
+removed from `.claude/commands/claws-do.md`. If MCP fails to load, the user is
+directed to reload VS Code — not to bypass via Bash.
+
+**install.sh migration:**
+The hooks-registration step now runs `inject-settings-hooks.js --remove` before
+re-registering. This cleanly removes the stale PostToolUse entry from
+`~/.claude/settings.json` on re-install without touching non-Claws hooks.
+
+> **Note for users who edited settings.json manually:** if you removed the
+> `_source: "claws"` tag from a hook entry, `inject-settings-hooks.js --remove`
+> will not find it. Verify your `~/.claude/settings.json` has no PostToolUse
+> entry for `post-tool-use-claws.js` after upgrading.
+
+**Post-review fixes (M1+M2+M3 — applied as immediate follow-up):**
+Three issues found in the post-merge review have been addressed in this release.
+M1: `lifecycle.advance` (and `lifecycle.reflect`) error responses now return the
+stable machine-readable code in `error` and the human-readable detail in a
+separate `message` field, matching the §2.3 contract already implemented by the
+other lifecycle handlers. M2: `lifecycle.advance` returns `idempotent: true` when
+the requested phase equals the current phase (no-op transition), as specified in
+§2.3. M3: All remaining "or raw socket" bypass phrasing in `claws-do.md` is
+removed; the affected prohibition lines are rephrased without the term.
+
+Files changed:
+- `extension/src/lifecycle-store.ts` — new `LifecycleStore` class (pure Node.js)
+- `extension/src/protocol.ts` — `LifecycleState`, `LifecyclePlanRequest`,
+  `LifecycleAdvanceRequest`, `LifecycleSnapshotRequest`, `LifecycleReflectRequest`
+  added; all four added to `ClawsRequest` union
+- `extension/src/server.ts` — import + field + constructor wiring; gate check in
+  `create` handler; four new `lifecycle.*` command handlers
+- `mcp_server.js` — four new tool descriptors + four new `handleTool` cases
+- `.claude/commands/claws-do.md` — raw-socket bypass instructions removed
+- `.claude/commands/claws-plan.md` — step 2 now invokes `claws_lifecycle_plan`;
+  lifecycle table updated to remove `(post-tool-use hook auto-advances)` reference
+- `scripts/hooks/post-tool-use-claws.js` — **deleted**
+- `scripts/hooks/pre-tool-use-claws.js` — lifecycle gate blocks removed; Bash guard kept
+- `scripts/inject-settings-hooks.js` — PostToolUse entry removed; 3 hooks remain
+- `scripts/install.sh` — hooks registration updated to `--remove` then re-register
+- `extension/test/lifecycle-store.test.js` — 25 unit tests (all pass)
+- `extension/test/lifecycle-server.test.js` — 8 integration tests (7 original + 1
+  new illegal-transition test; idempotent:true assertion added to advance test)
+
 ## [0.6.4] - 2026-04-28
 
 ### Added — CLAWS_STRICT mode (first Hard enforcement mechanism)

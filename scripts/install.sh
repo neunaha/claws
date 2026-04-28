@@ -988,6 +988,8 @@ CLAWSCMD
     fi
     # Hook registration in ~/.claude/settings.json (SessionStart / PreToolUse / Stop)
     if [ -f "$INSTALL_DIR/scripts/inject-settings-hooks.js" ]; then
+      echo "Updating Claws hooks..."
+      node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/.claws-bin" --remove 2>&1 | sed 's/^/  /' || warn "settings hooks removal failed"
       node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/.claws-bin" 2>&1 | sed 's/^/  /' || warn "settings hooks injector failed"
     fi
   fi

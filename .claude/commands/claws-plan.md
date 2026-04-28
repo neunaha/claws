@@ -5,38 +5,31 @@ description: Log the PLAN phase — required before spawning any worker terminal
 
 # /claws-plan — Phase 1: PLAN
 
-The lifecycle gate in the PreToolUse hook will BLOCK claws_create until `.claws/lifecycle-state.json` exists with phase "PLAN". This command unlocks it.
+The server-side lifecycle gate blocks `claws_create` until a PLAN has been logged. This command unlocks it.
 
 ## Steps
 
-1. **State the mission** (answer these before writing the file):
+1. **State the mission** (answer these before logging the plan):
    - What are you trying to accomplish?
    - How many parallel workers do you need?
    - What does success look like (MISSION_COMPLETE criteria)?
 
-2. **Write the lifecycle state file** to unlock terminal creation:
+2. **Log the PLAN via the MCP tool** — this writes server-owned state and unlocks `claws_create`:
 
-Write to `.claws/lifecycle-state.json`:
-```json
-{
-  "phase": "PLAN",
-  "phases_completed": ["PLAN"],
-  "plan": "<your 1-3 sentence mission summary>",
-  "workers": [],
-  "started_at": "<current ISO timestamp>",
-  "harvest": null,
-  "reflect": null
-}
 ```
+mcp__claws__claws_lifecycle_plan(plan="<your 1-3 sentence mission summary>")
+```
+
+The server validates the plan is non-empty, creates `.claws/lifecycle-state.json` under its own ownership, and returns `{ state: { phase: "PLAN", ... } }`.
 
 3. **Confirm**: "PLAN phase logged. Lifecycle gate unlocked — proceed to SPAWN."
 
 ## The full lifecycle after PLAN
 
 SPAWN → claws_create workers (gate now open)
-DEPLOY → claws_send missions (post-tool-use hook auto-advances)
+DEPLOY → claws_send missions (advance via claws_lifecycle_advance)
 OBSERVE → claws_read_log polling every 10-30s
 RECOVER → nudge stuck workers
 HARVEST → collect MISSION_COMPLETE outputs
 CLEANUP → claws_close ALL workers (stop hook enforces this)
-REFLECT → write .claws/lifecycle-reflect.md (stop hook enforces this)
+REFLECT → mcp__claws__claws_lifecycle_reflect (stop hook enforces this)

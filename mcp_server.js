@@ -322,6 +322,49 @@ const TOOLS = [
       properties: {},
     },
   },
+  {
+    name: 'claws_lifecycle_plan',
+    description: 'Log the PLAN phase — required before any claws_create call. The server-side lifecycle gate blocks terminal creation until this succeeds. Provide a 1–3 sentence summary of what you are about to do. Idempotent: safe to call twice.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        plan: { type: 'string', description: '1–3 sentence mission summary. What you are doing, why, and what success looks like.' },
+      },
+      required: ['plan'],
+    },
+  },
+  {
+    name: 'claws_lifecycle_advance',
+    description: 'Advance the server-side lifecycle state machine to the next phase. Legal transitions per event-protocol.md §4: PLAN→SPAWN, SPAWN→DEPLOY|RECOVER|FAILED, DEPLOY→OBSERVE|RECOVER|FAILED, OBSERVE→HARVEST|RECOVER|FAILED, RECOVER→DEPLOY|OBSERVE|FAILED, HARVEST→CLEANUP|FAILED, CLEANUP→REFLECT|FAILED. Idempotent: advancing to the current phase is a no-op.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: {
+          type: 'string',
+          enum: ['SPAWN', 'DEPLOY', 'OBSERVE', 'RECOVER', 'HARVEST', 'CLEANUP', 'REFLECT', 'FAILED'],
+          description: 'Target phase.',
+        },
+        reason: { type: 'string', description: 'Optional human-readable transition reason (logged in state).' },
+      },
+      required: ['to'],
+    },
+  },
+  {
+    name: 'claws_lifecycle_snapshot',
+    description: 'Read the current server-side lifecycle state without changing it. Returns null when no PLAN has been logged yet. Use this to check what phase you are in before sending lifecycle commands.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'claws_lifecycle_reflect',
+    description: 'Terminal lifecycle transition: advance to REFLECT and persist your retrospective text. Call this after CLEANUP when all workers are closed and you have assessed the session. The REFLECT phase is terminal — no further transitions are allowed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        reflect: { type: 'string', description: 'Retrospective text: what succeeded, what failed, what to improve next time.' },
+      },
+      required: ['reflect'],
+    },
+  },
 ];
 
 // ─── Blocking worker lifecycle ─────────────────────────────────────────────
@@ -722,6 +765,34 @@ async function handleTool(name, args) {
 
     const body = result.harvest || '';
     return { content: [{ type: 'text', text: header.join('\n') + '\n\n── harvest (last lines) ──\n' + body }] };
+  }
+
+  if (name === 'claws_lifecycle_plan') {
+    const resp = await clawsRpc(sock, { cmd: 'lifecycle.plan', plan: args.plan });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}\n${resp.message || ''}`);
+    const out = { state: resp.state, idempotent: !!resp.idempotent };
+    return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] };
+  }
+
+  if (name === 'claws_lifecycle_advance') {
+    const resp = await clawsRpc(sock, { cmd: 'lifecycle.advance', to: args.to, reason: args.reason });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}\n${resp.message || ''}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ state: resp.state }, null, 2) }] };
+  }
+
+  if (name === 'claws_lifecycle_snapshot') {
+    const resp = await clawsRpc(sock, { cmd: 'lifecycle.snapshot' });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    const text = resp.state
+      ? JSON.stringify(resp.state, null, 2)
+      : '[no lifecycle state — call claws_lifecycle_plan first]';
+    return { content: [{ type: 'text', text }] };
+  }
+
+  if (name === 'claws_lifecycle_reflect') {
+    const resp = await clawsRpc(sock, { cmd: 'lifecycle.reflect', reflect: args.reflect });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}\n${resp.message || ''}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ state: resp.state }, null, 2) }] };
   }
 
   return toolError(`unknown tool: ${name}`);

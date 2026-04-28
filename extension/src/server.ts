@@ -12,6 +12,7 @@ import {
 } from './server-config';
 import { PeerConnection, ClawsRole, allocPeerId, matchTopic } from './peer-registry';
 import { TaskRecord, allocTaskId } from './task-registry';
+import { LifecycleStore } from './lifecycle-store';
 
 /**
  * Per-connection context threaded into `handle()`. Holds the raw socket
@@ -92,8 +93,12 @@ export class ClawsServer {
   private readonly tasks = new Map<string, TaskRecord>();
   /** Monotonic taskId counter (wire id is "t_" + zero-padded 3 digits). */
   private taskSeq = 0;
+  /** Server-owned lifecycle state. Gate checks and lifecycle.* commands use this. */
+  private readonly lifecycleStore: LifecycleStore;
 
-  constructor(private readonly opts: ServerOptions) {}
+  constructor(private readonly opts: ServerOptions) {
+    this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
+  }
 
   /** Milliseconds since this server instance was constructed. */
   uptimeMs(): number {
@@ -409,6 +414,13 @@ export class ClawsServer {
     }
 
     if (cmd === 'create') {
+      if (!this.lifecycleStore.hasPlan()) {
+        return {
+          ok: false,
+          error: 'lifecycle:plan-required',
+          message: '[LIFECYCLE GATE] No PLAN logged. Call mcp__claws__claws_lifecycle_plan first.',
+        };
+      }
       const r = req as ClawsRequest & {
         name?: string; cwd?: string; wrapped?: boolean; shellPath?: string;
         env?: Record<string, string>; show?: boolean; preserveFocus?: boolean;
@@ -828,6 +840,55 @@ export class ClawsServer {
       if (r.status) list = list.filter((t) => t.status === r.status);
       if (r.since) list = list.filter((t) => t.updatedAt >= r.since!);
       return { ok: true, tasks: list };
+    }
+
+    if (cmd === 'lifecycle.plan') {
+      const r = req as import('./protocol').LifecyclePlanRequest;
+      if (!r.plan || !r.plan.trim()) {
+        return { ok: false, error: 'lifecycle:plan-empty', message: 'plan text must be non-empty' };
+      }
+      const existingState = this.lifecycleStore.snapshot();
+      const state = this.lifecycleStore.plan(r.plan);
+      const idempotent = existingState !== null;
+      return { ok: true, state, idempotent };
+    }
+
+    if (cmd === 'lifecycle.advance') {
+      const r = req as import('./protocol').LifecycleAdvanceRequest;
+      try {
+        const prevPhase = this.lifecycleStore.snapshot()?.phase;
+        const state = this.lifecycleStore.advance(r.to as import('./lifecycle-store').Phase, r.reason);
+        // Return idempotent:true when the phase did not change (no-op transition)
+        if (prevPhase === r.to) return { ok: true, state, idempotent: true };
+        return { ok: true, state };
+      } catch (err) {
+        // Split "lifecycle:code — human message" into stable code + readable detail (M1)
+        const msg = (err as Error).message;
+        const sepIdx = msg.indexOf(' — ');
+        if (sepIdx !== -1) return { ok: false, error: msg.slice(0, sepIdx), message: msg.slice(sepIdx + 3) };
+        return { ok: false, error: msg, message: msg };
+      }
+    }
+
+    if (cmd === 'lifecycle.snapshot') {
+      return { ok: true, state: this.lifecycleStore.snapshot() };
+    }
+
+    if (cmd === 'lifecycle.reflect') {
+      const r = req as import('./protocol').LifecycleReflectRequest;
+      if (!r.reflect || !r.reflect.trim()) {
+        return { ok: false, error: 'lifecycle:reflect-empty', message: 'reflect text must be non-empty' };
+      }
+      try {
+        const state = this.lifecycleStore.reflect(r.reflect);
+        return { ok: true, state };
+      } catch (err) {
+        // Split "lifecycle:code — human message" into stable code + readable detail
+        const msg = (err as Error).message;
+        const sepIdx = msg.indexOf(' — ');
+        if (sepIdx !== -1) return { ok: false, error: msg.slice(0, sepIdx), message: msg.slice(sepIdx + 3) };
+        return { ok: false, error: msg, message: msg };
+      }
     }
 
     return { ok: false, error: `unknown cmd: ${cmd}` };
