@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.0] - 2026-04-28 — Phase β: streaming foundation
 
+### Fixed (post-deploy)
+
+- **`extension/scripts/deploy-dev.mjs`** — also copies `extension/package.json`
+  into each `~/.vscode/extensions/<publisher>.<name>-*/` directory. VS Code
+  reads the version label from the installed dir's `package.json`, so without
+  this copy the Extensions panel keeps showing the pre-deploy version even
+  after the bundle has been updated. Surfaced during the v0.7.0 integration
+  test (issue 10 in `.local/issues/`).
+
 ### Fixed (post-review)
 
 Three issues were found in the Phase β code review and addressed in this

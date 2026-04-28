@@ -34,14 +34,21 @@ const distSrc = join(extRoot, 'dist', 'extension.js');
 const nativeSrc = join(extRoot, 'native');
 try { statSync(distSrc); } catch { console.error(`[deploy-dev] missing ${distSrc} — run npm run build first`); process.exit(1); }
 
+const pkgJsonSrc = join(extRoot, 'package.json');
+
 let deployed = 0;
 for (const target of candidates) {
   const distDst = join(target, 'dist');
   mkdirSync(distDst, { recursive: true });
   copyFileSync(distSrc, join(distDst, 'extension.js'));
+  // Sync package.json so VS Code's UI shows the current version label.
+  // VS Code reads `version` from each installed-extension dir's package.json;
+  // without this copy, the panel keeps showing whatever version was first installed.
+  // See `.local/issues/10-deploy-dev-missing-package-json.md`.
+  copyFileSync(pkgJsonSrc, join(target, 'package.json'));
   const r = spawnSync('rsync', ['-a', '--delete', nativeSrc + '/', join(target, 'native') + '/'], { stdio: 'inherit' });
   if (r.status !== 0) { console.error(`[deploy-dev] rsync failed for ${target}`); process.exit(r.status ?? 1); }
-  console.log(`[deploy-dev] updated ${target}`);
+  console.log(`[deploy-dev] updated ${target} (version ${pkg.version})`);
   deployed++;
 }
 
