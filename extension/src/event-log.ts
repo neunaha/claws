@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+const SEGMENT_SIZE_THRESHOLD = 10 * 1024 * 1024; // 10 MB
+const SEGMENT_AGE_THRESHOLD_MS = 3600_000;        // 1 hour
+
 export interface AppendResult {
   cursor: string;
   sequence: number;
@@ -29,6 +32,7 @@ export class EventLogWriter {
   protected segmentId = 0;
   protected currentOffset = 0;
   protected currentSegmentPath = '';
+  protected openedAt = 0;
   protected stream: fs.WriteStream | null = null;
   protected degraded = false;
   protected writeError: Error | null = null;
@@ -43,9 +47,29 @@ export class EventLogWriter {
       this.degraded = true;
       return Promise.resolve();
     }
-    this.segmentId = 1;
+    // Always start a fresh segment on (re)start — never append to a prior-process segment.
+    const maxId = this.scanMaxSegmentId();
+    this.segmentId = maxId + 1;
     this.openFreshSegment();
     return Promise.resolve();
+  }
+
+  // Scans the stream directory for the highest 4-digit segment ID prefix.
+  // Returns 0 if the directory is empty or contains no matching files.
+  protected scanMaxSegmentId(): number {
+    try {
+      let max = 0;
+      for (const entry of fs.readdirSync(this.streamDir)) {
+        const m = entry.match(/^(\d{4})-/);
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (n > max) max = n;
+        }
+      }
+      return max;
+    } catch {
+      return 0;
+    }
   }
 
   protected makeSegmentName(id: number): string {
@@ -62,11 +86,29 @@ export class EventLogWriter {
     } catch {
       this.currentOffset = 0;
     }
+    this.openedAt = Date.now();
     this.stream = fs.createWriteStream(this.currentSegmentPath, { flags: 'a' });
     this.stream.on('error', (err) => {
       this.writeError = err;
       this.degraded = true;
     });
+  }
+
+  protected needsRotation(): boolean {
+    return (
+      this.currentOffset >= SEGMENT_SIZE_THRESHOLD ||
+      Date.now() - this.openedAt >= SEGMENT_AGE_THRESHOLD_MS
+    );
+  }
+
+  protected rotate(): void {
+    if (this.stream) {
+      this.stream.end();
+      this.stream = null;
+    }
+    this.segmentId++;
+    this.currentOffset = 0;
+    this.openFreshSegment();
   }
 
   segmentIdStr(): string {
@@ -89,6 +131,12 @@ export class EventLogWriter {
   protected doAppend(record: LogRecord): AppendResult {
     if (!this.stream) return { cursor: '', sequence: -1 };
     if (this.writeError) throw this.writeError;
+
+    // Rotate BEFORE writing so the record lands in the new segment.
+    if (this.needsRotation()) {
+      this.rotate();
+    }
+
     const line = JSON.stringify(record) + '\n';
     const bytes = Buffer.byteLength(line, 'utf8');
     const cursor = `${this.segmentIdStr()}:${this.currentOffset}`;
