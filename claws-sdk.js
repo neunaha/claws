@@ -33,12 +33,12 @@ function findSocket(startDir) {
 
 function buildEnvelope(peerId, peerName, schemaName, data) {
   return {
-    v:           1,
-    id:          crypto.randomUUID(),
-    from_peer:   peerId,
-    from_name:   peerName || 'unknown',
+    v:            1,
+    id:           crypto.randomUUID(),
+    from_peer:    peerId,
+    from_name:    peerName || 'unknown',
     ts_published: new Date().toISOString(),
-    schema:      schemaName,
+    schema:       schemaName,
     data,
   };
 }
@@ -47,14 +47,18 @@ function buildEnvelope(peerId, peerName, schemaName, data) {
 
 class ClawsSDK {
   constructor({ socketPath, peerId, peerName, terminalId } = {}) {
-    this.socketPath = socketPath || process.env.CLAWS_SOCKET || findSocket();
-    this.peerId     = peerId     || process.env.CLAWS_PEER_ID;
-    this.peerName   = peerName   || process.env.CLAWS_PEER_NAME   || 'sdk-worker';
-    this.terminalId = terminalId || process.env.CLAWS_TERMINAL_ID || undefined;
-    this._sock      = null;
-    this._buf       = '';
-    this._pending   = new Map();
-    this._rid       = 1;
+    this.socketPath   = socketPath || process.env.CLAWS_SOCKET || findSocket();
+    // _topicPeerId is captured once from constructor/env and never overwritten by hello().
+    // This ensures CLAWS_PEER_ID always governs topic routing even when the server
+    // assigns a different connection-identity peerId.
+    this._topicPeerId = peerId || process.env.CLAWS_PEER_ID || null;
+    this.peerId       = this._topicPeerId;
+    this.peerName     = peerName   || process.env.CLAWS_PEER_NAME   || 'sdk-worker';
+    this.terminalId   = terminalId || process.env.CLAWS_TERMINAL_ID || '';
+    this._sock        = null;
+    this._buf         = '';
+    this._pending     = new Map();
+    this._rid         = 1;
   }
 
   connect() {
@@ -105,52 +109,74 @@ class ClawsSDK {
       terminalId: this.terminalId,
     };
     return this._send(req).then((r) => {
-      if (r.ok && r.peerId) this.peerId = r.peerId;
+      if (r.ok && r.peerId) {
+        this.peerId = r.peerId;
+        // Only populate _topicPeerId from hello when not set via env/constructor.
+        // When CLAWS_PEER_ID is set, _topicPeerId is immutable so topics stay correct.
+        if (!this._topicPeerId) this._topicPeerId = r.peerId;
+      }
       return r;
     });
   }
 
   publish(topic, schemaName, data) {
-    if (!this.peerId) throw new Error('peerId required — call hello() first or set CLAWS_PEER_ID');
-    const payload = buildEnvelope(this.peerId, this.peerName, schemaName, data);
+    if (!this._topicPeerId) throw new Error('peerId required — call hello() first or set CLAWS_PEER_ID');
+    const payload = buildEnvelope(this._topicPeerId, this.peerName, schemaName, data);
     return this._send({ cmd: 'publish', protocol: 'claws/2', topic, payload });
   }
 
   publishBoot({ missionSummary, role, capabilities }) {
-    return this.publish(`worker.${this.peerId}.boot`, 'WorkerBootV1', {
-      mission_summary: missionSummary,
+    return this.publish(`worker.${this._topicPeerId}.boot`, 'worker-boot-v1', {
+      model:           process.env.CLAWS_MODEL || 'unknown',
       role:            role || 'worker',
+      parent_peer_id:  process.env.CLAWS_PARENT_PEER_ID || null,
+      mission_summary: missionSummary,
       capabilities:    capabilities || [],
+      cwd:             process.cwd(),
+      terminal_id:     this.terminalId || '',
     });
   }
 
-  publishPhase({ phase, prev, reason }) {
-    return this.publish(`worker.${this.peerId}.phase`, 'WorkerPhaseV1', { phase, prev: prev || null, reason: reason || null });
-  }
-
-  publishEvent({ kind, summary, severity, detail, correlationId }) {
-    return this.publish(`worker.${this.peerId}.event`, 'WorkerEventV1', {
-      kind,
-      summary,
-      severity:       severity || 'info',
-      detail:         detail   || null,
-      correlation_id: correlationId || null,
-    });
-  }
-
-  publishHeartbeat({ phase, tokensUsed, lastEventId }) {
-    return this.publish(`worker.${this.peerId}.heartbeat`, 'WorkerHeartbeatV1', {
+  publishPhase({ phase, prev, transitionReason, phasesCompleted, metadata }) {
+    return this.publish(`worker.${this._topicPeerId}.phase`, 'worker-phase-v1', {
       phase,
-      tokens_used:   tokensUsed  || 0,
-      last_event_id: lastEventId || null,
+      prev:              prev || null,
+      transition_reason: transitionReason || 'unspecified',
+      phases_completed:  phasesCompleted || [],
+      ...(metadata ? { metadata } : {}),
     });
   }
 
-  publishComplete({ result, summary, artifacts }) {
-    return this.publish(`worker.${this.peerId}.complete`, 'WorkerCompleteV1', {
+  publishEvent({ kind, message, severity, requestId, data }) {
+    return this.publish(`worker.${this._topicPeerId}.event`, 'worker-event-v1', {
+      kind,
+      severity: severity || 'info',
+      message:  message,
+      ...(requestId ? { request_id: requestId } : {}),
+      ...(data ? { data } : {}),
+    });
+  }
+
+  publishHeartbeat({ currentPhase, timeInPhaseMs, tokensUsed, costUsd, lastEventId, activeSubWorkers }) {
+    return this.publish(`worker.${this._topicPeerId}.heartbeat`, 'worker-heartbeat-v1', {
+      current_phase:      currentPhase,
+      time_in_phase_ms:   timeInPhaseMs    || 0,
+      tokens_used:        tokensUsed       || 0,
+      cost_usd:           costUsd          || 0,
+      last_event_id:      lastEventId      || null,
+      active_sub_workers: activeSubWorkers || [],
+    });
+  }
+
+  publishComplete({ result, summary, artifacts, phasesCompleted, totalTokens, totalCostUsd, durationMs }) {
+    return this.publish(`worker.${this._topicPeerId}.complete`, 'worker-complete-v1', {
       result,
       summary,
-      artifacts: artifacts || [],
+      artifacts:        artifacts        || [],
+      phases_completed: phasesCompleted  || [],
+      total_tokens:     totalTokens      || 0,
+      total_cost_usd:   totalCostUsd     || 0,
+      duration_ms:      durationMs       || 0,
     });
   }
 }
@@ -170,15 +196,17 @@ async function cli(argv) {
       'Types:',
       '  boot        --mission <text> [--role worker] [--caps a,b]',
       '  phase       --phase <PHASE> [--prev <PHASE>] [--reason <text>]',
-      '  event       --kind <KIND> --summary <text> [--severity info|warn|error|fatal]',
+      '  event       --kind <KIND> --message <text> [--severity info|warn|error|fatal]',
       '  heartbeat   --phase <PHASE> [--tokens N]',
-      '  complete    --result ok|failed|timeout --summary <text>',
+      '  complete    --result ok|failed|cancelled --summary <text>',
       '',
       'Environment:',
-      '  CLAWS_SOCKET       Unix socket path (auto-discovered if unset)',
-      '  CLAWS_PEER_ID      Peer ID (required for publish)',
-      '  CLAWS_PEER_NAME    Human label (default: sdk-worker)',
-      '  CLAWS_TERMINAL_ID  Terminal ID for correlation',
+      '  CLAWS_SOCKET          Unix socket path (auto-discovered if unset)',
+      '  CLAWS_PEER_ID         Peer ID (required; locked in for topic routing)',
+      '  CLAWS_PEER_NAME       Human label (default: sdk-worker)',
+      '  CLAWS_TERMINAL_ID     Terminal ID for correlation',
+      '  CLAWS_MODEL           Model name for boot event (default: unknown)',
+      '  CLAWS_PARENT_PEER_ID  Spawning parent peer ID (default: none)',
       '',
     ].join('\n'));
     process.exit(0);
@@ -229,19 +257,45 @@ async function cli(argv) {
       break;
     case 'phase':
       if (!flags.phase) { process.stderr.write('--phase required\n'); process.exit(1); }
-      result = await sdk.publishPhase({ phase: flags.phase, prev: flags.prev, reason: flags.reason });
+      result = await sdk.publishPhase({
+        phase:            flags.phase,
+        prev:             flags.prev,
+        transitionReason: flags.reason || 'unspecified',
+        phasesCompleted:  [],
+      });
       break;
     case 'event':
-      if (!flags.kind || !flags.summary) { process.stderr.write('--kind and --summary required\n'); process.exit(1); }
-      result = await sdk.publishEvent({ kind: flags.kind, summary: flags.summary, severity: flags.severity });
+      if (!flags.kind || !(flags.message || flags.summary)) {
+        process.stderr.write('--kind and --message required\n');
+        process.exit(1);
+      }
+      result = await sdk.publishEvent({
+        kind:     flags.kind,
+        message:  flags.message || flags.summary,
+        severity: flags.severity,
+      });
       break;
     case 'heartbeat':
       if (!flags.phase) { process.stderr.write('--phase required\n'); process.exit(1); }
-      result = await sdk.publishHeartbeat({ phase: flags.phase, tokensUsed: flags.tokens ? parseInt(flags.tokens, 10) : 0 });
+      result = await sdk.publishHeartbeat({
+        currentPhase:     flags.phase,
+        timeInPhaseMs:    0,
+        tokensUsed:       flags.tokens ? parseInt(flags.tokens, 10) : 0,
+        costUsd:          0,
+        lastEventId:      null,
+        activeSubWorkers: [],
+      });
       break;
     case 'complete':
       if (!flags.result || !flags.summary) { process.stderr.write('--result and --summary required\n'); process.exit(1); }
-      result = await sdk.publishComplete({ result: flags.result, summary: flags.summary });
+      result = await sdk.publishComplete({
+        result:          flags.result,
+        summary:         flags.summary,
+        phasesCompleted: [],
+        totalTokens:     0,
+        totalCostUsd:    0,
+        durationMs:      0,
+      });
       break;
     default:
       process.stderr.write(`Unknown type: ${type}\n`);

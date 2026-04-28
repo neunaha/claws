@@ -49,8 +49,8 @@
   ],
   "scripts": {
     "schemas": "node ../scripts/codegen/index.mjs",
-    "compile": "tsc --noEmit && node esbuild.mjs",
-    "build": "node esbuild.mjs --production && node scripts/bundle-native.mjs",
+    "compile": "npm run schemas && tsc --noEmit && node esbuild.mjs",
+    "build": "npm run schemas && node esbuild.mjs --production && node scripts/bundle-native.mjs",
     "bundle-native": "node scripts/bundle-native.mjs",
     "watch": "node esbuild.mjs --watch",
     "deploy:dev": "npm run build && node scripts/deploy-dev.mjs",

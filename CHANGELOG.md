@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.0] - 2026-04-28 — Phase β: streaming foundation
 
+### Fixed (post-review)
+
+Three issues were found in the Phase β code review and addressed in this
+release before merge:
+
+- **BLOCKING-1** — `claws-sdk.js` `hello()` was overwriting `CLAWS_PEER_ID`
+  with the server-assigned connection peer id, so SDK publishes were
+  routing to `worker.<server-id>.*` instead of the documented
+  `worker.<CLAWS_PEER_ID>.*`. The constructor now captures `CLAWS_PEER_ID`
+  into an immutable `_topicPeerId` field that all publish methods use for
+  topic construction; `hello()` never overwrites it.
+- **BLOCKING-2** — `publishBoot`/`publishPhase`/`publishHeartbeat` (and
+  others) were constructing payloads whose field names did not match the
+  corresponding Zod schemas (`reason` vs `transition_reason`, `phase` vs
+  `current_phase`, missing `model`/`parent_peer_id`/`cwd`/`terminal_id`,
+  etc.). Every SDK publish was triggering `system.malformed.received` even
+  in normal operation. All payload field names now match the schemas
+  exactly. Schema names also switched from PascalCase (`WorkerBootV1`) to
+  kebab-case (`worker-boot-v1`) to match the `SCHEMA_BY_NAME` convention.
+- **MAJOR-1** — `extension/package.json` `build` and `compile` scripts now
+  prepend `npm run schemas` so committed artifacts under `schemas/` cannot
+  silently fall stale relative to `event-schemas.ts`.
+
 ### Added
 
 **Schemas-as-code (Zod → committed JSON, TypeScript, docs)**
