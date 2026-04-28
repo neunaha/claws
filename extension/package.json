@@ -2,7 +2,7 @@
   "name": "claws",
   "displayName": "Claws: Programmable Terminal Bridge",
   "description": "Turn every VS Code terminal into a programmable endpoint. List, create, send, execute, read, and close terminals from any external process via a local socket.",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "publisher": "neunaha",
   "license": "MIT",
   "repository": {
