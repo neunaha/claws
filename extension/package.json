@@ -75,7 +75,8 @@
     "test:sdk": "node test/sdk-cli.test.js",
     "test:reverse-channel": "node test/reverse-channel.test.js",
     "test:event-log": "node test/event-log.test.js",
-    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:native && npm run test:config && npm run test:capture-store && npm run test:oversized && npm run test:pty-lifecycle && npm run test:profile && npm run test:multiconn && npm run test:v2-hello && npm run test:v2-pubsub && npm run test:v2-tasks && npm run test:lifecycle-store && npm run test:lifecycle-server && npm run test:schemas && npm run test:topic-registry && npm run test:server-validation && npm run test:mcp-codegen && npm run test:sdk && npm run test:reverse-channel && npm run test:event-log"
+    "test:mcp-publish-flow": "node test/mcp-publish-flow.test.js",
+    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:native && npm run test:config && npm run test:capture-store && npm run test:oversized && npm run test:pty-lifecycle && npm run test:profile && npm run test:multiconn && npm run test:v2-hello && npm run test:v2-pubsub && npm run test:v2-tasks && npm run test:lifecycle-store && npm run test:lifecycle-server && npm run test:schemas && npm run test:topic-registry && npm run test:server-validation && npm run test:mcp-codegen && npm run test:sdk && npm run test:reverse-channel && npm run test:event-log && npm run test:mcp-publish-flow"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

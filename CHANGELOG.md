@@ -49,6 +49,7 @@ stateful claws/2 MCP flows fail silently.
 - New: `extension/test/mcp-publish-flow.test.js` — spawns `mcp_server.js` as
   a child process, calls `claws_hello` + `claws_publish` via MCP JSON-RPC,
   asserts ok:true and event record on disk. Guards issue 09 regression.
+  Added `test:mcp-publish-flow` script and wired into `npm test`.
 - Suite total: 224 checks across 21 suites (was 219 across 20).
 
 ## [0.7.3] - 2026-04-28 — Bulletproof `/claws-update`
