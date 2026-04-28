@@ -322,7 +322,9 @@ export class ClawsServer {
    * Push frames intentionally omit `rid` so clients can distinguish them
    * from responses (a frame with `rid` is a response; without is a push).
    */
-  private pushFrame(socket: net.Socket, topic: string, from: string, payload: unknown): void {
+  private pushFrame(
+    socket: net.Socket, topic: string, from: string, payload: unknown, sequence?: number,
+  ): void {
     const frame = JSON.stringify({
       push: 'message',
       protocol: PROTOCOL_VERSION_V2,
@@ -330,6 +332,7 @@ export class ClawsServer {
       from,
       payload,
       sentAt: Date.now(),
+      ...(sequence !== undefined ? { sequence } : {}),
     }) + '\n';
     try {
       socket.write(frame);
@@ -342,7 +345,9 @@ export class ClawsServer {
    * Delivers a published message to all peers subscribed to a matching pattern.
    * Returns the count of peers that received the message.
    */
-  private fanOut(topic: string, from: string, payload: unknown, echo: boolean): number {
+  private fanOut(
+    topic: string, from: string, payload: unknown, echo: boolean, sequence?: number,
+  ): number {
     let count = 0;
     for (const [pattern, peerIds] of this.subscriptionIndex) {
       if (!matchTopic(topic, pattern)) continue;
@@ -350,7 +355,7 @@ export class ClawsServer {
         if (!echo && peerId === from) continue;
         const peer = this.peers.get(peerId);
         if (!peer) continue;
-        this.pushFrame(peer.socket, topic, from, payload);
+        this.pushFrame(peer.socket, topic, from, payload, sequence);
         count++;
       }
     }

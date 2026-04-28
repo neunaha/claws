@@ -33,6 +33,7 @@ export interface Envelope {
   terminal_id?: string | null;
   ts_published: string;
   ts_server?: string;
+  sequence?: number;
   schema: string;
   data: unknown;
 }

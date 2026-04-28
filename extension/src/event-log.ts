@@ -5,6 +5,22 @@ const SEGMENT_SIZE_THRESHOLD = 10 * 1024 * 1024; // 10 MB
 const SEGMENT_AGE_THRESHOLD_MS = 3600_000;        // 1 hour
 const MANIFEST_FLUSH_INTERVAL = 100;              // write manifest every N appends
 
+// ── Cross-cutting cursor contract ─────────────────────────────────────────────
+// Cursor format: "<4-digit-segment-id>:<decimal-byte-offset>", e.g. "0002:1428".
+// Segment ID is zero-padded to 4 digits. Byte offset is a decimal integer.
+// Consumers seek to exactly this offset via fs.createReadStream(path, {start}).
+// This contract is shared with w3 (reader) and w4 (retention/observability).
+
+export function formatCursor(segmentId: number, offset: number): string {
+  return `${String(segmentId).padStart(4, '0')}:${offset}`;
+}
+
+export function parseCursor(cursor: string): { segmentId: number; offset: number } | null {
+  const m = cursor.match(/^(\d{4}):(\d+)$/);
+  if (!m) return null;
+  return { segmentId: parseInt(m[1], 10), offset: parseInt(m[2], 10) };
+}
+
 export interface AppendResult {
   cursor: string;
   sequence: number;
@@ -54,6 +70,10 @@ export class EventLogWriter {
   protected writeError: Error | null = null;
   protected segments: SegmentEntry[] = [];
   private appendCount = 0;
+  // Per-stream sequence counter. Monotonically increasing across rotations.
+  // Resets to 0 on server restart (v1 — sequence is not persisted in manifest).
+  // Safe up to Number.MAX_SAFE_INTEGER ≈ 285 years at 1 000 events/s.
+  private sequenceCounter = 0;
   // Serialised append queue — guarantees ordering under concurrent publishes.
   private appendQueue: Promise<void> = Promise.resolve();
 
@@ -203,7 +223,7 @@ export class EventLogWriter {
   }
 
   currentCursor(): string {
-    return `${this.segmentIdStr()}:${this.currentOffset}`;
+    return formatCursor(this.segmentId, this.currentOffset);
   }
 
   append(record: LogRecord): Promise<AppendResult> {
@@ -224,16 +244,20 @@ export class EventLogWriter {
       this.rotate();
     }
 
-    const line = JSON.stringify(record) + '\n';
+    // Stamp sequence and ts_server onto the stored record (immutable enrichment).
+    const seq = this.sequenceCounter++;
+    const ts = (record.ts_server as string | undefined) ?? new Date().toISOString();
+    const enriched: LogRecord = { ...record, ts_server: ts, sequence: seq };
+
+    const line = JSON.stringify(enriched) + '\n';
     const bytes = Buffer.byteLength(line, 'utf8');
-    const cursor = `${this.segmentIdStr()}:${this.currentOffset}`;
+    const cursor = formatCursor(this.segmentId, this.currentOffset);
     this.stream.write(line);
     this.currentOffset += bytes;
 
     // Update current segment metadata for manifest accuracy.
     const lastSeg = this.segments[this.segments.length - 1];
     if (lastSeg) {
-      const ts = (record.ts_server as string | undefined) ?? new Date().toISOString();
       if (!lastSeg.first_ts) lastSeg.first_ts = ts;
       lastSeg.last_ts = ts;
       lastSeg.size = this.currentOffset;
@@ -244,7 +268,7 @@ export class EventLogWriter {
       this.writeManifest();
     }
 
-    return { cursor, sequence: -1 }; // sequence added in commit 4
+    return { cursor, sequence: seq };
   }
 
   close(): Promise<void> {
