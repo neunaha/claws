@@ -50,6 +50,13 @@ interface Manifest {
   current_offset: number;
 }
 
+export interface EventLogWriterOptions {
+  /** Override the size rotation threshold (bytes). Default: 10 MB. */
+  sizeThreshold?: number;
+  /** Override the age rotation threshold (ms). Default: 1 hour. */
+  ageThresholdMs?: number;
+}
+
 /**
  * Append-only writer for the persistent event log.
  *
@@ -58,6 +65,9 @@ interface Manifest {
  *
  * Cursor format: "<4-digit-segment-id>:<decimal-byte-offset>", e.g. "0002:1428".
  * Byte offsets allow efficient seeking via fs.createReadStream(path, {start}).
+ *
+ * Writes are synchronous (fs.writeSync) so segment files are immediately visible
+ * on disk after each append, which simplifies crash recovery and testing.
  */
 export class EventLogWriter {
   protected streamDir = '';
@@ -65,9 +75,8 @@ export class EventLogWriter {
   protected currentOffset = 0;
   protected currentSegmentPath = '';
   protected openedAt = 0;
-  protected stream: fs.WriteStream | null = null;
+  protected fd: number | null = null;
   protected degraded = false;
-  protected writeError: Error | null = null;
   protected segments: SegmentEntry[] = [];
   private appendCount = 0;
   // Per-stream sequence counter. Monotonically increasing across rotations.
@@ -76,6 +85,13 @@ export class EventLogWriter {
   private sequenceCounter = 0;
   // Serialised append queue — guarantees ordering under concurrent publishes.
   private appendQueue: Promise<void> = Promise.resolve();
+  private readonly sizeThreshold: number;
+  private readonly ageThresholdMs: number;
+
+  constructor(opts?: EventLogWriterOptions) {
+    this.sizeThreshold = opts?.sizeThreshold ?? SEGMENT_SIZE_THRESHOLD;
+    this.ageThresholdMs = opts?.ageThresholdMs ?? SEGMENT_AGE_THRESHOLD_MS;
+  }
 
   open(workspaceRoot: string): Promise<void> {
     this.streamDir = path.join(workspaceRoot, '.claws', 'events', 'default');
@@ -95,7 +111,7 @@ export class EventLogWriter {
   }
 
   // Attempts to recover writer state from an existing manifest.json.
-  // Returns true on success (stream opened, state restored), false otherwise.
+  // Returns true on success (fd opened, state restored), false otherwise.
   // Recovery rule: trust actual file size over the manifest's current_offset —
   // the manifest may be stale if the process crashed between appends and a flush.
   protected tryRecoverFromManifest(): boolean {
@@ -120,11 +136,7 @@ export class EventLogWriter {
       this.segments = m.segments.map(s => ({ ...s }));
       this.currentOffset = stat.size; // trust file, not stale manifest offset
       this.openedAt = Date.now();
-      this.stream = fs.createWriteStream(segPath, { flags: 'a' });
-      this.stream.on('error', (err) => {
-        this.writeError = err;
-        this.degraded = true;
-      });
+      this.fd = fs.openSync(segPath, 'a');
       return true;
     } catch {
       return false;
@@ -178,16 +190,15 @@ export class EventLogWriter {
     const name = this.makeSegmentName(this.segmentId);
     this.currentSegmentPath = path.join(this.streamDir, name);
     try {
-      this.currentOffset = fs.statSync(this.currentSegmentPath).size;
+      this.fd = fs.openSync(this.currentSegmentPath, 'a');
+      this.currentOffset = fs.fstatSync(this.fd).size;
     } catch {
+      this.fd = null;
       this.currentOffset = 0;
+      this.degraded = true;
+      return;
     }
     this.openedAt = Date.now();
-    this.stream = fs.createWriteStream(this.currentSegmentPath, { flags: 'a' });
-    this.stream.on('error', (err) => {
-      this.writeError = err;
-      this.degraded = true;
-    });
     this.segments.push({
       id: this.segmentIdStr(),
       path: name,
@@ -199,8 +210,8 @@ export class EventLogWriter {
 
   protected needsRotation(): boolean {
     return (
-      this.currentOffset >= SEGMENT_SIZE_THRESHOLD ||
-      Date.now() - this.openedAt >= SEGMENT_AGE_THRESHOLD_MS
+      this.currentOffset >= this.sizeThreshold ||
+      Date.now() - this.openedAt >= this.ageThresholdMs
     );
   }
 
@@ -208,9 +219,9 @@ export class EventLogWriter {
     // Update the closing segment's final size before moving on.
     const closing = this.segments[this.segments.length - 1];
     if (closing) closing.size = this.currentOffset;
-    if (this.stream) {
-      this.stream.end();
-      this.stream = null;
+    if (this.fd !== null) {
+      try { fs.closeSync(this.fd); } catch { /* ignore */ }
+      this.fd = null;
     }
     this.segmentId++;
     this.currentOffset = 0;
@@ -227,7 +238,7 @@ export class EventLogWriter {
   }
 
   append(record: LogRecord): Promise<AppendResult> {
-    if (this.degraded || !this.stream) {
+    if (this.degraded || this.fd === null) {
       return Promise.resolve({ cursor: '', sequence: -1 });
     }
     const result = this.appendQueue.then(() => this.doAppend(record));
@@ -236,13 +247,15 @@ export class EventLogWriter {
   }
 
   protected doAppend(record: LogRecord): AppendResult {
-    if (!this.stream) return { cursor: '', sequence: -1 };
-    if (this.writeError) throw this.writeError;
+    if (this.fd === null) return { cursor: '', sequence: -1 };
 
     // Rotate BEFORE writing so the record lands in the new segment.
     if (this.needsRotation()) {
       this.rotate();
     }
+
+    // After rotation, check if we're in degraded mode (rotate can set it).
+    if (this.degraded || this.fd === null) return { cursor: '', sequence: -1 };
 
     // Stamp sequence and ts_server onto the stored record (immutable enrichment).
     const seq = this.sequenceCounter++;
@@ -250,10 +263,16 @@ export class EventLogWriter {
     const enriched: LogRecord = { ...record, ts_server: ts, sequence: seq };
 
     const line = JSON.stringify(enriched) + '\n';
-    const bytes = Buffer.byteLength(line, 'utf8');
+    const buf = Buffer.from(line, 'utf8');
     const cursor = formatCursor(this.segmentId, this.currentOffset);
-    this.stream.write(line);
-    this.currentOffset += bytes;
+
+    try {
+      fs.writeSync(this.fd, buf);
+    } catch (err) {
+      this.degraded = true;
+      throw err;
+    }
+    this.currentOffset += buf.length;
 
     // Update current segment metadata for manifest accuracy.
     const lastSeg = this.segments[this.segments.length - 1];
@@ -273,12 +292,10 @@ export class EventLogWriter {
 
   close(): Promise<void> {
     this.writeManifest();
-    return new Promise<void>((resolve) => {
-      if (!this.stream) { resolve(); return; }
-      this.stream.end(() => {
-        this.stream = null;
-        resolve();
-      });
-    });
+    if (this.fd !== null) {
+      try { fs.closeSync(this.fd); } catch { /* ignore */ }
+      this.fd = null;
+    }
+    return Promise.resolve();
   }
 }
