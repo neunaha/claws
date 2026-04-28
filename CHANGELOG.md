@@ -5,6 +5,70 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-04-28 — Phase β: streaming foundation
+
+### Added
+
+**Schemas-as-code (Zod → committed JSON, TypeScript, docs)**
+- `extension/src/event-schemas.ts`: Zod v3 schema definitions as the single
+  source of truth for all 19 event types — `EnvelopeV1`, 5 worker schemas,
+  8 cmd schemas, 6 system schemas, enums, and `SCHEMA_BY_NAME` lookup
+- `extension/src/topic-registry.ts`: `TOPIC_REGISTRY` (19 entries) and
+  `schemaForTopic()` lookup; `topic-utils.ts` extracted to avoid circular deps
+- `npm run schemas` codegen pipeline: bundles TS via esbuild, then generates
+  `schemas/json/` (20 JSON Schema files), `schemas/types/event-protocol.d.ts`,
+  `docs/event-protocol.md` topic table, and `schemas/mcp-tools.json`
+- All generated files committed — no runtime build step required
+
+**Server-side publish validation (soft-reject mode by default)**
+- `server.ts` publish handler validates `EnvelopeV1` and per-topic data
+  schema before fan-out using the Zod schemas
+- Soft-reject (default): on failure, emits `system.malformed.received` with
+  `{ from, topic, error: ZodIssues }`, then still fans the event out
+- Strict mode (`claws.strictEventValidation=true`): hard-rejects with
+  `{ ok:false, error:'envelope:invalid'|'payload:invalid', details }`;
+  no fan-out occurs
+- Migration note: soft-reject is the default in v0.7.0; flips to strict in
+  v0.8.0 to give existing callers one release cycle to adopt the envelope
+
+**MCP tool descriptors generated from Zod schemas**
+- All 18 MCP tools defined as Zod schemas in `scripts/codegen/gen-mcp-tools.mjs`
+- `schemas/mcp-tools.json` committed and consumed by `mcp_server.js` at startup
+- `tools/list` response is byte-identical to the previous hand-written array
+- `mcp_server.js` startup guard exits clearly if the file is absent
+
+**Claws SDK — zero-dep typed publish helpers**
+- `claws-sdk.js` (repo root, copied to `.claws-bin/` by installer): dual CLI
+  + module API for workers to publish typed `EnvelopeV1` frames
+- CLI verbs: `publish boot|phase|event|heartbeat|complete`
+- Module: `ClawsSDK` class with `connect()`, `hello()`, `publishBoot()`,
+  `publishPhase()`, `publishEvent()`, `publishHeartbeat()`, `publishComplete()`
+- Socket auto-discovery (walks up from `cwd`); reads env `CLAWS_PEER_ID`,
+  `CLAWS_PEER_NAME`, `CLAWS_TERMINAL_ID`
+- Migration note: SDK is opt-in for Phase β — legacy `claws_publish` with raw
+  payloads continues to work in soft-reject mode
+
+**Streaming Worker orchestration pattern**
+- Template 8 in `.claude/skills/prompt-templates/SKILL.md`: full streaming
+  worker mission boilerplate with checkpoint publish table and orchestrator
+  setup guide
+- `.claude/skills/claws-orchestration-engine/SKILL.md` Phase 4 OBSERVE
+  refactored to event-driven sidecar pattern with heartbeat-based stuck
+  detection; legacy `claws_read_log` polling documented as fallback
+- New slash command `.claude/commands/claws-streaming-worker.md`
+
+### Tests
+
+192 checks across 18 suites (all green):
+- 34 unit checks — `event-schemas.test.js`
+- 14 unit checks — `topic-registry.test.js`
+- 7 integration checks — `server-validation.test.js`
+- 7 static + smoke checks — `mcp-tools-codegen.test.js`
+- 7 CLI + integration checks — `sdk-cli.test.js`
+- 123 pre-existing checks (suites 1–13) unchanged
+
+---
+
 ## [Unreleased] - Phase β: streaming foundation
 
 ### Added — β.5 Claws SDK (commit 5/7)
