@@ -11,6 +11,7 @@
 #   CLAWS_DEBUG=1               Enable bash -x trace
 #   CLAWS_NO_LOG=1              Disable the /tmp/claws-install-*.log file
 #   CLAWS_STRICT=1              Hard-block long-running Bash via PreToolUse hook (v0.6.4+)
+#   CLAWS_NO_GLOBAL_HOOKS=1     Skip ~/.claude/settings.json hook registration (test/CI safe)
 
 # ─── Strict-ish mode ────────────────────────────────────────────────────────
 # -e: exit on unhandled error
@@ -730,10 +731,16 @@ else
     mkdir -p "$PROJECT_ROOT/.claws-bin"
     cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js"
     chmod +x "$PROJECT_ROOT/.claws-bin/mcp_server.js"
-    # Copy generated MCP tool descriptors (mcp_server.js loads these at startup)
-    if [ -f "$INSTALL_DIR/schemas/mcp-tools.json" ]; then
-      mkdir -p "$PROJECT_ROOT/.claws-bin/schemas"
-      cp "$INSTALL_DIR/schemas/mcp-tools.json" "$PROJECT_ROOT/.claws-bin/schemas/mcp-tools.json"
+    # Copy generated schema artifacts: mcp-tools.json (consumed by mcp_server.js
+    # at startup) + json/ (20 per-topic JSON Schemas) + types/ (TS .d.ts).
+    # External schema consumers (worker SDKs, validators, IDE hints) need the
+    # json/ and types/ files even though mcp_server.js itself only needs
+    # mcp-tools.json.
+    if [ -d "$INSTALL_DIR/schemas" ]; then
+      mkdir -p "$PROJECT_ROOT/.claws-bin/schemas/json" "$PROJECT_ROOT/.claws-bin/schemas/types"
+      cp "$INSTALL_DIR/schemas/mcp-tools.json" "$PROJECT_ROOT/.claws-bin/schemas/" 2>/dev/null || true
+      cp "$INSTALL_DIR"/schemas/json/*.json "$PROJECT_ROOT/.claws-bin/schemas/json/" 2>/dev/null || true
+      cp "$INSTALL_DIR"/schemas/types/*.d.ts "$PROJECT_ROOT/.claws-bin/schemas/types/" 2>/dev/null || true
     fi
     # Copy Claws SDK (v0.7.0+) for typed publish helpers in worker scripts
     if [ -f "$INSTALL_DIR/claws-sdk.js" ]; then
@@ -746,10 +753,13 @@ else
       cp "$INSTALL_DIR/scripts/stream-events.js" "$PROJECT_ROOT/.claws-bin/stream-events.js"
       chmod +x "$PROJECT_ROOT/.claws-bin/stream-events.js" 2>/dev/null || true
     fi
-    # Copy lifecycle hook scripts for inject-settings-hooks.js to reference
-    if [ -d "$INSTALL_DIR/.claws-bin/hooks" ]; then
+    # Copy lifecycle hook scripts for inject-settings-hooks.js to reference.
+    # Source-of-truth is $INSTALL_DIR/scripts/hooks/ (committed to git).
+    # Previously this read from $INSTALL_DIR/.claws-bin/hooks/, which is
+    # gitignored and therefore missing on every fresh clone — silent skip.
+    if [ -d "$INSTALL_DIR/scripts/hooks" ]; then
       mkdir -p "$PROJECT_ROOT/.claws-bin/hooks"
-      cp "$INSTALL_DIR/.claws-bin/hooks"/*.js "$PROJECT_ROOT/.claws-bin/hooks/" 2>/dev/null || true
+      cp "$INSTALL_DIR/scripts/hooks"/*.js "$PROJECT_ROOT/.claws-bin/hooks/"
     fi
     ok "vendored $PROJECT_ROOT/.claws-bin/"
 
@@ -996,11 +1006,20 @@ CLAWSCMD
     if [ -f "$INSTALL_DIR/scripts/inject-global-claude-md.js" ]; then
       node --no-deprecation "$INSTALL_DIR/scripts/inject-global-claude-md.js" 2>&1 | sed 's/^/  /' || warn "global CLAUDE.md injector failed"
     fi
-    # Hook registration in ~/.claude/settings.json (SessionStart / PreToolUse / Stop)
+    # Hook registration in ~/.claude/settings.json (SessionStart / PreToolUse / Stop).
+    # Bin path passed to the injector must be $PROJECT_ROOT/.claws-bin (where the
+    # hook copies actually live), NOT $INSTALL_DIR/.claws-bin (the source clone,
+    # whose .claws-bin/hooks/ is gitignored and missing).
+    # CLAWS_NO_GLOBAL_HOOKS=1 skips this step entirely — useful for testing
+    # an isolated install without touching the user's global Claude Code config.
     if [ -f "$INSTALL_DIR/scripts/inject-settings-hooks.js" ]; then
-      echo "Updating Claws hooks..."
-      node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/.claws-bin" --remove 2>&1 | sed 's/^/  /' || warn "settings hooks removal failed"
-      node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/.claws-bin" 2>&1 | sed 's/^/  /' || warn "settings hooks injector failed"
+      if [ "${CLAWS_NO_GLOBAL_HOOKS:-0}" != "1" ]; then
+        echo "Updating Claws hooks..."
+        node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$PROJECT_ROOT/.claws-bin" --remove 2>&1 | sed 's/^/  /' || warn "settings hooks removal failed"
+        node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$PROJECT_ROOT/.claws-bin" 2>&1 | sed 's/^/  /' || warn "settings hooks injector failed"
+      else
+        echo "  CLAWS_NO_GLOBAL_HOOKS=1 — skipping ~/.claude/settings.json registration"
+      fi
     fi
   fi
 
@@ -1125,7 +1144,7 @@ if [ "$PROJECT_INSTALL" = "1" ]; then
       || warn "project .claws-bin/extension/ not copied"
   fi
   [ -f "$PROJECT_ROOT/.claws-bin/README.md" ] && _ok "Project .claws-bin/README.md" || warn "project .claws-bin/README.md missing"
-  [ -d "$PROJECT_ROOT/.claws-bin/hooks" ] && _ok "Project .claws-bin/hooks/ (lifecycle hooks)" || warn "project .claws-bin/hooks/ missing — run installer again"
+  [ -d "$PROJECT_ROOT/.claws-bin/hooks" ] && _ok "Project .claws-bin/hooks/ (lifecycle hooks)" || _miss "project .claws-bin/hooks/ missing"
   [ -f "$PROJECT_ROOT/.vscode/extensions.json" ] && grep -q "neunaha.claws" "$PROJECT_ROOT/.vscode/extensions.json" 2>/dev/null && _ok "Project .vscode/extensions.json recommends claws" || warn "project .vscode/extensions.json missing claws recommendation"
   [ -d "$PROJECT_ROOT/.claude/commands" ] && _ok "Project .claude/commands" || _miss "project commands missing"
   [ -d "$PROJECT_ROOT/.claude/skills" ] && _ok "Project .claude/skills" || _miss "project skills missing"

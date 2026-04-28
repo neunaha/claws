@@ -5,6 +5,46 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-04-28 — Fresh-install fix
+
+### Fixed (CRITICAL — fresh installs were silently broken)
+
+`scripts/install.sh` was producing a partially-working system on every fresh
+project install since v0.6.5+ shipped the lifecycle hook chain. Issue 11 in
+`.local/issues/` documents the four layered bugs surfaced by an end-to-end
+install test against a clean `/tmp/claws-fresh-install-test/`.
+
+- **Hook source path was wrong.** `install.sh` copied lifecycle hooks from
+  `$INSTALL_DIR/.claws-bin/hooks/` — a path that is gitignored and therefore
+  missing on every fresh `git clone`. The committed source-of-truth is
+  `$INSTALL_DIR/scripts/hooks/`. Fixed: copy from the right source.
+  Result: `<project>/.claws-bin/hooks/` is now populated as designed.
+- **`inject-settings-hooks.js` got the wrong directory.** It was invoked
+  with `$INSTALL_DIR/.claws-bin` (source-clone path), so registered hook
+  commands in `~/.claude/settings.json` pointed at non-existent files. Fixed:
+  pass `$PROJECT_ROOT/.claws-bin` so registered paths are project-local and
+  match the deployed copies. Lifecycle hooks (PreToolUse, SessionStart, Stop)
+  now resolve correctly on every fresh install.
+- **`schemas/` deployment was incomplete.** Only `schemas/mcp-tools.json`
+  was being copied. The 20 `schemas/json/*.json` and the
+  `schemas/types/event-protocol.d.ts` were NOT. Fixed: copy the whole
+  `schemas/` tree (`mcp-tools.json` + `json/` + `types/`). External schema
+  consumers (worker SDKs, validators, IDE hints) now find the artifacts.
+- **Verifier flagged missing hooks dir as a warning, not a failure.** With
+  the source-path bug fixed, the `.claws-bin/hooks/` directory should always
+  be present after install — so its absence is now a hard `_miss`, not a soft
+  `warn`. Catches regressions immediately rather than letting them slip past
+  the install banner.
+
+### Added
+
+- `CLAWS_NO_GLOBAL_HOOKS=1` env var. When set, `install.sh` skips registering
+  Claws hooks in `~/.claude/settings.json`. Useful for testing, CI, and
+  sandboxed installs where the user's global Claude Code config should not
+  be touched. Surfaced as a need during the issue-11 reproduction (running
+  install.sh against a temp dir for testing was clobbering the dev
+  environment's hook registration).
+
 ## [0.7.0] - 2026-04-28 — Phase β: streaming foundation
 
 ### Fixed (post-deploy)
