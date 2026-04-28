@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - Phase β: streaming foundation
 
-### Added — β.1 Schemas (commit 1/7)
+### Added — β.1 Schemas + β.1 Server Validation (commits 1–2/7)
 
 **Zod schema definitions as single source of truth for all event types:**
 - `extension/src/event-schemas.ts`: `EnvelopeV1`, 5 worker schemas
@@ -24,6 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 34 unit checks in `test/event-schemas.test.js`
 - 14 unit checks in `test/topic-registry.test.js`
 - `zod@^3` and `zod-to-json-schema@^3` added as devDependencies
+
+**Server-side publish validation with soft-reject mode:**
+- `server.ts` publish handler now validates envelope (`EnvelopeV1`) and data
+  payload (`schemaForTopic`) before fan-out
+- Soft-reject mode (default): on failure, emits `system.malformed.received`
+  with `{ from, topic, error: ZodIssues }`, then still fans out the event
+- Strict mode (`claws.strictEventValidation=true`): hard-rejects with
+  `{ ok:false, error:'envelope:invalid'|'payload:invalid', details }`;
+  no fan-out occurs
+- `server-config.ts`: new `strictEventValidation: boolean` field
+  (default `false`); `DEFAULT_STRICT_EVENT_VALIDATION` constant
+- `extension.ts`: wires `strictEventValidation` from VS Code settings
+- `extension/package.json`: adds `claws.strictEventValidation` VS Code config
+- 7 integration checks in `test/server-validation.test.js`
 
 ---
 

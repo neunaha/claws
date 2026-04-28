@@ -69,7 +69,8 @@
     "test:lifecycle-server": "node test/lifecycle-server.test.js",
     "test:schemas": "node test/event-schemas.test.js",
     "test:topic-registry": "node test/topic-registry.test.js",
-    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:native && npm run test:config && npm run test:capture-store && npm run test:oversized && npm run test:pty-lifecycle && npm run test:profile && npm run test:multiconn && npm run test:v2-hello && npm run test:v2-pubsub && npm run test:v2-tasks && npm run test:lifecycle-store && npm run test:lifecycle-server && npm run test:schemas && npm run test:topic-registry"
+    "test:server-validation": "node test/server-validation.test.js",
+    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:native && npm run test:config && npm run test:capture-store && npm run test:oversized && npm run test:pty-lifecycle && npm run test:profile && npm run test:multiconn && npm run test:v2-hello && npm run test:v2-pubsub && npm run test:v2-tasks && npm run test:lifecycle-store && npm run test:lifecycle-server && npm run test:schemas && npm run test:topic-registry && npm run test:server-validation"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
@@ -201,6 +202,11 @@
           "type": "number",
           "default": 9876,
           "description": "[Planned] Port for the WebSocket server."
+        },
+        "claws.strictEventValidation": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the server rejects publish requests that fail envelope or payload schema validation. When false (default), validation failures emit system.malformed.received but the event is still fanned out."
         }
       }
     }
