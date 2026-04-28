@@ -1037,8 +1037,8 @@ CLAWSCMD
     if [ -f "$INSTALL_DIR/scripts/inject-settings-hooks.js" ]; then
       if [ "${CLAWS_NO_GLOBAL_HOOKS:-0}" != "1" ]; then
         echo "Updating Claws hooks..."
-        node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$PROJECT_ROOT/.claws-bin" --remove 2>&1 | sed 's/^/  /' || warn "settings hooks removal failed"
-        node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$PROJECT_ROOT/.claws-bin" 2>&1 | sed 's/^/  /' || warn "settings hooks injector failed"
+        node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/scripts" --remove 2>&1 | sed 's/^/  /' || warn "settings hooks removal failed"
+        node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/scripts" 2>&1 | sed 's/^/  /' || warn "settings hooks injector failed"
       else
         echo "  CLAWS_NO_GLOBAL_HOOKS=1 — skipping ~/.claude/settings.json registration"
       fi

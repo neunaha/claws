@@ -45,6 +45,18 @@ plus the consolidated findings of the four-worker codebase audit
   still referenced them. Fix: `rm -rf "$PROJECT_ROOT/.claws-bin/hooks"`
   before the copy. Audit 4 finding I, audit 2 findings A/B.
 
+- **Multi-project hook displacement** (`scripts/install.sh`,
+  `scripts/inject-settings-hooks.js`). Hook registration in
+  `~/.claude/settings.json` pointed at `$PROJECT_ROOT/.claws-bin/hooks/`,
+  so each new project install silently displaced every prior project's hook
+  registration — last install won globally. Deleting a project also orphaned
+  its hook commands in settings.json, leaving broken entries that fired on
+  every Bash call. Fix: pass `$INSTALL_DIR/scripts` to the hook injector so
+  `hookCmd` resolves to `$INSTALL_DIR/scripts/hooks/<script>.js` — the
+  committed source-of-truth. One registration now serves all projects;
+  `/claws-update` from any project refreshes it; project deletion never
+  orphans it. Audit 3 finding A.
+
 - **BSD sed self-heal regression** (`scripts/install.sh:inject_hook`). The
   `# CLAWS terminal hook` cleanup used `sed '/pat/,+1d'` — the `,+N` range
   is a GNU sed extension. macOS ≤ Monterey ships a BSD sed that silently
@@ -86,9 +98,6 @@ plus the consolidated findings of the four-worker codebase audit
 
 ### Audit findings deferred to v0.7.3+
 
-- Multi-project hook displacement (audit 3 A) — second project's install
-  clobbers first project's hook registration in `~/.claude/settings.json`.
-  Phase ε capability auth resolves this anyway.
 - Stale VS Code extension dirs after symlink fallback (audit 4 K gap 1) —
   rare, low-impact.
 - Lifecycle-state `v` field validation (audit 4 J) — future hardening.
