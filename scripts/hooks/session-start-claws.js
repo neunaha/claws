@@ -1,43 +1,61 @@
 #!/usr/bin/env node
 // Claws SessionStart hook — detects Claws socket and emits lifecycle reminder.
+//
+// SAFETY CONTRACT: this hook MUST NEVER block, crash, or exit non-zero.
+// Any internal error → silent exit 0. Hooks are advisory; failing loud
+// blocks the user's tool calls and creates the very "hook errors" we're
+// trying to eliminate. v0.7.3 hardening.
 'use strict';
-const fs   = require('fs');
-const path = require('path');
+
+// Catch any uncaught throw / rejection BEFORE any require runs.
+process.on('uncaughtException', () => { try { process.exit(0); } catch {} });
+process.on('unhandledRejection', () => { try { process.exit(0); } catch {} });
 
 let input = '';
-process.stdin.on('data', d => { input += d; });
-process.stdin.on('end', () => {
-  let cwd = process.cwd();
-  try {
-    const parsed = JSON.parse(input);
-    if (parsed.cwd) cwd = parsed.cwd;
-  } catch { /* use process.cwd() */ }
+try { process.stdin.on('data', d => { input += d; }); } catch {}
+try {
+  process.stdin.on('end', () => {
+    try {
+      const fs   = require('fs');
+      const path = require('path');
 
-  const socketPath = path.join(cwd, '.claws', 'claws.sock');
-  if (!fs.existsSync(socketPath)) process.exit(0);
+      let cwd = process.cwd();
+      try {
+        const parsed = JSON.parse(input);
+        if (parsed.cwd) cwd = parsed.cwd;
+      } catch { /* use process.cwd() */ }
 
-  const reminder = [
-    '## Claws Active — Terminal Orchestration MANDATORY',
-    '',
-    'The Claws MCP server is running. You MUST follow these rules:',
-    '',
-    '1. NEVER use Bash for long-lived processes. Use claws_create + claws_send.',
-    '2. ALWAYS use wrapped=true on new terminals.',
-    '3. Worker boot sequence (ALWAYS in this order):',
-    '   Step 1: claws_create name="<slug>" wrapped=true',
-    '   Step 2: claws_send id=<N> text="claude --model claude-sonnet-4-6 --dangerously-skip-permissions"',
-    '   Step 3: Poll claws_read_log until "trust" appears (~20s)',
-    '   Step 4: claws_send id=<N> text="1" newline=false',
-    '   Step 5: Poll claws_read_log until "bypass" appears (~10s)',
-    '   Step 6: claws_send id=<N> text="<mission>" newline=false',
-    '   Step 7: claws_send id=<N> text="\\r" newline=false',
-    '4. ALWAYS close every terminal you create when done.',
-    '5. NEVER touch terminals you did not create.',
-    '',
-    'Lifecycle: PLAN → SPAWN → DEPLOY → OBSERVE → RECOVER → HARVEST → CLEANUP → REFLECT',
-    'Slash commands: /claws-boot /claws-go /claws-fleet /claws-cleanup /claws-fix /claws-help',
-  ].join('\n');
+      const socketPath = path.join(cwd, '.claws', 'claws.sock');
+      if (!fs.existsSync(socketPath)) { process.exit(0); return; }
 
-  process.stdout.write(JSON.stringify({ type: 'system', content: reminder }) + '\n');
+      const reminder = [
+        '## Claws Active — Terminal Orchestration MANDATORY',
+        '',
+        'The Claws MCP server is running. You MUST follow these rules:',
+        '',
+        '1. NEVER use Bash for long-lived processes. Use claws_create + claws_send.',
+        '2. ALWAYS use wrapped=true on new terminals.',
+        '3. Worker boot sequence (ALWAYS in this order):',
+        '   Step 1: claws_create name="<slug>" wrapped=true',
+        '   Step 2: claws_send id=<N> text="claude --model claude-sonnet-4-6 --dangerously-skip-permissions"',
+        '   Step 3: Poll claws_read_log until "trust" appears (~20s)',
+        '   Step 4: claws_send id=<N> text="1" newline=false',
+        '   Step 5: Poll claws_read_log until "bypass" appears (~10s)',
+        '   Step 6: claws_send id=<N> text="<mission>" newline=false',
+        '   Step 7: claws_send id=<N> text="\\r" newline=false',
+        '4. ALWAYS close every terminal you create when done.',
+        '5. NEVER touch terminals you did not create.',
+        '',
+        'Lifecycle: PLAN → SPAWN → DEPLOY → OBSERVE → RECOVER → HARVEST → CLEANUP → REFLECT',
+        'Slash commands: /claws-boot /claws-go /claws-fleet /claws-cleanup /claws-fix /claws-help',
+      ].join('\n');
+
+      try { process.stdout.write(JSON.stringify({ type: 'system', content: reminder }) + '\n'); } catch {}
+      process.exit(0);
+    } catch {
+      process.exit(0);
+    }
+  });
+} catch {
   process.exit(0);
-});
+}

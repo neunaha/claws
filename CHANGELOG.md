@@ -69,6 +69,53 @@ This release reworks `update.sh`, `install.sh`, and `fix.sh` so a future
   WARNING banner with concrete recovery steps before the success line.
   Stops the user from being surprised an hour later. Audit finding #4.
 
+### Fixed (CRITICAL — "solve hook errors forever" — three-layer fix)
+
+User-reported recurring class of failure: `SessionStart:startup hook
+error / Failed with non-blocking status code: file:///.../hooks/X.js:14`
+on every Bash tool call. Three distinct trigger paths, each closed:
+
+- **Layer 1 — Hook scripts can never crash.** All three hook scripts
+  (`session-start-claws.js`, `pre-tool-use-claws.js`, `stop-claws.js`)
+  now have `process.on('uncaughtException')` + `unhandledRejection`
+  handlers registered as the first executable lines, plus full
+  try/catch wrapping around the body, plus lazy-require for any
+  cross-script deps (`stop-claws.js`'s `lifecycle-state` module). Any
+  internal error → silent `process.exit(0)`. Garbage stdin, missing
+  deps, ESM-loader confusion — all become no-ops instead of visible
+  errors. Verified: `printf garbage | node hook.js` → exit 0 for all
+  three hooks.
+
+- **Layer 2 — Missing hook paths silent-skip instead of erroring.**
+  `inject-settings-hooks.js` now registers each hook command as
+  `sh -c '[ -f "$0" ] && exec node "$0" || exit 0' "<scriptPath>"`
+  instead of plain `node "<scriptPath>"`. If the path 404s (install
+  dir moved, sandbox path leaked, prior install removed), the
+  shell sees no file and exits 0 silently. Claude Code never
+  surfaces the error. Path-existence is checked at every tool call,
+  zero perf cost (sh + test). The injector's `alreadyPresent`
+  detection now also recognises and replaces old plain-format
+  entries on upgrade — no duplicate accumulation.
+
+- **Layer 3 — `/claws-fix` auto-heals stale hook registrations.**
+  Two new checks added to `scripts/fix.sh`:
+  - "Hook script paths in `~/.claude/settings.json`" — extracts the
+    `.js` path from each Claws hook command (whether wrapped or
+    plain), tests `fs.existsSync`, lists any 404s, and re-runs
+    `inject-settings-hooks.js --remove + add` to re-register from
+    the current install dir. Self-healing.
+  - "Hook scripts execute cleanly" — invokes each registered hook
+    with synthetic stdin under a Node-based 5s timeout (replaces
+    macOS-incompatible `timeout` cmd), and reports any non-zero
+    exit. Surfaces pre-v0.7.3 hook scripts that don't have the
+    safety wrappers.
+
+  Together: any recurrence of the hook-error class is auto-detected
+  and auto-repaired by the next `/claws-fix` run.
+
+This closes a recurring failure class that has bitten users since
+the Claws hook chain shipped in v0.6.x.
+
 ## [0.7.2] - 2026-04-28 — Audit-driven hardening
 
 User-reported regression on a real ESM project (`/Users/miles/dev/tokenomic/`)

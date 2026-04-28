@@ -362,6 +362,98 @@ if [ -f "$HOME/.claude/settings.json" ] && grep -q '"claws"' "$HOME/.claude/sett
   fi
 fi
 
+# ─── 8. Stale Claws hook script paths in ~/.claude/settings.json (v0.7.3) ──
+# Detects the "SessionStart:startup hook error / non-blocking status code"
+# class of failure: registered hook commands point at a path that no longer
+# exists (install dir moved, sandbox path leaked into settings, prior
+# install was deleted). Re-registers from the current INSTALL_DIR so
+# Claude Code stops reporting hook errors on every tool call.
+check "Hook script paths in ~/.claude/settings.json"
+if [ -f "$HOME/.claude/settings.json" ] && grep -q '_source.*claws' "$HOME/.claude/settings.json" 2>/dev/null; then
+  STALE_HOOKS=$(node --no-deprecation -e "
+    const fs=require('fs');
+    const j=JSON.parse(fs.readFileSync('$HOME/.claude/settings.json','utf8'));
+    const stale=[];
+    for(const ev of Object.keys(j.hooks||{})){
+      for(const e of (j.hooks[ev]||[])){
+        if(e._source!=='claws')continue;
+        if(!e.hooks||!e.hooks[0])continue;
+        const cmd=e.hooks[0].command||'';
+        // Extract the .js path from either: plain 'node \"<path>\"' OR
+        // wrapped 'sh -c \"...\" \"<path>\"' (path is the LAST quoted token).
+        const matches=[...cmd.matchAll(/\"([^\"]+\\.js)\"/g)];
+        if(!matches.length)continue;
+        const scriptPath=matches[matches.length-1][1];
+        if(!fs.existsSync(scriptPath)) stale.push({event:ev,path:scriptPath});
+      }
+    }
+    if(stale.length===0){console.log('OK')}
+    else for(const s of stale)console.log(s.event+'\t'+s.path);
+  " 2>/dev/null)
+  if [ "$STALE_HOOKS" = "OK" ]; then
+    ok "all registered Claws hook paths resolve"
+  else
+    fail "stale hook path(s) detected:"
+    echo "$STALE_HOOKS" | sed 's/^/    /'
+    fix "re-registering hooks against $INSTALL_DIR/scripts/hooks/"
+    if node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" --remove >/dev/null 2>&1 \
+       && node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/scripts" >/dev/null 2>&1; then
+      ok "hooks re-registered from $INSTALL_DIR/scripts/hooks/"
+      FIXED=$((FIXED+1))
+    else
+      fail "could not re-register hooks — check $INSTALL_DIR/scripts/inject-settings-hooks.js exists"
+      ISSUES=$((ISSUES+1))
+    fi
+  fi
+fi
+
+# ─── 9. Hook script execution probe (v0.7.3) ──────────────────────────────
+# Defense in depth: even if the path resolves, the script might crash on
+# load (ESM vs CJS, missing deps, etc). Invoke each hook with synthetic
+# stdin and confirm exit 0. Hooks were hardened in v0.7.3 to never crash,
+# but if a user is running pre-v0.7.3 hook scripts, we surface the gap.
+check "Hook scripts execute cleanly"
+HOOK_DIR="$INSTALL_DIR/scripts/hooks"
+HOOKS_PRESENT=0
+HOOKS_OK=0
+HOOKS_FAIL=0
+HOOKS_FAILED_NAMES=""
+for hook in session-start-claws.js pre-tool-use-claws.js stop-claws.js; do
+  [ -f "$HOOK_DIR/$hook" ] || continue
+  HOOKS_PRESENT=$((HOOKS_PRESENT+1))
+  # Use a Node-based 5s ceiling instead of `timeout` (not on macOS by default).
+  # The hook should exit in <100ms anyway; this just guards against pathological
+  # hangs in pre-v0.7.3 hook scripts.
+  if echo '{"cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"ls"}}' \
+     | node --no-deprecation -e "
+       const { spawn } = require('child_process');
+       let buf = '';
+       process.stdin.on('data', d => buf += d);
+       process.stdin.on('end', () => {
+         const ch = spawn('node', ['$HOOK_DIR/$hook'], { stdio: ['pipe','pipe','pipe'] });
+         const t = setTimeout(() => { try { ch.kill('SIGKILL'); } catch {} process.exit(124); }, 5000);
+         ch.stdin.write(buf); ch.stdin.end();
+         ch.on('exit', c => { clearTimeout(t); process.exit(c||0); });
+         ch.on('error', () => { clearTimeout(t); process.exit(127); });
+       });
+     " >/dev/null 2>&1; then
+    HOOKS_OK=$((HOOKS_OK+1))
+  else
+    HOOKS_FAIL=$((HOOKS_FAIL+1))
+    HOOKS_FAILED_NAMES="$HOOKS_FAILED_NAMES $hook"
+  fi
+done
+if [ "$HOOKS_PRESENT" -eq 0 ]; then
+  fail "no hook scripts found at $HOOK_DIR — run install.sh"
+  ISSUES=$((ISSUES+1))
+elif [ "$HOOKS_FAIL" -eq 0 ]; then
+  ok "all $HOOKS_OK hook script(s) probe clean"
+else
+  fail "$HOOKS_FAIL of $HOOKS_PRESENT hook(s) exited non-zero on probe:$HOOKS_FAILED_NAMES"
+  fix "if you have an older Claws version, run install.sh to refresh hooks (v0.7.3+ hardening)"
+  ISSUES=$((ISSUES+1))
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────────
 echo ""
 if [ "$ISSUES" -eq 0 ]; then
