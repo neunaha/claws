@@ -39,6 +39,9 @@ export const EnvelopeV1 = z.object({
   terminal_id:    z.string().nullable().optional(),
   ts_published:   z.string().datetime(),
   ts_server:      z.string().datetime().optional(),
+  // Monotonic per-stream sequence number stamped by the server (optional for
+  // backward compat with pre-γ producers that do not set this field).
+  sequence:       z.number().int().nonnegative().optional(),
   schema:         z.string().min(1),
   data:           z.unknown(),
 });

@@ -15,6 +15,7 @@ import { TaskRecord, allocTaskId } from './task-registry';
 import { LifecycleStore } from './lifecycle-store';
 import { EnvelopeV1 } from './event-schemas';
 import { schemaForTopic } from './topic-registry';
+import { EventLogWriter } from './event-log';
 
 /**
  * Per-connection context threaded into `handle()`. Holds the raw socket
@@ -98,6 +99,8 @@ export class ClawsServer {
   /** Server-owned lifecycle state. Gate checks and lifecycle.* commands use this. */
   private readonly lifecycleStore: LifecycleStore;
 
+  private readonly eventLog = new EventLogWriter();
+
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
   }
@@ -124,7 +127,12 @@ export class ClawsServer {
     // in `startError` for the caller to inspect. Returning a never-rejecting
     // promise keeps fire-and-forget callers (`srv.start()`) safe from
     // unhandledRejection noise.
-    return this.prepareSocket(this.socketPath).then(() => this.bind(this.socketPath!))
+    return this.prepareSocket(this.socketPath)
+      .then(() => this.eventLog.open(this.opts.workspaceRoot).catch((err: unknown) => {
+        // Event log is non-fatal: log a warning and continue in degraded mode.
+        this.opts.logger(`[claws] event log disabled at startup: ${String(err)}`);
+      }))
+      .then(() => this.bind(this.socketPath!))
       .catch((err) => {
         this.startError = err instanceof Error ? err : new Error(String(err));
         this.opts.logger(`[claws] server start failed: ${this.startError.message}`);
@@ -137,6 +145,9 @@ export class ClawsServer {
   }
 
   stop(): void {
+    // Best-effort flush: manifest is written synchronously inside close(); the
+    // stream.end() drain is async but VS Code deactivation gives it time.
+    this.eventLog.close().catch(() => { /* best-effort */ });
     try { this.server?.close(); } catch { /* ignore */ }
     try { if (this.socketPath) fs.unlinkSync(this.socketPath); } catch { /* ignore */ }
     this.server = null;
@@ -322,7 +333,9 @@ export class ClawsServer {
    * Push frames intentionally omit `rid` so clients can distinguish them
    * from responses (a frame with `rid` is a response; without is a push).
    */
-  private pushFrame(socket: net.Socket, topic: string, from: string, payload: unknown): void {
+  private pushFrame(
+    socket: net.Socket, topic: string, from: string, payload: unknown, sequence?: number,
+  ): void {
     const frame = JSON.stringify({
       push: 'message',
       protocol: PROTOCOL_VERSION_V2,
@@ -330,6 +343,7 @@ export class ClawsServer {
       from,
       payload,
       sentAt: Date.now(),
+      ...(sequence !== undefined ? { sequence } : {}),
     }) + '\n';
     try {
       socket.write(frame);
@@ -342,7 +356,9 @@ export class ClawsServer {
    * Delivers a published message to all peers subscribed to a matching pattern.
    * Returns the count of peers that received the message.
    */
-  private fanOut(topic: string, from: string, payload: unknown, echo: boolean): number {
+  private fanOut(
+    topic: string, from: string, payload: unknown, echo: boolean, sequence?: number,
+  ): number {
     let count = 0;
     for (const [pattern, peerIds] of this.subscriptionIndex) {
       if (!matchTopic(topic, pattern)) continue;
@@ -350,7 +366,7 @@ export class ClawsServer {
         if (!echo && peerId === from) continue;
         const peer = this.peers.get(peerId);
         if (!peer) continue;
-        this.pushFrame(peer.socket, topic, from, payload);
+        this.pushFrame(peer.socket, topic, from, payload, sequence);
         count++;
       }
     }
@@ -720,7 +736,25 @@ export class ClawsServer {
         }
       }
 
-      const delivered = this.fanOut(r.topic, peerId, r.payload, r.echo ?? false);
+      // Durably append to the event log before fan-out.
+      // If append() throws (non-degraded I/O error), we refuse to publish so
+      // the caller is not told ok:true for an event that was not persisted.
+      // In degraded mode (log disabled at startup) append() returns sequence -1
+      // without throwing and fan-out proceeds normally.
+      let sequence: number | undefined;
+      try {
+        const logResult = await this.eventLog.append({
+          topic: r.topic,
+          from: peerId,
+          ts_server: new Date().toISOString(),
+          payload: r.payload,
+        });
+        sequence = logResult.sequence >= 0 ? logResult.sequence : undefined;
+      } catch {
+        return { ok: false, error: 'event-log:write-failed' };
+      }
+
+      const delivered = this.fanOut(r.topic, peerId, r.payload, r.echo ?? false, sequence);
       return { ok: true, deliveredTo: delivered };
     }
 
