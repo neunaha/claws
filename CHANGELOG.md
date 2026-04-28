@@ -5,6 +5,28 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - Phase β: streaming foundation
+
+### Added — β.1 Schemas (commit 1/7)
+
+**Zod schema definitions as single source of truth for all event types:**
+- `extension/src/event-schemas.ts`: `EnvelopeV1`, 5 worker schemas
+  (`WorkerBootV1`, `WorkerPhaseV1`, `WorkerEventV1`, `WorkerHeartbeatV1`,
+  `WorkerCompleteV1`), 8 cmd schemas, 6 system schemas, enums
+  (`PHASES`, `EventKindEnum`, `ClawsRoleEnum`, `ResultEnum`, `SeverityEnum`),
+  and `SCHEMA_BY_NAME` lookup map
+- `extension/src/topic-utils.ts`: standalone `matchTopic` + `matchSegments`
+  extracted from `peer-registry.ts` (§7.7 refactor — clean dep graph)
+- `extension/src/topic-registry.ts`: `TOPIC_REGISTRY` (19 entries),
+  `schemaForTopic(topic)` lookup
+- `extension/src/peer-registry.ts`: now re-exports `matchTopic` from
+  `topic-utils.ts`; backward compatible for all existing callers
+- 34 unit checks in `test/event-schemas.test.js`
+- 14 unit checks in `test/topic-registry.test.js`
+- `zod@^3` and `zod-to-json-schema@^3` added as devDependencies
+
+---
+
 ## [0.6.5] - 2026-04-28
 
 ### Added — Phase α: server-side lifecycle gate
