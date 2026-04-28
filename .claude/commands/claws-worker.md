@@ -1,60 +1,44 @@
 ---
 name: claws-worker
-description: Spawn a full worker pattern — create wrapped terminal, launch a process inside it, attach a monitor. The production-grade way to run autonomous tasks. Arguments — name (required), command (required).
+description: Spawn a Claude Code worker in a wrapped terminal. Boots Claude Code, sends a mission, attaches monitoring. Arguments — name (required), mission (required).
 ---
 
-# /claws-worker <name> <command>
+# /claws-worker <name> <mission>
 
-Spawn a complete worker terminal with monitoring. This is the pair-programmer pattern for autonomous tasks.
+Spawn a Claude Code worker terminal. The worker hosts a real Claude Code instance running in `--dangerously-skip-permissions` mode and executes the mission autonomously.
+
+**Note:** wrapped terminals exist to host Claude Code, not bare shell commands. If you just need to run a one-shot shell command (`npm test`, `pytest`, etc.), use `claws_exec` instead — see `/claws-do`.
 
 ## What to do
 
-1. Create a wrapped terminal:
-```bash
-node -e "
-const net=require('net');
-const s=net.createConnection('.claws/claws.sock');
-s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'create',name:'$1',wrapped:true})+'\n'));
-let b='';
-s.on('data',d=>{
-  b+=d;
-  const nl=b.indexOf('\n');
-  if(nl!==-1){
-    const r=JSON.parse(b.slice(0,nl));
-    console.log('TERM_ID='+r.id);
-    console.log('LOG='+r.logPath);
-    s.destroy();
-  }
-});
-"
+If `claws_worker` MCP tool is available, use it — it bundles the full 7-step boot:
+
+```
+claws_worker(name="worker-<name>", mission="<full mission text>. print MISSION_COMPLETE when done. go.")
 ```
 
-2. Wait 1.5 seconds for the shell to initialize.
+Otherwise, follow the manual 7-step sequence:
 
-3. Send the command into the terminal:
-```bash
-node -e "
-const net=require('net');
-const s=net.createConnection('.claws/claws.sock');
-s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'send',tid:'TERM_ID',text:'$2'})+'\n'));
-let b='';
-s.on('data',d=>{
-  b+=d;
-  const nl=b.indexOf('\n');
-  if(nl!==-1){ s.destroy(); }
-});
-"
-```
+1. `claws_lifecycle_plan(plan="<2-3 sentence plan>")` — required before any create.
+2. `claws_create(name="worker-<name>", wrapped=true)` → terminal id N.
+3. `claws_send(id=N, text="claude --model claude-sonnet-4-6 --dangerously-skip-permissions")`
+4. Poll `claws_read_log` every 5s until output contains `"trust"` (~20s).
+5. `claws_send(id=N, text="1", newline=false)` — accept trust.
+6. Poll `claws_read_log` every 5s until output contains `"bypass"` (~10s).
+7. `claws_send(id=N, text="<mission>. print MISSION_COMPLETE when done. go.", newline=false)`
+   `claws_send(id=N, text="\n", newline=false)` — submit (separate call).
 
-4. Attach a Monitor to the pty log for real-time event streaming:
-```bash
-tail -F LOG_PATH | perl -pe 'BEGIN{$|=1} s/\e\[[0-9;?]*[a-zA-Z]//g; s/\e\][^\a]*\a//g; s/[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f]//g' | grep --line-buffered -E '(Read|Write|Edit|Bash|Grep|Glob)\([^)]{3,}|MISSION_COMPLETE|MISSION_FAILED|Traceback|Error|permission denied'
-```
+## After dispatch
 
-5. Report to the user: "Worker '$1' spawned. Terminal ID=X. Monitor attached. Watching for events."
+Poll `claws_read_log(id=N)` every 30s. The mission is done when:
+- output contains `MISSION_COMPLETE`, OR
+- the worker process exits, OR
+- `totalSize` stops growing for >5 min (treat as stuck — RECOVER).
 
-6. When the task completes (MISSION_COMPLETE detected or process exits):
-   - Read the final pty log via `/claws-read`
-   - Close the terminal via the socket
-   - Stop the monitor
-   - Report: "Worker '$1' done. Terminal closed."
+When done, read the final log, report results to the user, then `claws_close(id=N)`. Cleanup is mandatory.
+
+## See also
+
+- `/claws-streaming-worker` — same shape but the worker publishes typed events over the pub/sub bus for real-time observability (use when running ≥3 parallel workers).
+- `/claws-do` — auto-routes one-shot shell commands to `claws_exec` and missions to this command.
+- `/claws-boot` — pure boot sequence reference.

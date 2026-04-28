@@ -1,72 +1,61 @@
 ---
 name: claws-do
-description: Execute ANY task through visible Claws terminals. NEVER use Bash directly — ALWAYS spawn a visible terminal. This is the primary command for all work.
+description: Execute ANY task through visible Claws terminals. Boots a Claude Code worker for missions; uses claws_exec for one-shot shell commands. NEVER use Bash directly.
 ---
 
 # /claws-do <anything>
 
-## CRITICAL RULE: you MUST use Claws terminals for this. Do NOT fall back to the Bash tool. The entire point is visible terminal execution.
+## CRITICAL RULE: you MUST use Claws for this. Do NOT fall back to the Bash tool. The entire point is visible, monitorable execution.
 
-## What to do
+## Pick the right shape FIRST
 
-### Step 1 — Create a visible wrapped terminal
+Before creating any terminal, classify the request:
 
-If `claws_create` MCP tool is available, use it:
+| Shape | Example | Tool |
+|---|---|---|
+| **One-shot shell command** (test, build, lint, deploy, script) | `npm test`, `pytest`, `cargo build` | `claws_exec` — captures output, exit code, no terminal needed |
+| **Mission for a Claude worker** (refactor, fix bug, audit, multi-step task) | "fix the auth race", "audit the migration" | `claws_create wrapped=true` + 7-step Claude Code boot + mission |
+
+**Wrapped terminals are for hosting a Claude Code instance. They are NOT for running bare shell commands.**
+If the answer is "just run this command and show me the output", use `claws_exec` and stop.
+If the answer is "an autonomous agent needs to take this on", boot a Claude worker (steps below).
+
+## Path A — one-shot shell command
+
 ```
-claws_create(name="<descriptive-name>", wrapped=true)
+claws_exec(command="<the command>", timeout_ms=120000)
 ```
 
-If `claws_create` MCP tool is not available, MCP failed to load — do NOT attempt a workaround.
-Tell the user: "Reload VS Code (Cmd+Shift+P → Developer: Reload Window) and restart
-Claude Code in this project. The Claws MCP server is not connected." Stop here.
+Read `output` and `exitCode` from the result. Report both to the user. Done. No terminal to clean up — `claws_exec` is auto-managed.
 
-### Step 2 — Send the command
+If `claws_exec` is not available, MCP failed to load — tell the user: "Reload VS Code (Cmd+Shift+P → Developer: Reload Window) and restart Claude Code in this project. The Claws MCP server is not connected." Stop here.
 
-Use `claws_send`:
-```
-claws_send(id=TERM_ID, text="THE_COMMAND")
-```
-If `claws_send` is not available, MCP failed to load — reload VS Code and restart. Do NOT attempt to bypass this requirement.
+## Path B — Claude Code worker (mission-shaped)
 
-### Step 3 — Wait and read the result
+Follow the 7-step boot sequence — every step in order, do not skip.
 
-Use `claws_read_log` to read the output. Wait appropriate time for the command to finish.
+1. `claws_lifecycle_plan(plan="<2-3 sentence plan>")` — required before any create.
+2. `claws_create(name="worker-<slug>", wrapped=true)` → terminal id N.
+3. `claws_send(id=N, text="claude --model claude-sonnet-4-6 --dangerously-skip-permissions")`
+4. Poll `claws_read_log` every 5s until output contains `"trust"` (~20s).
+5. `claws_send(id=N, text="1", newline=false)` — accept trust prompt.
+6. Poll `claws_read_log` every 5s until output contains `"bypass"` (~10s).
+7. `claws_send(id=N, text="<full mission text>", newline=false)`
+   `claws_send(id=N, text="\n", newline=false)` — submit (separate call).
 
-### Step 4 — Close the terminal
+Then poll `claws_read_log` every 10s until `MISSION_COMPLETE` appears, harvest the output, and `claws_close(id=N)`.
 
-Use `claws_close`. NEVER leave terminals open.
-
-### Step 5 — Report to user
-
-Show the result clearly.
-
-## Strategy selection
-
-**Single command** (test, build, lint, deploy) → 1 terminal
-**Multiple independent tasks** (lint + test + build) → N terminals in parallel, fire all, monitor all
-**Complex mission** (refactor, fix bug, audit) → use `claws_worker` which auto-launches Claude Code
-**Multi-step** (test → deploy) → sequential terminals, branch on results
-
-## CRITICAL: Do NOT spawn sub-agents
-
-Call `claws_create`, `claws_send`, `claws_read_log`, `claws_close` yourself directly. Never delegate to the Agent tool or any sub-agent — the point is that YOU execute the boot sequence, not a proxy.
-
-When the task needs Claude Code running inside the terminal, follow this exact boot sequence manually:
-
-1. `claws_create(name="worker-<slug>", wrapped=true)` → get terminal ID N
-2. `claws_send(id=N, text="claude --model claude-sonnet-4-6 --dangerously-skip-permissions")`
-3. Poll `claws_read_log` every 5s until output contains "trust" (~20s)
-4. `claws_send(id=N, text="1", newline=false)` — accept trust
-5. Poll `claws_read_log` every 5s until output contains "bypass" (~10s)
-6. `claws_send(id=N, text="<mission>", newline=false)`
-7. `claws_send(id=N, text="\n", newline=false)` — submit
-8. Poll `claws_read_log` every 10s until MISSION_COMPLETE appears
-9. `claws_close(id=N)` — ALWAYS close when done
-
-If MCP tools are not loaded, reload VS Code and restart Claude Code. Do NOT attempt to bypass this requirement.
+Every mission must end with `print MISSION_COMPLETE when done. go.`
 
 ## NEVER do this
 
-- NEVER use the Bash tool for tasks the user asked /claws-do for
-- NEVER say "this isn't a Claws task" — EVERYTHING is a Claws task when /claws-do is invoked
-- NEVER skip creating a terminal — the user wants to SEE the work happen
+- NEVER spawn a wrapped terminal and send raw shell commands into it. Wrapped terminals host Claude Code, not shells. If you only need a shell command, use `claws_exec`.
+- NEVER use the Bash tool for tasks the user asked /claws-do for.
+- NEVER skip the lifecycle plan call before `claws_create` — the server gate will reject the create.
+- NEVER skip the trust + bypass polling — the mission will be lost.
+- NEVER leave a terminal open. `claws_close` is mandatory.
+- NEVER delegate to the Agent tool — execute the boot sequence yourself.
+
+## If MCP tools are not loaded
+
+Tell the user: "Reload VS Code (Cmd+Shift+P → Developer: Reload Window) and restart Claude Code in this project. The Claws MCP server is not connected." Stop. Do NOT attempt a raw-socket workaround.

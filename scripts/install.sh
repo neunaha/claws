@@ -428,8 +428,14 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
   NATIVE_PTY_ELECTRON=$(node -e "try{console.log(require('$INSTALL_DIR/extension/native/.metadata.json').electronVersion||'?')}catch(e){console.log('?')}" 2>/dev/null || echo '?')
   ok "native node-pty ready (${NATIVE_PTY_SIZE} bytes, Electron $NATIVE_PTY_ELECTRON) — VSIX will ship this binary"
   if command -v file &>/dev/null; then
-    file "$NATIVE_PTY_BIN" 2>/dev/null | grep -qi "$(uname -m)" \
+    # Linux x86_64 false-positive: `uname -m` returns `x86_64` (underscore),
+    # but `file(1)` describes ELF binaries as `x86-64` (hyphen). Match both
+    # spellings so legitimate x86_64 bundles don't trigger the warning.
+    # Audit 1 finding H-1.
+    _claws_arch_alt="$(uname -m | sed 's/_/-/g')"
+    file "$NATIVE_PTY_BIN" 2>/dev/null | grep -qiE "$(uname -m)|${_claws_arch_alt}" \
       || warn "pty.node architecture may not match current machine ($(uname -m)) — check bundle-native.mjs output in $CLAWS_LOG"
+    unset _claws_arch_alt
   fi
 
   # R3.7: Check if other installed editors use a different Electron version.
@@ -757,9 +763,25 @@ else
     # Source-of-truth is $INSTALL_DIR/scripts/hooks/ (committed to git).
     # Previously this read from $INSTALL_DIR/.claws-bin/hooks/, which is
     # gitignored and therefore missing on every fresh clone — silent skip.
+    #
+    # Wipe-then-copy: removed-in-newer-release files (e.g. post-tool-use-claws.js
+    # deprecated in v0.6.5) used to survive in users' .claws-bin/hooks/ and the
+    # Claude Code hook runner would still try to invoke them. Audit 4 finding I.
+    #
+    # We also ship a package.json shim with {"type":"commonjs"} alongside the
+    # hooks. Without it, projects whose root package.json declares
+    # "type":"module" (modern Node/TS projects) load the hook scripts as ESM,
+    # and the CommonJS require() call at the top of each hook crashes.
+    # Reported by user (Miles) on v0.7.0.
     if [ -d "$INSTALL_DIR/scripts/hooks" ]; then
+      rm -rf "$PROJECT_ROOT/.claws-bin/hooks" 2>/dev/null || true
       mkdir -p "$PROJECT_ROOT/.claws-bin/hooks"
       cp "$INSTALL_DIR/scripts/hooks"/*.js "$PROJECT_ROOT/.claws-bin/hooks/"
+      if [ -f "$INSTALL_DIR/scripts/hooks/package.json" ]; then
+        cp "$INSTALL_DIR/scripts/hooks/package.json" "$PROJECT_ROOT/.claws-bin/hooks/package.json"
+      else
+        printf '{"type":"commonjs","private":true}\n' > "$PROJECT_ROOT/.claws-bin/hooks/package.json"
+      fi
     fi
     ok "vendored $PROJECT_ROOT/.claws-bin/"
 
@@ -1044,16 +1066,46 @@ HOOK_MARKER="# CLAWS terminal hook"
 inject_hook() {
   local rcfile="$1"
   touch "$rcfile" 2>/dev/null || true
+
+  # Detect prior state BEFORE rewriting so we can report accurately.
   local had_stale=0
+  local had_marker=0
   if grep -q "CLAWS terminal hook" "$rcfile" 2>/dev/null; then
+    had_marker=1
     if ! grep -Fq "$HOOK_SOURCE" "$rcfile" 2>/dev/null; then
       had_stale=1
     fi
-    sed -i.claws-bak '/# CLAWS terminal hook/,+1d' "$rcfile" 2>/dev/null && rm -f "$rcfile.claws-bak" 2>/dev/null
   fi
+  # Detect orphaned source lines (marker missing, source survived from a
+  # prior install whose sed delete failed on BSD sed). Audit 4 finding G.
+  if grep -Eq '^[[:space:]]*source[[:space:]].*/shell-hook\.sh' "$rcfile" 2>/dev/null \
+     && ! grep -Fq "$HOOK_SOURCE" "$rcfile" 2>/dev/null; then
+    had_stale=1
+  fi
+
+  # Portable cleanup via awk (works on BSD awk and GNU awk identically).
+  # Replaces the GNU-only `sed '/pat/,+1d'` form, which silently failed on
+  # macOS ≤ Monterey and left orphaned `source ".../shell-hook.sh"` lines.
+  #
+  # 1. Strip every `# CLAWS terminal hook` line + the immediately following line.
+  # 2. Strip any standalone orphaned `source .../shell-hook.sh` line.
+  local tmp="$rcfile.claws-tmp.$$"
+  if awk '
+    /# CLAWS terminal hook/ { skip = 1; next }
+    skip { skip = 0; next }
+    /^[[:space:]]*source[[:space:]].*\/shell-hook\.sh/ { next }
+    { print }
+  ' "$rcfile" > "$tmp" 2>/dev/null && [ -s "$tmp" -o ! -s "$rcfile" ]; then
+    mv "$tmp" "$rcfile" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+
   if printf "\n%s\n%s\n" "$HOOK_MARKER" "$HOOK_SOURCE" >> "$rcfile" 2>/dev/null; then
     if [ "$had_stale" = "1" ]; then
       ok "refreshed in $(basename "$rcfile") (removed stale path)"
+    elif [ "$had_marker" = "1" ]; then
+      ok "refreshed in $(basename "$rcfile")"
     else
       ok "added to $(basename "$rcfile")"
     fi
@@ -1065,7 +1117,14 @@ inject_hook() {
 [ -f "$INSTALL_DIR/scripts/shell-hook.sh" ] \
   || die "shell-hook.sh missing from $INSTALL_DIR/scripts/ — clone may be incomplete."
 inject_hook "$HOME/.zshrc"
-bash -n "$HOME/.zshrc" 2>/dev/null || warn "~/.zshrc has a syntax error after hook injection — check manually"
+# Use `zsh -n` for .zshrc (zsh-only syntax like `setopt`/`autoload -Uz` parses
+# fine in zsh but `bash -n` reports false-positive errors). Fall back to `bash -n`
+# only if zsh is not installed. Audit 1 finding H-2.
+if command -v zsh &>/dev/null; then
+  zsh -n "$HOME/.zshrc" 2>/dev/null || warn "~/.zshrc has a syntax error after hook injection — check manually"
+else
+  bash -n "$HOME/.zshrc" 2>/dev/null || warn "~/.zshrc has a syntax error after hook injection — check manually"
+fi
 inject_hook "$HOME/.bashrc"
 bash -n "$HOME/.bashrc" 2>/dev/null || warn "~/.bashrc has a syntax error after hook injection — check manually"
 if [ "$PLATFORM" = "Darwin" ]; then
