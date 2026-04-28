@@ -72,7 +72,8 @@
     "test:topic-registry": "node test/topic-registry.test.js",
     "test:server-validation": "node test/server-validation.test.js",
     "test:mcp-codegen": "node test/mcp-tools-codegen.test.js",
-    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:native && npm run test:config && npm run test:capture-store && npm run test:oversized && npm run test:pty-lifecycle && npm run test:profile && npm run test:multiconn && npm run test:v2-hello && npm run test:v2-pubsub && npm run test:v2-tasks && npm run test:lifecycle-store && npm run test:lifecycle-server && npm run test:schemas && npm run test:topic-registry && npm run test:server-validation && npm run test:mcp-codegen"
+    "test:sdk": "node test/sdk-cli.test.js",
+    "test": "npm run typecheck && npm run build && npm run test:smoke && npm run test:native && npm run test:config && npm run test:capture-store && npm run test:oversized && npm run test:pty-lifecycle && npm run test:profile && npm run test:multiconn && npm run test:v2-hello && npm run test:v2-pubsub && npm run test:v2-tasks && npm run test:lifecycle-store && npm run test:lifecycle-server && npm run test:schemas && npm run test:topic-registry && npm run test:server-validation && npm run test:mcp-codegen && npm run test:sdk"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - Phase β: streaming foundation
 
+### Added — β.5 Claws SDK (commit 5/7)
+
+**Zero-dependency worker publish helper:**
+- `claws-sdk.js` (repo root): dual CLI + module API for workers to publish
+  typed `EnvelopeV1` frames; zero deps (stdlib `net`, `crypto`, `fs` only)
+  - CLI: `node .claws-bin/claws-sdk.js publish boot|phase|event|heartbeat|complete [flags]`
+  - Module: `const { ClawsSDK } = require('.claws-bin/claws-sdk.js')` —
+    `connect()`, `hello()`, `publishBoot()`, `publishPhase()`,
+    `publishEvent()`, `publishHeartbeat()`, `publishComplete()`
+  - Socket auto-discovery: walks up from `cwd` looking for `.claws/claws.sock`
+  - Reads env: `CLAWS_SOCKET`, `CLAWS_PEER_ID` (required for publish),
+    `CLAWS_PEER_NAME`, `CLAWS_TERMINAL_ID`
+  - `--help` / `--version` (`0.7.0`) / clean error on missing `CLAWS_PEER_ID`
+- `scripts/install.sh`: copies `schemas/mcp-tools.json` → `.claws-bin/schemas/`
+  (required by `mcp_server.js` at runtime) and `claws-sdk.js` → `.claws-bin/`
+- 7 checks in `extension/test/sdk-cli.test.js` (static CLI + module API +
+  live server integration via built extension bundle)
+- `extension/package.json`: adds `test:sdk` script, 192 checks across 18 suites
+
+---
+
 ### Added — β.4 MCP tool descriptor migration (commit 4/7)
 
 **MCP tool descriptors generated from Zod schemas:**
