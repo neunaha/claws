@@ -43,7 +43,29 @@ channel, error recovery, authorization rules.
 - Send the CR (Step 7)
 - Note the timestamp; worker is now running
 
-### Phase 4 — OBSERVE
+### Phase 4 — OBSERVE (event-driven — no polling)
+
+**Preferred: event stream via sidecar**
+
+Launch the stream-events sidecar once before sending any worker missions. It opens a persistent subscription to `worker.**` and prints each push frame as it arrives:
+
+```bash
+# In a background Bash terminal or via Monitor:
+node .claws-bin/stream-events.js
+```
+
+When workers use the Streaming Worker pattern (Template 8), the orchestrator receives:
+- `worker.<peerId>.boot` — worker is live and accepted the mission
+- `worker.<peerId>.phase` — phase transitions (PLAN → SPAWN → DEPLOY …)
+- `worker.<peerId>.event` — BLOCKED / DECISION / PROGRESS / WARNING sentinels
+- `worker.<peerId>.heartbeat` — liveness pulse every ~10s; if absent >30s, worker may be stuck
+- `worker.<peerId>.complete` — final outcome with `result` (ok / failed / timeout) and `summary`
+
+**Stuck detection** (replaces polling):
+- No `heartbeat` from a worker for >30s → check `claws_read_log` to diagnose
+- `event.kind=BLOCKED` received → inspect `summary`, decide whether to unblock via `claws_send` or `claws_broadcast`
+
+**Legacy fallback** (when workers do NOT publish events):
 - Poll `claws_read_log` on each terminal every 30s
 - Track `totalSize` — if it stops growing for >5 min, the worker may be stuck
 
