@@ -52,7 +52,14 @@ function saveSettings(data) {
 
 function hookCmd(scriptName) {
   const scriptPath = path.join(CLAWS_BIN, 'hooks', scriptName);
-  return `node "${scriptPath}"`;
+  // Wrap in `sh -c` with a file-exists check (v0.7.3 hardening). Without
+  // this, Claude Code reports a "non-blocking status code" error on every
+  // tool call when the hook script's path is missing (install dir moved,
+  // sandbox path leaked into settings.json, etc.). The wrapper makes
+  // missing-path a silent no-op instead of a visible error. The path is
+  // passed as $0 to avoid shell-escape pitfalls with paths containing
+  // spaces or apostrophes.
+  return `sh -c '[ -f "$0" ] && exec node "$0" || exit 0' ${JSON.stringify(scriptPath)}`;
 }
 
 function makeHookEntry(matcher, scriptName) {
@@ -82,26 +89,33 @@ if (REMOVE) {
 
 // Define the three hooks to inject (PostToolUse removed in v0.6.5 — gate moved server-side)
 const HOOKS_TO_ADD = [
-  { event: 'SessionStart', entry: makeHookEntry('*', 'session-start-claws.js') },
-  { event: 'PreToolUse',   entry: makeHookEntry('*', 'pre-tool-use-claws.js') },
-  { event: 'Stop',         entry: makeHookEntry('*', 'stop-claws.js') },
+  { event: 'SessionStart', scriptName: 'session-start-claws.js', entry: makeHookEntry('*', 'session-start-claws.js') },
+  { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('*', 'pre-tool-use-claws.js') },
+  { event: 'Stop',         scriptName: 'stop-claws.js',          entry: makeHookEntry('*', 'stop-claws.js') },
 ];
 
 let changed = 0;
-for (const { event, entry } of HOOKS_TO_ADD) {
+for (const { event, scriptName, entry } of HOOKS_TO_ADD) {
   if (!settings.hooks[event]) settings.hooks[event] = [];
   const arr = settings.hooks[event];
 
-  // Check if already present (match by _source + matcher + script name)
-  const scriptName = entry.hooks[0].command.split('/').pop().replace('"', '');
-  const alreadyPresent = arr.some(e =>
+  // Find any existing Claws entry for this script. Match by scriptName
+  // substring so we can detect old-format entries (plain `node "<path>"`)
+  // and replace them in place with the new wrapped form, avoiding
+  // duplicate accumulation on repeated runs across versions.
+  const existingIdx = arr.findIndex(e =>
     e._source === SOURCE_TAG &&
     e.matcher === entry.matcher &&
-    e.hooks && e.hooks[0] && e.hooks[0].command.includes(scriptName)
+    e.hooks && e.hooks[0] &&
+    e.hooks[0].command && e.hooks[0].command.includes(scriptName)
   );
 
-  if (!alreadyPresent) {
+  if (existingIdx === -1) {
     arr.push(entry);
+    changed++;
+  } else if (arr[existingIdx].hooks[0].command !== entry.hooks[0].command) {
+    // Old-format or stale-path entry — upgrade it in place
+    arr[existingIdx] = entry;
     changed++;
   }
 }

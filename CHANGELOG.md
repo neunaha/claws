@@ -5,6 +5,117 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-04-28 — Bulletproof `/claws-update`
+
+User-reported breakage on a real upgrade: `/claws-update` ran cleanly but
+left MCP unable to connect. VS Code reload didn't fix it; running the
+installer again in the same project didn't fix it. Root cause was an
+Electron-ABI rebuild gap that none of the existing checks covered, plus
+a blunt socket-cleanup that destroyed live state.
+
+This release reworks `update.sh`, `install.sh`, and `fix.sh` so a future
+`/claws-update` can never produce the same broken state. See
+`.local/audits/update-sh-deep-audit.md` for the full bug catalog.
+
+### Fixed (CRITICAL — caused the user-reported breakage)
+
+- **Electron-ABI mismatch is now auto-detected** (`scripts/install.sh`).
+  Previously, `needs_rebuild_native` only triggered if the binary was
+  missing, the user passed `CLAWS_FORCE_REBUILD_NPTY=1`, or the git SHA
+  changed. If the user updated VS Code to a newer Electron version while
+  Claws was already installed, install.sh saw the binary present, the
+  SHA unchanged, and **skipped the rebuild** — the bundled `pty.node`
+  was now ABI-mismatched, the extension silently fell into pipe-mode,
+  and wrapped terminals (the entire MCP-driven workflow) broke. Fix:
+  read `electronVersion` from `extension/native/.metadata.json`,
+  compare against the currently-installed editor's Electron version,
+  force a rebuild on mismatch. macOS via `plutil` on Electron Framework
+  Info.plist; Linux via `electron --version` from common install paths.
+  Audit finding #1.
+
+- **`/claws-fix` now propagates the rebuilt `pty.node` to every installed
+  extension dir** (`scripts/fix.sh`). Previously, fix.sh rebuilt
+  node-pty in `~/.claws-src/extension/node_modules/node-pty/` but VS Code
+  loads the extension from `~/.vscode/extensions/neunaha.claws-X.Y.Z/native/`
+  — a different copy. So the rebuild had no visible effect after reload.
+  Fix: copy the freshly-built pty.node into the source's `native/`
+  bundle AND into every `~/.{vscode,vscode-insiders,cursor,windsurf}/extensions/neunaha.claws-*/native/...`
+  directory, then update `native/.metadata.json` so future ABI checks
+  see the new version. Audit finding #3.
+
+### Fixed (HIGH)
+
+- **Safe socket cleanup in `update.sh`** (`scripts/update.sh:86`).
+  Previously: `find -name claws.sock -mtime +1 -delete`. If the user
+  kept VS Code open for >24 hours, the live socket file's mtime was
+  stale and `update.sh` deleted it. The running extension still held
+  the socket fd internally, but the path was gone — every subsequent
+  MCP child process got `ENOENT`. Replaced with a Node-based connect
+  probe: only delete the socket if it fails a 800ms `list` ping.
+  Live sockets are preserved. Audit finding #2.
+
+- **Visible `git pull` failure in `update.sh`**. The previous version
+  treated "no changes" and "git pull failed" identically (same dim
+  `note()` output). On network errors / dirty source / merge conflicts,
+  the user proceeded silently with stale source. Now: distinguishes
+  the two cases, prints the actual git error, and warns when running
+  install.sh against a stale local clone. Audit finding #5.
+
+### Added
+
+- **Post-update health check in `update.sh`** (Step 6). After install.sh
+  returns, verifies pty.node ABI parity, `.mcp.json` JSON validity, and
+  MCP server `initialize` handshake. If any check fails, prints a yellow
+  WARNING banner with concrete recovery steps before the success line.
+  Stops the user from being surprised an hour later. Audit finding #4.
+
+### Fixed (CRITICAL — "solve hook errors forever" — three-layer fix)
+
+User-reported recurring class of failure: `SessionStart:startup hook
+error / Failed with non-blocking status code: file:///.../hooks/X.js:14`
+on every Bash tool call. Three distinct trigger paths, each closed:
+
+- **Layer 1 — Hook scripts can never crash.** All three hook scripts
+  (`session-start-claws.js`, `pre-tool-use-claws.js`, `stop-claws.js`)
+  now have `process.on('uncaughtException')` + `unhandledRejection`
+  handlers registered as the first executable lines, plus full
+  try/catch wrapping around the body, plus lazy-require for any
+  cross-script deps (`stop-claws.js`'s `lifecycle-state` module). Any
+  internal error → silent `process.exit(0)`. Garbage stdin, missing
+  deps, ESM-loader confusion — all become no-ops instead of visible
+  errors. Verified: `printf garbage | node hook.js` → exit 0 for all
+  three hooks.
+
+- **Layer 2 — Missing hook paths silent-skip instead of erroring.**
+  `inject-settings-hooks.js` now registers each hook command as
+  `sh -c '[ -f "$0" ] && exec node "$0" || exit 0' "<scriptPath>"`
+  instead of plain `node "<scriptPath>"`. If the path 404s (install
+  dir moved, sandbox path leaked, prior install removed), the
+  shell sees no file and exits 0 silently. Claude Code never
+  surfaces the error. Path-existence is checked at every tool call,
+  zero perf cost (sh + test). The injector's `alreadyPresent`
+  detection now also recognises and replaces old plain-format
+  entries on upgrade — no duplicate accumulation.
+
+- **Layer 3 — `/claws-fix` auto-heals stale hook registrations.**
+  Two new checks added to `scripts/fix.sh`:
+  - "Hook script paths in `~/.claude/settings.json`" — extracts the
+    `.js` path from each Claws hook command (whether wrapped or
+    plain), tests `fs.existsSync`, lists any 404s, and re-runs
+    `inject-settings-hooks.js --remove + add` to re-register from
+    the current install dir. Self-healing.
+  - "Hook scripts execute cleanly" — invokes each registered hook
+    with synthetic stdin under a Node-based 5s timeout (replaces
+    macOS-incompatible `timeout` cmd), and reports any non-zero
+    exit. Surfaces pre-v0.7.3 hook scripts that don't have the
+    safety wrappers.
+
+  Together: any recurrence of the hook-error class is auto-detected
+  and auto-repaired by the next `/claws-fix` run.
+
+This closes a recurring failure class that has bitten users since
+the Claws hook chain shipped in v0.6.x.
+
 ## [0.7.2] - 2026-04-28 — Audit-driven hardening
 
 User-reported regression on a real ESM project (`/Users/miles/dev/tokenomic/`)

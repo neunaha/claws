@@ -362,6 +362,43 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
   [ "${CLAWS_FORCE_REBUILD_NPTY:-0}" = "1" ] && needs_rebuild_native=1
   if needs_build; then needs_rebuild_native=1; fi
 
+  # Electron-ABI drift detection (v0.7.3). If the user updated VS Code/Cursor/
+  # Windsurf to a newer Electron version since the last build, the bundled
+  # pty.node is now ABI-mismatched and the extension will silently fall into
+  # pipe-mode. Read native/.metadata.json's electronVersion (written by
+  # bundle-native.mjs at build time) and compare with the currently-installed
+  # editor's Electron version. If they differ, force a rebuild.
+  if [ -f "$NATIVE_PTY_BIN" ] && [ -f "$INSTALL_DIR/extension/native/.metadata.json" ] && [ "$needs_rebuild_native" = "0" ]; then
+    _claws_last_elec=$(node -e "try{console.log(require('$INSTALL_DIR/extension/native/.metadata.json').electronVersion||'')}catch(e){}" 2>/dev/null || echo "")
+    _claws_curr_elec=""
+    if [ "$PLATFORM" = "Darwin" ]; then
+      for _claws_app in \
+        "/Applications/Visual Studio Code.app" \
+        "/Applications/Visual Studio Code - Insiders.app" \
+        "/Applications/Cursor.app" \
+        "/Applications/Windsurf.app"; do
+        _claws_plist="$_claws_app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
+        if [ -f "$_claws_plist" ]; then
+          _claws_curr_elec=$(plutil -extract CFBundleVersion raw "$_claws_plist" 2>/dev/null || true)
+          [ -n "$_claws_curr_elec" ] && break
+        fi
+      done
+    elif [ "$PLATFORM" = "Linux" ]; then
+      for _claws_ep in /usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron; do
+        if [ -x "$_claws_ep" ]; then
+          _claws_curr_elec=$("$_claws_ep" --version 2>/dev/null | sed 's/^v//' | head -1)
+          [ -n "$_claws_curr_elec" ] && break
+        fi
+      done
+    fi
+    if [ -n "$_claws_curr_elec" ] && [ -n "$_claws_last_elec" ] && [ "$_claws_curr_elec" != "$_claws_last_elec" ]; then
+      info "Electron version changed since last build ($_claws_last_elec → $_claws_curr_elec) — forcing pty.node rebuild"
+      info "without this rebuild, the extension would silently fall into pipe-mode"
+      needs_rebuild_native=1
+    fi
+    unset _claws_last_elec _claws_curr_elec _claws_app _claws_plist _claws_ep
+  fi
+
   if [ "$needs_rebuild_native" = "1" ]; then
     if [ ! -f "$NATIVE_PTY_BIN" ]; then
       info "building extension + native node-pty (binary missing)"
