@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "worker-event-v1",
+  "$ref": "#/definitions/worker-event-v1",
+  "definitions": {
+    "worker-event-v1": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "BLOCKED",
+            "REQUEST",
+            "HARVEST",
+            "ERROR",
+            "DECISION",
+            "PROGRESS",
+            "LOG"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "warn",
+            "error",
+            "fatal"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "kind",
+        "severity",
+        "message"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

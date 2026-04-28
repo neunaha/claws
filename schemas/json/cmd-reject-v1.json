@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "cmd-reject-v1",
+  "$ref": "#/definitions/cmd-reject-v1",
+  "definitions": {
+    "cmd-reject-v1": {
+      "type": "object",
+      "properties": {
+        "correlation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "correlation_id",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

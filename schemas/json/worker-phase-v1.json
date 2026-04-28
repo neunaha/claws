@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "worker-phase-v1",
+  "$ref": "#/definitions/worker-phase-v1",
+  "definitions": {
+    "worker-phase-v1": {
+      "type": "object",
+      "properties": {
+        "phase": {
+          "type": "string",
+          "enum": [
+            "PLAN",
+            "SPAWN",
+            "DEPLOY",
+            "OBSERVE",
+            "RECOVER",
+            "HARVEST",
+            "CLEANUP",
+            "REFLECT",
+            "FAILED"
+          ]
+        },
+        "prev": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "PLAN",
+                "SPAWN",
+                "DEPLOY",
+                "OBSERVE",
+                "RECOVER",
+                "HARVEST",
+                "CLEANUP",
+                "REFLECT",
+                "FAILED"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transition_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phases_completed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "PLAN",
+              "SPAWN",
+              "DEPLOY",
+              "OBSERVE",
+              "RECOVER",
+              "HARVEST",
+              "CLEANUP",
+              "REFLECT",
+              "FAILED"
+            ]
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "phase",
+        "prev",
+        "transition_reason",
+        "phases_completed"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

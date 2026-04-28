@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "envelope-v1",
+  "$ref": "#/definitions/envelope-v1",
+  "definitions": {
+    "envelope-v1": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "correlation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from_peer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "from_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "terminal_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ts_published": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ts_server": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "data": {}
+      },
+      "required": [
+        "v",
+        "id",
+        "from_peer",
+        "from_name",
+        "ts_published",
+        "schema"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

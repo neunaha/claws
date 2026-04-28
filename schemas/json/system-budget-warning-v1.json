@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "system-budget-warning-v1",
+  "$ref": "#/definitions/system-budget-warning-v1",
+  "definitions": {
+    "system-budget-warning-v1": {
+      "type": "object",
+      "properties": {
+        "current_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "threshold_usd": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "current_usd",
+        "threshold_usd"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

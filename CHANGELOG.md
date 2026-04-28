@@ -25,6 +25,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 14 unit checks in `test/topic-registry.test.js`
 - `zod@^3` and `zod-to-json-schema@^3` added as devDependencies
 
+**Codegen pipeline (`npm run schemas`):**
+- `scripts/codegen/index.mjs`: bundles `event-schemas.ts` via esbuild → CJS,
+  then calls each generator in sequence
+- `scripts/codegen/gen-json-schema.mjs`: iterates exported Zod schemas, calls
+  `zodToJsonSchema()`, writes 20 files to `schemas/json/`
+- `scripts/codegen/gen-types.mjs`: writes `schemas/types/event-protocol.d.ts`
+  with hand-templated type aliases for all 19 event schemas
+- `scripts/codegen/gen-docs.mjs`: regenerates schema reference table in
+  `docs/event-protocol.md` between `<!-- BEGIN/END GENERATED SCHEMAS -->` markers
+- `extension/package.json`: adds `"schemas"` script; `build` unchanged
+  (codegen is an explicit separate step — run before build for full pipeline)
+- `.gitignore`: adds `extension/dist/event-schemas.bundle.cjs` (temp artifact)
+- `docs/event-protocol.md`: adds `BEGIN/END GENERATED SCHEMAS` markers with
+  initial generated content
+- `schemas/` directory committed with all 20 JSON Schema files and `.d.ts`
+
 **Server-side publish validation with soft-reject mode:**
 - `server.ts` publish handler now validates envelope (`EnvelopeV1`) and data
   payload (`schemaForTopic`) before fan-out

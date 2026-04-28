@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "cmd-inject-text-v1",
+  "$ref": "#/definitions/cmd-inject-text-v1",
+  "definitions": {
+    "cmd-inject-text-v1": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "paste": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

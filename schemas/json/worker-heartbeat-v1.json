@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "worker-heartbeat-v1",
+  "$ref": "#/definitions/worker-heartbeat-v1",
+  "definitions": {
+    "worker-heartbeat-v1": {
+      "type": "object",
+      "properties": {
+        "current_phase": {
+          "type": "string",
+          "enum": [
+            "PLAN",
+            "SPAWN",
+            "DEPLOY",
+            "OBSERVE",
+            "RECOVER",
+            "HARVEST",
+            "CLEANUP",
+            "REFLECT",
+            "FAILED"
+          ]
+        },
+        "time_in_phase_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens_used": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "last_event_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active_sub_workers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "current_phase",
+        "time_in_phase_ms",
+        "tokens_used",
+        "cost_usd",
+        "last_event_id",
+        "active_sub_workers"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
