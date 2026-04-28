@@ -16,29 +16,17 @@ If `claws_create` MCP tool is available, use it:
 claws_create(name="<descriptive-name>", wrapped=true)
 ```
 
-If MCP tools are NOT loaded yet, use the raw socket via node:
-```bash
-node -e "
-const net=require('net');
-const s=net.createConnection('.claws/claws.sock');
-s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'create',name:'<NAME>',wrapped:true})+'\n'));
-let b='';s.on('data',d=>{b+=d;const nl=b.indexOf('\n');if(nl!==-1){console.log(JSON.parse(b.slice(0,nl)));s.destroy()}});
-"
-```
-
-If the socket doesn't exist, tell the user: "Reload VS Code first: Cmd+Shift+P → Developer: Reload Window"
+If `claws_create` MCP tool is not available, MCP failed to load — do NOT use the raw socket.
+Tell the user: "Reload VS Code (Cmd+Shift+P → Developer: Reload Window) and restart
+Claude Code in this project. The Claws MCP server is not connected." Stop here.
 
 ### Step 2 — Send the command
 
-Use `claws_send` or raw socket:
-```bash
-node -e "
-const net=require('net');
-const s=net.createConnection('.claws/claws.sock');
-s.on('connect',()=>s.write(JSON.stringify({id:1,cmd:'send',id:'TERM_ID',text:'THE_COMMAND'})+'\n'));
-let b='';s.on('data',d=>{b+=d;if(b.indexOf('\n')!==-1)s.destroy()});
-"
+Use `claws_send`:
 ```
+claws_send(id=TERM_ID, text="THE_COMMAND")
+```
+If `claws_send` is not available, MCP failed to load — reload VS Code and restart. Do NOT bypass via raw socket.
 
 ### Step 3 — Wait and read the result
 
@@ -75,7 +63,7 @@ When the task needs Claude Code running inside the terminal, follow this exact b
 8. Poll `claws_read_log` every 10s until MISSION_COMPLETE appears
 9. `claws_close(id=N)` — ALWAYS close when done
 
-If MCP tools are not loaded, use the raw socket via node (Bash tool) ONLY to interact with the socket — not to do the task itself in Bash.
+If MCP tools are not loaded, do NOT use the raw socket. Reload VS Code and restart Claude Code.
 
 ## NEVER do this
 
