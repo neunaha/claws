@@ -603,7 +603,7 @@ async function main() {
       respond(id, {
         protocolVersion: '2024-11-05',
         // Version must match extension/package.json — bump both together on release.
-        serverInfo: { name: 'claws', version: '0.7.0' },
+        serverInfo: { name: 'claws', version: '0.7.2' },
         capabilities: { tools: {} },
       });
     } else if (method === 'notifications/initialized') {

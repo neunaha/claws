@@ -5,6 +5,105 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-04-28 — Audit-driven hardening
+
+User-reported regression on a real ESM project (`/Users/miles/dev/tokenomic/`)
+plus the consolidated findings of the four-worker codebase audit
+(`.local/audits/audit-{1,2,3,4}-*.md`). Net effect of this release:
+
+- Hooks no longer crash in modern Node/TypeScript projects whose root
+  `package.json` declares `"type": "module"`.
+- Stale shell-rc source lines from prior installs are reliably cleaned even
+  on macOS Monterey (BSD sed pre-Ventura) and on every Linux.
+- Files removed from `scripts/hooks/` between releases no longer survive in
+  users' `.claws-bin/hooks/`.
+- Linux x86_64 installs no longer print a false-positive arch warning every
+  time. Zsh-only syntax in `~/.zshrc` no longer triggers a misleading
+  "syntax error" warning.
+- The `/claws-do` and `/claws-worker` slash commands now route one-shot shell
+  commands through `claws_exec` and reserve wrapped terminals for hosting
+  Claude Code workers. Closes the user-reported bug where wrapped terminals
+  ran shell commands instead of booting a Claude Code instance.
+
+### Fixed (HIGH)
+
+- **ESM-project hook crash** (`scripts/hooks/package.json` new + install.sh).
+  In projects whose root `package.json` declares `"type":"module"`, Node
+  walked up from the hook script and inherited the ESM type, so the
+  CommonJS `require('fs')` at the top of every Claws hook crashed at line 14.
+  The user (Miles) saw `Failed with non-blocking status code: file:///…/.claws-bin/hooks/pre-tool-use-claws.js:14` once per Bash tool call. Fix:
+  ship a `package.json` shim (`{"type":"commonjs"}`) alongside the hook
+  scripts so Node loads them as CJS regardless of the surrounding project's
+  ESM type. Audit 4 surfaced this as a follow-up gap (no audit covered ESM
+  projects directly — added to the matrix going forward).
+
+- **Stale `.claws-bin/hooks/` overlay** (`scripts/install.sh`). The hooks
+  copy step used to overlay new files on top of the existing directory
+  without first wiping it. Files removed in a newer release (e.g.
+  `post-tool-use-claws.js`, deleted in v0.6.5) survived indefinitely in
+  every existing project's `.claws-bin/hooks/`, and `~/.claude/settings.json`
+  still referenced them. Fix: `rm -rf "$PROJECT_ROOT/.claws-bin/hooks"`
+  before the copy. Audit 4 finding I, audit 2 findings A/B.
+
+- **Multi-project hook displacement** (`scripts/install.sh`,
+  `scripts/inject-settings-hooks.js`). Hook registration in
+  `~/.claude/settings.json` pointed at `$PROJECT_ROOT/.claws-bin/hooks/`,
+  so each new project install silently displaced every prior project's hook
+  registration — last install won globally. Deleting a project also orphaned
+  its hook commands in settings.json, leaving broken entries that fired on
+  every Bash call. Fix: pass `$INSTALL_DIR/scripts` to the hook injector so
+  `hookCmd` resolves to `$INSTALL_DIR/scripts/hooks/<script>.js` — the
+  committed source-of-truth. One registration now serves all projects;
+  `/claws-update` from any project refreshes it; project deletion never
+  orphans it. Audit 3 finding A.
+
+- **BSD sed self-heal regression** (`scripts/install.sh:inject_hook`). The
+  `# CLAWS terminal hook` cleanup used `sed '/pat/,+1d'` — the `,+N` range
+  is a GNU sed extension. macOS ≤ Monterey ships a BSD sed that silently
+  treats `+1` as the literal line number 1, so only the marker line was
+  deleted and the `source ".../shell-hook.sh"` line on the next line
+  survived. Subsequent installs no longer matched the marker (already
+  gone) and the orphan source line stayed forever. Fix: replaced sed with
+  a portable awk pass that also nukes any standalone orphaned
+  `source .../shell-hook.sh` line — heals existing damage on the next
+  install. Audit 4 finding G — the single highest-leverage item in that
+  audit.
+
+### Fixed (MEDIUM)
+
+- **Linux x86_64 false-positive arch warning** (`scripts/install.sh:431`).
+  `uname -m` returns `x86_64` (underscore) but `file(1)` reports the binary
+  as `x86-64` (hyphen). Every legitimate Linux x86_64 install used to print
+  `pty.node architecture may not match current machine (x86_64)`. Fix:
+  match both spellings via `uname -m | sed 's/_/-/g'`. Audit 1 finding H-1.
+
+- **Misleading "zshrc syntax error" warning** (`scripts/install.sh:1068`).
+  `bash -n ~/.zshrc` flagged any zsh-specific construct (`setopt`,
+  `autoload -Uz`, `zstyle`, …) as a syntax error after every install. Fix:
+  prefer `zsh -n` when zsh is installed (it almost always is when
+  `~/.zshrc` exists). Audit 1 finding H-2.
+
+### Changed (slash command docs — no code change)
+
+- **`/claws-do` and `/claws-worker`** now require classifying the request
+  before creating a terminal:
+  - One-shot shell command (`npm test`, `pytest`, `cargo build`) → use
+    `claws_exec`. No terminal. No cleanup.
+  - Mission-shaped task (refactor, fix bug, multi-step) → 7-step Claude
+    Code boot sequence + `MISSION_COMPLETE` marker.
+  Closes the user-reported regression where wrapped terminals were hosting
+  bare shell commands instead of Claude Code instances. The new
+  `/claws-do` doc explicitly forbids the old "send shell command into
+  wrapped terminal" pattern.
+
+### Audit findings deferred to v0.7.3+
+
+- Stale VS Code extension dirs after symlink fallback (audit 4 K gap 1) —
+  rare, low-impact.
+- Lifecycle-state `v` field validation (audit 4 J) — future hardening.
+- Offline / corporate-firewall bypass path (audit 4 A) — needs `--no-network`
+  flag and `CLAWS_DIR` semantics review; out of scope for a hotfix.
+
 ## [0.7.1] - 2026-04-28 — Fresh-install fix
 
 ### Fixed (CRITICAL — fresh installs were silently broken)

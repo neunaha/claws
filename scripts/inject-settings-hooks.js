@@ -11,9 +11,10 @@
 // Idempotent: running twice produces the same result.
 // --remove: strips all _source:"claws" hooks without touching others.
 //
-// claws-bin-dir defaults to <install-dir>/.claws-bin so hooks always point
-// at the global source (~/.claws-src/.claws-bin/hooks/) — not a per-project
-// copy. This means hooks work correctly across multiple Claws projects.
+// claws-bin-dir defaults to <install-dir>/scripts so hooks resolve to
+// <install-dir>/scripts/hooks/ — the committed source-of-truth. one registration
+// serves every project, /claws-update from any project applies to all, project
+// deletion never orphans the registration.
 
 'use strict';
 const fs   = require('fs');
@@ -21,7 +22,7 @@ const path = require('path');
 const os   = require('os');
 
 // Default: resolve from this script's location (scripts/ → ../.claws-bin)
-const DEFAULT_CLAWS_BIN = path.join(__dirname, '..', '.claws-bin');
+const DEFAULT_CLAWS_BIN = __dirname;
 const CLAWS_BIN = (process.argv[2] && !process.argv[2].startsWith('--'))
   ? process.argv[2]
   : DEFAULT_CLAWS_BIN;
