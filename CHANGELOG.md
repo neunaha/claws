@@ -34,6 +34,9 @@ Pre-fix symptoms: `claws_list` always showed `[unwrapped]` and `pid=-1` for wrap
 - `extension/src/event-log.ts` — `tryRecoverFromManifest` handles missing segment files gracefully — if the file doesn't exist (lazy segment never written), it marks `fdDeferred = true` rather than falling back to a full scan
 - `extension/src/event-log.ts` — `rotate` clears `fdDeferred` before `openFreshSegment` so rotation always starts with a clean deferred state
 
+### L1.2 rotation regression fix (landed)
+- `extension/src/event-log.ts` — `rotate()` now opens the new segment fd eagerly after `openFreshSegment()`; the lazy-open guarantee (no empty `.jsonl` at activation) applied only to the first segment; rotation fires inside `doAppend` so the file is already being written — deferring left `fd=null` which the post-rotate `fd === null` guard treated as degraded mode, returning `sequence=-1` for all subsequent appends; fix: open fd immediately in `rotate()` and clear `fdDeferred`
+
 ### L1.4 — Persist task.* + system.malformed.received events (landed)
 - `extension/src/server.ts` — new `emitServerEvent(topic, payload)` private async helper: appends to the event log then fans out, mirroring the `publish` handler's persist-then-fanout contract for server-originated events
 - `extension/src/server.ts` — all 6 server-side `fanOut` call-sites for `task.assigned.*`, `task.status`, `task.completed`, `task.cancel_requested.*`, and `system.malformed.received` replaced with `await this.emitServerEvent(...)` so these events are now durably persisted to `.claws/events/default/*.jsonl`

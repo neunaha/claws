@@ -254,6 +254,15 @@ export class EventLogWriter {
     this.segmentId++;
     this.currentOffset = 0;
     this.openFreshSegment(); // sets fdDeferred = true for the new segment
+    // Eager open: rotation only fires inside doAppend (never at startup), so the
+    // lazy guarantee (no empty .jsonl at activation) does not apply here.
+    try {
+      this.fd = fs.openSync(this.currentSegmentPath, 'a');
+      this.currentOffset = fs.fstatSync(this.fd).size;
+      this.fdDeferred = false;
+    } catch {
+      this.degraded = true;
+    }
     this.writeManifest();
   }
 
