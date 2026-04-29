@@ -27,6 +27,18 @@ export interface ServerConfig {
    * server. Set to 0 to disable. Default: 60 000 ms (1 minute).
    */
   heartbeatIntervalMs: number;
+  /**
+   * Maximum publish operations allowed per peer per second (L14 rate limiter).
+   * Peers that exceed this limit receive {ok:false,error:'rate-limit-exceeded'}.
+   * Default: 10 000.
+   */
+  maxPublishRateHz: number;
+  /**
+   * Maximum number of publish handlers that may be in-flight simultaneously
+   * before new publish requests are rejected with admission-control:backlog.
+   * Default: 500.
+   */
+  maxQueueDepth: number;
   /** Event log durability settings. */
   eventLog: EventLogConfig;
 }
@@ -39,12 +51,16 @@ export const DEFAULT_STRICT_EVENT_VALIDATION = false;
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000;
 export const DEFAULT_EVENT_LOG_RETENTION_DAYS = 7;
 export const DEFAULT_EVENT_LOG_COMPACT = true;
+export const DEFAULT_MAX_PUBLISH_RATE_HZ = 10_000;
+export const DEFAULT_MAX_QUEUE_DEPTH = 500;
 
 export const defaultServerConfig: ServerConfig = {
   execTimeoutMs: DEFAULT_EXEC_TIMEOUT_MS,
   pollLimit: DEFAULT_POLL_LIMIT,
   strictEventValidation: DEFAULT_STRICT_EVENT_VALIDATION,
   heartbeatIntervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
+  maxPublishRateHz: DEFAULT_MAX_PUBLISH_RATE_HZ,
+  maxQueueDepth: DEFAULT_MAX_QUEUE_DEPTH,
   eventLog: {
     retentionDays: DEFAULT_EVENT_LOG_RETENTION_DAYS,
     compact: DEFAULT_EVENT_LOG_COMPACT,

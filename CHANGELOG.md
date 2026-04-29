@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — 0.7.6
 
+### Added — W7/L13+L14 Observability and Rate Control (Wave 7)
+
+- `extension/src/event-log.ts` — `lastSequence` getter: returns the last successfully appended sequence number (min 0); used by `system.metrics` heartbeat payload.
+- `extension/src/server-config.ts` — `maxPublishRateHz` (default 10 000) and `maxQueueDepth` (default 500) added to `ServerConfig`; `DEFAULT_MAX_PUBLISH_RATE_HZ` and `DEFAULT_MAX_QUEUE_DEPTH` exported.
+- `extension/src/extension.ts` — `getConfig()` wires `maxPublishRateHz` and `maxQueueDepth` from `claws.*` VS Code settings.
+- `extension/src/server.ts` — L13: heartbeat timer now emits `system.metrics` (publishRate_per_sec, queueDepth, peerCount, eventLogLastSeq, uptimeMs, ts) and `system.peer.metrics.<peerId>` for peers with drops or rate-limit hits; per-heartbeat publish counter resets each tick.
+- `extension/src/server.ts` — L14: per-peer sliding 1-second rate limiter; publish requests exceeding `maxPublishRateHz` return `{ok:false,error:'rate-limit-exceeded'}`; `serverInFlight` admission-control counter (incremented synchronously before any `await`) rejects beyond `maxQueueDepth` with `{ok:false,error:'admission-control:backlog'}`; rate check fires before admission so high-rate publishers get the semantically correct error code.
+- `extension/src/event-schemas.ts` — `SystemMetricsV1` and `SystemPeerMetricsV1` Zod schemas added; registered in `SCHEMA_BY_NAME`.
+- `extension/src/topic-registry.ts` — `system.metrics` and `system.peer.metrics.*` registered with their schemas.
+- `schemas/json/system-metrics-v1.json`, `schemas/json/system-peer-metrics-v1.json` — JSON Schema representations of the two new event types.
+- `extension/test/claws-v2-rate.test.js` — 19-check integration test suite: system.metrics shape and cadence, burst rate-limit rejection, admission-control:backlog, system.peer.metrics per-peer emission with rateLimitHits, 1s backoff recovery, peerCount tracking.
+
 ### Added — W5/L8 Event Log Durability Hardening (Wave 5)
 
 - `extension/src/event-log.ts` — `EventLogWriter.runRetention(retentionDays)`: deletes `.jsonl` segments (and companion `.idx` files) whose mtime is older than `retentionDays` days; closes the open fd before unlinking the active segment so no EBUSY on Linux; removes deleted entries from the in-memory manifest and flushes to disk.

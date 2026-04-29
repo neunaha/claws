@@ -13,6 +13,8 @@ import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   DEFAULT_EVENT_LOG_RETENTION_DAYS,
   DEFAULT_EVENT_LOG_COMPACT,
+  DEFAULT_MAX_PUBLISH_RATE_HZ,
+  DEFAULT_MAX_QUEUE_DEPTH,
   ServerConfig,
 } from './server-config';
 import { HistoryEvent } from './protocol';
@@ -286,6 +288,8 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
     pollLimit: cfg('pollLimit', DEFAULT_POLL_LIMIT),
     strictEventValidation: cfg('strictEventValidation', DEFAULT_STRICT_EVENT_VALIDATION),
     heartbeatIntervalMs: cfg('heartbeatIntervalMs', DEFAULT_HEARTBEAT_INTERVAL_MS),
+    maxPublishRateHz: cfg('maxPublishRateHz', DEFAULT_MAX_PUBLISH_RATE_HZ),
+    maxQueueDepth: cfg('maxQueueDepth', DEFAULT_MAX_QUEUE_DEPTH),
     eventLog: {
       retentionDays: cfg('eventLog.retentionDays', DEFAULT_EVENT_LOG_RETENTION_DAYS),
       compact: cfg('eventLog.compact', DEFAULT_EVENT_LOG_COMPACT),

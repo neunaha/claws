@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "system-peer-metrics-v1",
+  "$ref": "#/definitions/system-peer-metrics-v1",
+  "definitions": {
+    "system-peer-metrics-v1": {
+      "type": "object",
+      "properties": {
+        "peerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "peerName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "droppedFrames": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rateLimitHits": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "publishCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "peerId",
+        "peerName",
+        "droppedFrames",
+        "rateLimitHits",
+        "publishCount",
+        "ts"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

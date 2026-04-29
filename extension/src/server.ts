@@ -125,6 +125,18 @@ export class ClawsServer {
   private readonly pausedPeers = new Set<string>();
   /** Dropped push-frame counts per peerId during backpressure windows. */
   private readonly droppedFrames = new Map<string, number>();
+  /** Per-peer rate-limit bucket: {count, windowStart} reset every 1000ms. */
+  private readonly publishRateTracker = new Map<string, { count: number; windowStart: number }>();
+  /** Accumulated rate-limit rejections per peer since last heartbeat. */
+  private readonly peerRateLimitHits = new Map<string, number>();
+  /** Total publish count since last heartbeat (resets each heartbeat cycle). */
+  private publishCountSinceHeartbeat = 0;
+  /**
+   * Count of publish handlers currently in-flight (passed rate + admission checks
+   * but not yet responded). Incremented synchronously before any await so concurrent
+   * handlers see an accurate backlog count at admission-control check time.
+   */
+  private serverInFlight = 0;
   /** Server-owned lifecycle state. Gate checks and lifecycle.* commands use this. */
   private readonly lifecycleStore: LifecycleStore;
   /** Wave army registry — tracks active waves, sub-worker heartbeats, and violation detection. */
@@ -225,6 +237,39 @@ export class ClawsServer {
               peers: this.peers.size,
               terminals: this.opts.terminalManager.terminalCount,
             });
+
+            // L13: emit system.metrics with throughput + queue depth snapshot.
+            const intervalSec = Math.max(1, intervalMs / 1000);
+            const publishRate = this.publishCountSinceHeartbeat / intervalSec;
+            this.publishCountSinceHeartbeat = 0;
+            void this.emitSystemEvent('system.metrics', {
+              publishRate_per_sec: publishRate,
+              queueDepth:          this.serverInFlight,
+              peerCount:           this.peers.size,
+              eventLogLastSeq:     this.eventLog.lastSequence,
+              uptimeMs:            this.uptimeMs(),
+              ts:                  new Date().toISOString(),
+            });
+
+            // L13: emit per-peer metrics for peers with drops or rate-limit hits.
+            for (const peer of this.peers.values()) {
+              const dropped = this.droppedFrames.get(peer.peerId) ?? 0;
+              const rateLimitHits = this.peerRateLimitHits.get(peer.peerId) ?? 0;
+              const bucket = this.publishRateTracker.get(peer.peerId);
+              const publishCount = bucket?.count ?? 0;
+              if (dropped > 0 || rateLimitHits > 0) {
+                void this.emitSystemEvent(`system.peer.metrics.${peer.peerId}`, {
+                  peerId:        peer.peerId,
+                  peerName:      peer.peerName,
+                  droppedFrames: dropped,
+                  rateLimitHits,
+                  publishCount,
+                  ts:            new Date().toISOString(),
+                });
+                this.peerRateLimitHits.delete(peer.peerId);
+              }
+            }
+
             // Retention: delete segments older than the configured threshold.
             const retentionDays = this.getConfig().eventLog.retentionDays;
             if (retentionDays > 0) {
@@ -1031,53 +1076,78 @@ export class ClawsServer {
       const r = req as import('./protocol').PublishRequest;
       if (!r.topic || typeof r.topic !== 'string') return { ok: false, error: 'topic required' };
       const peerId = ctx.getPeerId()!;
-      const strict = this.getConfig().strictEventValidation;
+      const cfg = this.getConfig();
 
-      const dataSchema = schemaForTopic(r.topic);
-      if (dataSchema !== null) {
-        const envelopeResult = EnvelopeV1.safeParse(r.payload);
-        if (!envelopeResult.success) {
-          this.opts.logger(`[claws/schema] malformed envelope from ${peerId} on ${r.topic}`);
-          await this.emitServerEvent('system.malformed.received', {
-            from: peerId, topic: r.topic, error: envelopeResult.error.issues,
-          });
-          if (strict) {
-            return { ok: false, error: 'envelope:invalid', details: envelopeResult.error.issues };
-          }
-        } else {
-          const dataResult = dataSchema.safeParse(envelopeResult.data.data);
-          if (!dataResult.success) {
-            this.opts.logger(`[claws/schema] malformed data from ${peerId} on ${r.topic}`);
+      // L14: Per-peer rate limiter — checked BEFORE admission control so that
+      // high-frequency publishers get the semantically correct error code.
+      const nowMs = Date.now();
+      const bucket = this.publishRateTracker.get(peerId) ?? { count: 0, windowStart: nowMs };
+      if (nowMs - bucket.windowStart >= 1000) { bucket.count = 0; bucket.windowStart = nowMs; }
+      bucket.count++;
+      this.publishRateTracker.set(peerId, bucket);
+      if (bucket.count > cfg.maxPublishRateHz) {
+        this.peerRateLimitHits.set(peerId, (this.peerRateLimitHits.get(peerId) ?? 0) + 1);
+        return { ok: false, error: 'rate-limit-exceeded' };
+      }
+
+      // L14: Queue-depth admission control — serverInFlight is incremented
+      // synchronously before any await so concurrent handlers see an accurate count.
+      if (this.serverInFlight > cfg.maxQueueDepth) {
+        return { ok: false, error: 'admission-control:backlog' };
+      }
+      this.serverInFlight++;
+      this.publishCountSinceHeartbeat++;
+
+      try {
+        const strict = cfg.strictEventValidation;
+        const dataSchema = schemaForTopic(r.topic);
+        if (dataSchema !== null) {
+          const envelopeResult = EnvelopeV1.safeParse(r.payload);
+          if (!envelopeResult.success) {
+            this.opts.logger(`[claws/schema] malformed envelope from ${peerId} on ${r.topic}`);
             await this.emitServerEvent('system.malformed.received', {
-              from: peerId, topic: r.topic, error: dataResult.error.issues,
+              from: peerId, topic: r.topic, error: envelopeResult.error.issues,
             });
             if (strict) {
-              return { ok: false, error: 'payload:invalid', details: dataResult.error.issues };
+              return { ok: false, error: 'envelope:invalid', details: envelopeResult.error.issues };
+            }
+          } else {
+            const dataResult = dataSchema.safeParse(envelopeResult.data.data);
+            if (!dataResult.success) {
+              this.opts.logger(`[claws/schema] malformed data from ${peerId} on ${r.topic}`);
+              await this.emitServerEvent('system.malformed.received', {
+                from: peerId, topic: r.topic, error: dataResult.error.issues,
+              });
+              if (strict) {
+                return { ok: false, error: 'payload:invalid', details: dataResult.error.issues };
+              }
             }
           }
         }
-      }
 
-      // Durably append to the event log before fan-out.
-      // If append() throws (non-degraded I/O error), we refuse to publish so
-      // the caller is not told ok:true for an event that was not persisted.
-      // In degraded mode (log disabled at startup) append() returns sequence -1
-      // without throwing and fan-out proceeds normally.
-      let sequence: number | undefined;
-      try {
-        const logResult = await this.eventLog.append({
-          topic: r.topic,
-          from: peerId,
-          ts_server: new Date().toISOString(),
-          payload: r.payload,
-        });
-        sequence = logResult.sequence >= 0 ? logResult.sequence : undefined;
-      } catch {
-        return { ok: false, error: 'event-log:write-failed' };
-      }
+        // Durably append to the event log before fan-out.
+        // If append() throws (non-degraded I/O error), we refuse to publish so
+        // the caller is not told ok:true for an event that was not persisted.
+        // In degraded mode (log disabled at startup) append() returns sequence -1
+        // without throwing and fan-out proceeds normally.
+        let sequence: number | undefined;
+        try {
+          const logResult = await this.eventLog.append({
+            topic: r.topic,
+            from: peerId,
+            ts_server: new Date().toISOString(),
+            payload: r.payload,
+          });
+          sequence = logResult.sequence >= 0 ? logResult.sequence : undefined;
+        } catch {
+          return { ok: false, error: 'event-log:write-failed' };
+        }
 
-      const delivered = this.fanOut(r.topic, peerId, r.payload, r.echo ?? false, sequence);
-      return { ok: true, deliveredTo: delivered };
+        const delivered = this.fanOut(r.topic, peerId, r.payload, r.echo ?? false, sequence);
+        return { ok: true, deliveredTo: delivered };
+      } finally {
+        this.serverInFlight--;
+      }
     }
 
     if (cmd === 'broadcast') {

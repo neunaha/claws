@@ -298,6 +298,9 @@ export class EventLogWriter {
 
   get isDegraded(): boolean { return this.degraded; }
 
+  /** Last successfully appended sequence number. Returns 0 before any append. */
+  get lastSequence(): number { return Math.max(0, this.sequenceCounter - 1); }
+
   append(record: LogRecord): Promise<AppendResult> {
     if (this.degraded || (this.fd === null && !this.fdDeferred)) {
       return Promise.resolve({ cursor: '', sequence: -1 });
