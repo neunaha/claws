@@ -148,6 +148,18 @@ const _pconn = {
   connected: false,
 };
 
+// ─── Push-frame ring buffer ───────────────────────────────────────────────────
+// Captures every push frame delivered on the persistent socket so the
+// orchestrator can drain them via claws_drain_events without needing an active
+// subscription loop.
+const _eventBuffer = {
+  ring: [],          // { absoluteIndex, topic, from, payload, sentAt, sequence }
+  maxSize: 1000,     // evict oldest when full
+  totalReceived: 0,  // monotonically increasing; used as cursor by callers
+  waiters: [],       // { resolve, timer } registered by drain with wait_ms > 0
+  subscribed: false, // true once we've sent hello + subscribe("**") on _pconn
+};
+
 let _pconnConnecting = null; // Promise | null — guards concurrent connect attempts
 
 function _pconnHandleData(data) {
@@ -166,8 +178,21 @@ function _pconnHandleData(data) {
         clearTimeout(timer);
         _pconn.pending.delete(rid);
         resolve(msg);
+      } else if (rid == null && (msg.push === 'message' || msg.topic != null)) {
+        // Push frame (no rid) — buffer for claws_drain_events.
+        const entry = {
+          absoluteIndex: ++_eventBuffer.totalReceived,
+          topic: msg.topic || '',
+          from: msg.from || '',
+          payload: msg.payload != null ? msg.payload : null,
+          sentAt: msg.sentAt || null,
+          sequence: msg.sequence != null ? msg.sequence : null,
+        };
+        _eventBuffer.ring.push(entry);
+        if (_eventBuffer.ring.length > _eventBuffer.maxSize) _eventBuffer.ring.shift();
+        const woke = _eventBuffer.waiters.splice(0);
+        for (const w of woke) { clearTimeout(w.timer); w.resolve(); }
       }
-      // Push frames (no rid) are silently dropped for now.
     } catch { /* ignore malformed frames */ }
   }
 }
@@ -444,6 +469,26 @@ async function runBlockingWorker(sock, args) {
     cleaned_up: cleanedUp,
     harvest,
   };
+}
+
+// ─── Persistent-socket identity helper ────────────────────────────────────────
+// Ensures the persistent socket is connected AND this process has a peerId.
+// If not yet registered, sends hello with role=orchestrator, peerName=mcp-orchestrator.
+// Called once per process lifetime in practice (peerId cached on _pconn).
+async function _pconnEnsureRegistered(sockPath) {
+  await _pconnEnsure(sockPath);
+  if (!_pconn.peerId) {
+    const hr = await _pconnWrite({
+      cmd: 'hello', protocol: 'claws/2',
+      role: 'orchestrator', peerName: 'mcp-orchestrator',
+    }, 5000);
+    if (hr.ok) {
+      _pconn.peerId = hr.peerId;
+      _pconn.role = 'orchestrator';
+      _pconn.peerName = 'mcp-orchestrator';
+      log('auto-registered as peer ' + hr.peerId + ' role=orchestrator');
+    }
+  }
 }
 
 // ─── Tool handlers ─────────────────────────────────────────────────────────
@@ -735,6 +780,57 @@ async function handleTool(name, args) {
 
     const body = result.harvest || '';
     return { content: [{ type: 'text', text: header.join('\n') + '\n\n── harvest (last lines) ──\n' + body }] };
+  }
+
+  /**
+   * claws_drain_events — drain buffered push frames from the persistent socket.
+   * On first call, auto-subscribes to "**" (all topics) via the persistent socket
+   * so subsequent frames are captured automatically. Returns events received since
+   * since_index, with a dropped count for events that aged out of the ring buffer.
+   * Set wait_ms > 0 to block until at least one new event arrives or the timer fires.
+   */
+  if (name === 'claws_drain_events') {
+    const sinceIndex = typeof args.since_index === 'number' ? args.since_index : 0;
+    const waitMs = typeof args.wait_ms === 'number' ? args.wait_ms : 0;
+    const maxEvents = typeof args.max === 'number' ? args.max : 100;
+
+    // Auto-subscribe on first call.
+    if (!_eventBuffer.subscribed) {
+      try {
+        await _pconnEnsureRegistered(sock);
+        const sr = await _pconnWrite({ cmd: 'subscribe', topic: '**' }, 5000);
+        if (sr.ok) _eventBuffer.subscribed = true;
+      } catch (err) {
+        log('claws_drain_events: auto-subscribe failed: ' + (err && err.message || err));
+      }
+    }
+
+    // If wait_ms > 0 and no new events yet, register a waiter.
+    const hasNew = () => _eventBuffer.ring.some(e => e.absoluteIndex > sinceIndex);
+    if (waitMs > 0 && !hasNew()) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, waitMs);
+        _eventBuffer.waiters.push({ resolve, timer });
+      });
+    }
+
+    const ring = _eventBuffer.ring;
+    const totalReceived = _eventBuffer.totalReceived;
+    const filtered = ring.filter(e => e.absoluteIndex > sinceIndex).slice(0, maxEvents);
+
+    // dropped = events in [sinceIndex+1, ring[0].absoluteIndex - 1] that were evicted.
+    let dropped = 0;
+    if (ring.length > 0) {
+      const firstInRing = ring[0].absoluteIndex;
+      if (firstInRing > sinceIndex + 1) dropped = firstInRing - sinceIndex - 1;
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ events: filtered, total_received: totalReceived, dropped }, null, 2),
+      }],
+    };
   }
 
   if (name === 'claws_lifecycle_plan') {

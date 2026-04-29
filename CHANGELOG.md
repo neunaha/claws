@@ -17,7 +17,13 @@ This release hardens the orchestrator↔worker communication bus surfaced by W1�
 
 Pre-fix symptoms: `claws_list` always showed `[unwrapped]` and `pid=-1` for wrapped terminals; shell-hook banner always said "unwrapped". All cosmetic-but-misleading; the underlying terminals were real ptys.
 
-### L0–L4 (in progress — see `.local/audits/bus-issues-master.md`)
+### L0 — Push-frame capture (landed)
+- `mcp_server.js` — `_pconnHandleData` buffers push frames (no rid) into a 1000-entry ring buffer instead of silently dropping them; each entry carries `absoluteIndex`, `topic`, `from`, `payload`, `sentAt`, `sequence`
+- `mcp_server.js` — new `claws_drain_events` MCP tool: drains buffered push frames with `since_index` cursor, optional `wait_ms` blocking, and `max` page size; auto-subscribes to `**` on first call so no explicit subscribe is required
+- `mcp_server.js` — `_pconnEnsureRegistered` helper: lazily hellos as `orchestrator / mcp-orchestrator` on the persistent socket (once per process lifetime) so publish/subscribe calls work without a prior `claws_hello`
+- `schemas/mcp-tools.json` — added `claws_drain_events` tool schema
+
+### L1–L4 (in progress — see `.local/audits/bus-issues-master.md`)
 Fleet of layered fixes ordered root-up: L0 capture (push frames captured, `claws_drain_events` MCP tool), L1 production (`system.worker.spawned/completed`, lazy `.jsonl`, heartbeat, task event persistence, `[CLAWS_PUB]` line scanner), L2 lifecycle (REFLECT-reset cycle), L3 reverse-channel hardening (idempotent re-delivery, ACK protocol, backpressure), L4 bus correctness (sequence persistence, peer reconnect, replay).
 
 ## [0.7.4] - 2026-04-29 — Bulletproof regression fix release
