@@ -48,6 +48,7 @@ interface Manifest {
   segments: SegmentEntry[];
   current_segment: string;
   current_offset: number;
+  sequence_counter?: number;
 }
 
 export interface EventLogWriterOptions {
@@ -81,7 +82,8 @@ export class EventLogWriter {
   protected segments: SegmentEntry[] = [];
   private appendCount = 0;
   // Per-stream sequence counter. Monotonically increasing across rotations.
-  // Resets to 0 on server restart (v1 — sequence is not persisted in manifest).
+  // Persisted in manifest.json; on recovery, restored to last_value+1 (one gap
+  // per restart, detectable, never re-issues a sequence).
   // Safe up to Number.MAX_SAFE_INTEGER ≈ 285 years at 1 000 events/s.
   private sequenceCounter = 0;
   // Serialised append queue — guarantees ordering under concurrent publishes.
@@ -155,6 +157,11 @@ export class EventLogWriter {
         this.fd = null;
         this.fdDeferred = true;
       }
+      // Restore sequence counter with +1 so the last issued sequence before crash
+      // is never re-issued. Cost: one detectable gap per restart — acceptable.
+      if (typeof m.sequence_counter === 'number' && m.sequence_counter >= 0) {
+        this.sequenceCounter = m.sequence_counter + 1;
+      }
       return true;
     } catch {
       return false;
@@ -168,6 +175,7 @@ export class EventLogWriter {
       segments: this.segments.map(s => ({ ...s })),
       current_segment: this.segmentIdStr(),
       current_offset: this.currentOffset,
+      sequence_counter: this.sequenceCounter,
     };
     const manifestPath = path.join(this.streamDir, 'manifest.json');
     const tmpPath = `${manifestPath}.tmp`;

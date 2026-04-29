@@ -140,6 +140,14 @@ export interface PingRequest extends BaseRequest {
 export interface SubscribeRequest extends BaseRequest {
   cmd: 'subscribe';
   topic: string;
+  /**
+   * Optional cursor for catch-up replay. When present, the server will replay
+   * all matching events from this cursor before switching to live delivery.
+   * Format: "<4-digit-segment-id>:<decimal-byte-offset>" (same as publish response cursor).
+   * TODO(P1 v0.7.6): full replay not yet implemented — server accepts the field and logs a
+   * warning, then falls through to live delivery only.
+   */
+  fromCursor?: string;
 }
 
 /** Remove a subscription by id. */

@@ -57,7 +57,27 @@ Pre-fix symptoms: `claws_list` always showed `[unwrapped]` and `pid=-1` for wrap
 - `extension/package.json` — added `claws.heartbeatIntervalMs` configuration property (type: number, default: 60000, minimum: 0)
 - `extension/test/heartbeat.test.js` — new regression test: boots extension with `heartbeatIntervalMs=200ms`, waits 700ms, asserts ≥2 `system.heartbeat` entries in the segment file and validates payload shape (uptimeMs, peers, terminals, from, ts_server, sequence)
 
-### L1.4–L4 (in progress — see `.local/audits/bus-issues-master.md`)
+### L4 — Bus correctness (landed)
+
+#### L4.1 — `_pconnWrite` id field collision fix
+- `mcp_server.js` — `_pconnWrite` now explicitly destructures and drops any user-supplied `id` before stamping the RPC correlation id (`const { id: _discarded, ...reqBody } = req`). No behaviour change for current callers (none set `id`) but makes the contract auditable and prevents silent misrouting for future stateful commands that use `id` as a routing field.
+
+#### L4.2 — Sequence counter persistence across restarts
+- `extension/src/event-log.ts` — `Manifest` interface gains `sequence_counter?: number`
+- `extension/src/event-log.ts` — `writeManifest()` persists `sequence_counter: this.sequenceCounter` (the next value to issue) so the counter survives server restarts
+- `extension/src/event-log.ts` — `tryRecoverFromManifest()` restores the counter with `+1` offset so the last issued sequence before crash is never re-issued; cost is one detectable gap per restart (acceptable)
+- `extension/test/sequence-persist.test.js` — new regression test: writes 5 events, simulates restart with a fresh writer, writes 5 more; asserts second batch is ≥5, monotonically increasing, and spans at most one gap at the restart boundary
+
+#### L4.3 — Peer disconnect fails orphaned tasks
+- `extension/src/server.ts` — `handleDisconnect()` now walks `this.tasks` after removing the peer and fails any task whose `assignee === peerId` and `status` is `pending`, `running`, or `blocked`; sets `status='failed'`, `note='assignee disconnected'`, `updatedAt=Date.now()`
+- `extension/src/server.ts` — each newly-failed task emits a `task.completed` event via `emitServerEvent` (best-effort, `.catch()` guards so disconnect never throws) so subscribers see the cancellation
+- `extension/test/peer-disconnect-fails-tasks.test.js` — new regression test: registers orchestrator + worker, assigns 2 tasks, destroys the worker socket, asserts both tasks are `failed` in `task.list` and `task.completed` push frames fired for both
+
+#### L4.4 — subscribe fromCursor (structural contract, full replay P1 for v0.7.6)
+- `extension/src/protocol.ts` — `SubscribeRequest` gains optional `fromCursor?: string` field with inline doc describing the cursor format and the v0.7.6 TODO
+- `extension/src/server.ts` — subscribe handler accepts `fromCursor`; logs `[claws/2] fromCursor replay not yet implemented` and continues with live delivery when the field is present; full replay (read event log from cursor, push matching events before live) deferred to v0.7.6 (P1)
+
+### L1.4–L3 (previously landed — see entries above)
 Fleet of layered fixes ordered root-up: L0 capture (push frames captured, `claws_drain_events` MCP tool), L1 production (`system.worker.spawned/completed`, lazy `.jsonl`, heartbeat, task event persistence, `[CLAWS_PUB]` line scanner), L2 lifecycle (REFLECT-reset cycle), L3 reverse-channel hardening (idempotent re-delivery, ACK protocol, backpressure), L4 bus correctness (sequence persistence, peer reconnect, replay).
 
 ## [0.7.4] - 2026-04-29 — Bulletproof regression fix release

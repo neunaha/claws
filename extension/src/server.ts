@@ -96,6 +96,12 @@ export class ClawsServer {
   private readonly tasks = new Map<string, TaskRecord>();
   /** Monotonic taskId counter (wire id is "t_" + zero-padded 3 digits). */
   private taskSeq = 0;
+  /** Monotonic sequence number stamped into [CLAWS_CMD] broadcast text for idempotency. */
+  private broadcastSeq = 0;
+  /** Set of peerIds whose socket is currently under backpressure (write returned false). */
+  private readonly pausedPeers = new Set<string>();
+  /** Dropped push-frame counts per peerId during backpressure windows. */
+  private readonly droppedFrames = new Map<string, number>();
   /** Server-owned lifecycle state. Gate checks and lifecycle.* commands use this. */
   private readonly lifecycleStore: LifecycleStore;
 
@@ -347,6 +353,20 @@ export class ClawsServer {
         if (set) { set.delete(peerId); if (set.size === 0) this.subscriptionIndex.delete(pattern); }
       }
     }
+    // Fail any tasks that were assigned to this peer and are still active.
+    // Without this they accumulate as eternal pending/running orphans because
+    // the worker can never call task.complete for the old peerId after reconnect.
+    const now = Date.now();
+    for (const task of this.tasks.values()) {
+      if (task.assignee === peerId && ['pending', 'running', 'blocked'].includes(task.status)) {
+        task.status = 'failed';
+        task.note = 'assignee disconnected';
+        task.updatedAt = now;
+        this.emitServerEvent('task.completed', {
+          taskId: task.taskId, status: 'failed', result: null,
+        }).catch(() => { /* best-effort — never block disconnect */ });
+      }
+    }
     // Close may fire after extension deactivate has torn down the output
     // channel; guard the logger so a teardown log line never crashes node.
     try { this.opts.logger(`[claws/2] peer disconnected: ${peerId}`); } catch { /* ignore */ }
@@ -374,6 +394,11 @@ export class ClawsServer {
   private pushFrame(
     socket: net.Socket, topic: string, from: string, payload: unknown, sequence?: number,
   ): void {
+    const targetPeerId = this.socketToPeer.get(socket);
+    if (targetPeerId && this.pausedPeers.has(targetPeerId)) {
+      this.droppedFrames.set(targetPeerId, (this.droppedFrames.get(targetPeerId) ?? 0) + 1);
+      return;
+    }
     const frame = JSON.stringify({
       push: 'message',
       protocol: PROTOCOL_VERSION_V2,
@@ -384,7 +409,23 @@ export class ClawsServer {
       ...(sequence !== undefined ? { sequence } : {}),
     }) + '\n';
     try {
-      socket.write(frame);
+      const drained = socket.write(frame);
+      if (!drained && targetPeerId && !this.pausedPeers.has(targetPeerId)) {
+        this.pausedPeers.add(targetPeerId);
+        this.opts.logger(`[claws/2] backpressure on push to ${targetPeerId}; pausing`);
+        socket.once('drain', () => {
+          this.pausedPeers.delete(targetPeerId);
+          const dropped = this.droppedFrames.get(targetPeerId) ?? 0;
+          if (dropped > 0) {
+            if (dropped >= 100) {
+              this.opts.logger(`[claws/2] drain for ${targetPeerId}; ${dropped} frames dropped (threshold exceeded)`);
+            } else {
+              this.opts.logger(`[claws/2] drain for ${targetPeerId}; ${dropped} frames dropped`);
+            }
+            this.droppedFrames.delete(targetPeerId);
+          }
+        });
+      }
     } catch (err) {
       this.opts.logger(`[claws/2] push write failed for ${from}: ${err}`);
     }
@@ -724,6 +765,13 @@ export class ClawsServer {
       ctx.setPeerId(peerId);
       ctx.setNegotiatedProtocol('claws/2');
       this.opts.logger(`[claws/2] peer registered: ${peerId} role=${peer.role} name=${peer.peerName}`);
+      if (peer.role === 'worker') {
+        const cmdTopic = `cmd.${peerId}.**`;
+        const subId = `s_${(++this.subSeq).toString(16).padStart(4, '0')}`;
+        peer.subscriptions.set(subId, cmdTopic);
+        if (!this.subscriptionIndex.has(cmdTopic)) this.subscriptionIndex.set(cmdTopic, new Set());
+        this.subscriptionIndex.get(cmdTopic)!.add(peerId);
+      }
       return {
         ok: true,
         peerId,
@@ -748,6 +796,12 @@ export class ClawsServer {
       peer.subscriptions.set(subId, r.topic);
       if (!this.subscriptionIndex.has(r.topic)) this.subscriptionIndex.set(r.topic, new Set());
       this.subscriptionIndex.get(r.topic)!.add(peerId);
+      // TODO(P1 v0.7.6): fromCursor replay — read event log from cursor and push
+      // matching events before switching to live delivery. Structural contract is
+      // in place; full implementation deferred to v0.7.6.
+      if (r.fromCursor) {
+        this.opts.logger(`[claws/2] fromCursor replay not yet implemented (peer=${peerId} cursor=${r.fromCursor}) — live delivery only`);
+      }
       return { ok: true, subscriptionId: subId };
     }
 
@@ -826,18 +880,23 @@ export class ClawsServer {
       const r = req as import('./protocol').BroadcastRequest;
       const from = ctx.getPeerId()!;
       const targetRole = r.targetRole ?? 'worker';
+      let injectText = r.text;
+      if (r.inject && r.text.startsWith('[CLAWS_CMD ')) {
+        this.broadcastSeq++;
+        injectText = r.text.replace('[CLAWS_CMD ', `[CLAWS_CMD seq=${this.broadcastSeq} `);
+      }
       let count = 0;
       for (const peer of this.peers.values()) {
         if (targetRole !== 'all' && peer.role !== targetRole) continue;
-        this.pushFrame(peer.socket, 'system.broadcast', from, { text: r.text });
+        this.pushFrame(peer.socket, 'system.broadcast', from, { text: injectText });
         count++;
         if (r.inject && peer.terminalId) {
           const rec = this.opts.terminalManager.recordById(String(peer.terminalId));
           if (rec) {
             if (rec.pty) {
-              rec.pty.writeInjected(r.text, true, true);
+              rec.pty.writeInjected(injectText, true, true);
             } else {
-              rec.terminal.sendText(r.text, true);
+              rec.terminal.sendText(injectText, true);
             }
           }
         }

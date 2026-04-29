@@ -276,7 +276,11 @@ function _pconnWrite(req, timeout) {
     }, ms);
     _pconn.pending.set(rid, { resolve, reject, timer });
     try {
-      _pconn.socket.write(JSON.stringify({ ...req, id: rid }) + '\n');
+      // Stateful commands route via taskId/assignee/subscriptionId/peerId — never 'id'.
+      // Explicitly drop any user-supplied 'id' before stamping the RPC correlation id,
+      // so a future command carrying 'id' as a routing field cannot be silently misrouted.
+      const { id: _discarded, ...reqBody } = req;
+      _pconn.socket.write(JSON.stringify({ ...reqBody, id: rid }) + '\n');
     } catch (err) {
       clearTimeout(timer);
       _pconn.pending.delete(rid);
@@ -339,6 +343,40 @@ function findMarkerLine(text, marker) {
   const lineStart = text.lastIndexOf('\n', idx) + 1;
   const lineEnd = text.indexOf('\n', idx);
   return text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trim();
+}
+
+// ─── [CLAWS_PUB] line scanner ─────────────────────────────────────────────────
+// SDK-less workers print [CLAWS_PUB] topic=<topic> key=val ... lines to stdout.
+// The MCP server scans new pty output for these markers each poll tick and
+// publishes on the worker's behalf — no socket, peerId, or SDK required.
+// Grammar:  [CLAWS_PUB] topic=<topic> key1=val key2="quoted val" key3=42
+// Values:   "..." → string  |  true/false → boolean  |  digits → number
+async function _scanAndPublishCLAWSPUB(newText, sockPath) {
+  const MARKER_RE = /^\[CLAWS_PUB\]\s+topic=(\S+)\s*(.*)?$/;
+  const KV_RE = /(\w+)=("([^"]*)"|(\S+))/g;
+  for (const line of newText.split('\n')) {
+    const m = MARKER_RE.exec(line);
+    if (!m) continue;
+    const topic = m[1];
+    const rest = m[2] || '';
+    const payload = {};
+    KV_RE.lastIndex = 0;
+    let kv;
+    while ((kv = KV_RE.exec(rest)) !== null) {
+      const key = kv[1];
+      const rawVal = kv[3] !== undefined ? kv[3] : kv[4];
+      if (rawVal === 'true') payload[key] = true;
+      else if (rawVal === 'false') payload[key] = false;
+      else if (/^-?\d+(\.\d+)?$/.test(rawVal)) payload[key] = parseFloat(rawVal);
+      else payload[key] = rawVal;
+    }
+    try {
+      await _pconnEnsureRegistered(sockPath);
+      await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic, payload });
+    } catch (e) {
+      log('[CLAWS_PUB] publish failed topic=' + topic + ': ' + (e && e.message || e));
+    }
+  }
 }
 
 async function runBlockingWorker(sock, args) {
@@ -431,11 +469,19 @@ async function runBlockingWorker(sock, args) {
   const timeoutDeadline = startedAt + opt.timeout_ms;
   let status = 'timeout';
   let markerLine = null;
+  let pubScanOffset = 0; // byte position already scanned for [CLAWS_PUB] markers
   while (Date.now() < timeoutDeadline) {
     const snap = await clawsRpc(sock, {
       cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024,
     });
     const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
+
+    // Scan lines added since the last poll tick for [CLAWS_PUB] publish markers.
+    const scanStart = Math.min(pubScanOffset, text.length);
+    if (text.length > scanStart) {
+      await _scanAndPublishCLAWSPUB(text.slice(scanStart), sock);
+    }
+    pubScanOffset = text.length;
 
     if (text.includes(opt.complete_marker)) {
       status = 'completed';
