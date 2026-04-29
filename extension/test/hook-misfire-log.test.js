@@ -39,11 +39,11 @@ function cleanTmpDir(dir) {
   await check('missing hook path: wrapper exits 0 (silent contract preserved)', () => {
     const tmp = makeTmpDir();
     try {
-      // Register hooks pointing to a non-existent CLAWS_BIN
+      // Register hooks pointing to a non-canonical CLAWS_BIN (no hooks/ subdir).
+      // Without hooks/ dir, isCanonicalInstall() returns false → wrapped sh -c form.
       const fakeBin = path.join(tmp, 'fake-bin');
       fs.mkdirSync(fakeBin, { recursive: true });
-      // Create hooks/ dir but DO NOT create any .js files — simulate missing scripts
-      fs.mkdirSync(path.join(fakeBin, 'hooks'), { recursive: true });
+      // Intentionally DO NOT create hooks/ subdir — non-canonical → wrapped form used.
 
       const claudeDir = path.join(tmp, '.claude');
       fs.mkdirSync(claudeDir, { recursive: true });
@@ -134,8 +134,9 @@ function cleanTmpDir(dir) {
     }
   });
 
-  // 3. hookCmd output contains printf + misfire log path
-  await check('hookCmd output contains misfire-log printf command', () => {
+  // 3. hookCmd output for non-canonical bin contains printf + misfire log path
+  //    (canonical bin uses direct node — no wrapper — tested by M-15 tests)
+  await check('non-canonical hookCmd contains misfire-log printf command', () => {
     const tmp = makeTmpDir();
     try {
       const claudeDir = path.join(tmp, '.claude');
@@ -143,8 +144,11 @@ function cleanTmpDir(dir) {
       const settingsPath = path.join(claudeDir, 'settings.json');
       fs.writeFileSync(settingsPath, '{}', 'utf8');
 
-      const clawsBin = path.resolve(__dirname, '../../scripts');
-      const r = spawnSync(process.execPath, [INJECT_SETTINGS, clawsBin], {
+      // Use a non-canonical bin (no hooks/ subdir) to get the wrapped form
+      const fakeBin = path.join(tmp, 'non-canonical-bin');
+      fs.mkdirSync(fakeBin, { recursive: true });
+
+      const r = spawnSync(process.execPath, [INJECT_SETTINGS, fakeBin], {
         encoding: 'utf8', timeout: 10000,
         env: { ...process.env, HOME: tmp },
       });
@@ -153,9 +157,9 @@ function cleanTmpDir(dir) {
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
       const cmd = settings.hooks.SessionStart[0].hooks[0].command;
 
-      assert.ok(cmd.includes('printf'), 'hookCmd must use printf for misfire logging');
-      assert.ok(cmd.includes('claws-hook-misfire.log'), 'hookCmd must reference claws-hook-misfire.log');
-      assert.ok(cmd.includes('claws-hook-misfire]'), 'hookCmd must include [claws-hook-misfire] marker');
+      assert.ok(cmd.includes('printf'), `hookCmd must use printf for misfire logging; got: ${cmd}`);
+      assert.ok(cmd.includes('claws-hook-misfire.log'), `hookCmd must reference claws-hook-misfire.log; got: ${cmd}`);
+      assert.ok(cmd.includes('claws-hook-misfire]'), `hookCmd must include [claws-hook-misfire] marker; got: ${cmd}`);
     } finally {
       cleanTmpDir(tmp);
     }

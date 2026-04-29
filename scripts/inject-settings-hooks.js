@@ -32,11 +32,27 @@ const SOURCE_TAG    = 'claws';
 
 const HELPERS_URL = pathToFileURL(path.resolve(__dirname, '_helpers', 'json-safe.mjs')).href;
 
+// M-15: canonical install = CLAWS_BIN/hooks/ directory exists on disk.
+// When canonical, register hooks as direct `node "<path>"` invocations
+// (skips the sh -c fork overhead). When non-canonical (hooks dir absent,
+// custom or untested path), use the wrapped form with misfire logging.
+function isCanonicalInstall() {
+  try {
+    return fs.statSync(path.join(CLAWS_BIN, 'hooks')).isDirectory();
+  } catch {
+    return false;
+  }
+}
+const CANONICAL = isCanonicalInstall();
+
 function hookCmd(scriptName) {
   const scriptPath = path.join(CLAWS_BIN, 'hooks', scriptName);
-  // Explicit if-then-else: the `else` branch is reachable even if `exec` fails
-  // for unusual reasons (e.g. node binary gone). The previous `&& exec || (...)`
-  // form left the else branch unreachable after a successful exec (M-12).
+  if (CANONICAL) {
+    // Direct node invocation: hooks/ dir exists, path is guaranteed stable.
+    // Skips the sh -c wrapper to reduce fork overhead per hook invocation.
+    return `node ${JSON.stringify(scriptPath)}`;
+  }
+  // Non-canonical path: wrap with file-exists guard + misfire logging.
   // Missing-path logs a forensic entry to /tmp/claws-hook-misfire.log then
   // exits 0 so Claude Code never surfaces a "non-blocking status code" error.
   // Path is passed as $0 to avoid shell-escape pitfalls.
