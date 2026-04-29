@@ -120,7 +120,21 @@ elif [ -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
   if [ "$(uname)" = "Darwin" ] && ! xcode-select -p &>/dev/null; then
     fail "Xcode Command Line Tools required — run: xcode-select --install"
     ISSUES=$((ISSUES+1))
-  elif ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --only=node-pty --force >/dev/null 2>&1 ) && [ -f "$NPTY_BIN" ]; then
+  else
+    # M-31: 5-minute timeout ceiling — prevents indefinite hang on slow Electron header fetch.
+    _fix_timeout_cmd=""
+    if command -v timeout >/dev/null 2>&1; then _fix_timeout_cmd="timeout 300"
+    elif command -v gtimeout >/dev/null 2>&1; then _fix_timeout_cmd="gtimeout 300"
+    fi
+    if ( cd "$INSTALL_DIR/extension" && $_fix_timeout_cmd npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --only=node-pty --force >/dev/null 2>&1 ); then
+      _fix_rebuild_rc=0
+    else
+      _fix_rebuild_rc=$?
+    fi
+    if [ "$_fix_rebuild_rc" = "124" ]; then
+      fail "@electron/rebuild timed out after 5 min — likely a slow Electron headers download. Check network / proxy settings."
+      ISSUES=$((ISSUES+1))
+    elif [ "$_fix_rebuild_rc" = "0" ] && [ -f "$NPTY_BIN" ]; then
     echo "$ELECTRON_VERSION" > "$ELECTRON_ABI_FILE" 2>/dev/null || true
     ok "node-pty rebuilt for Electron $ELECTRON_VERSION in source clone"
 
@@ -168,9 +182,10 @@ elif [ -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
     fi
     fix "reload VS Code now: Cmd+Shift+P → Developer: Reload Window"
     FIXED=$((FIXED+1))
-  else
-    fail "@electron/rebuild failed — wrapped terminals will use pipe-mode"
-    ISSUES=$((ISSUES+1))
+    else
+      fail "@electron/rebuild failed — wrapped terminals will use pipe-mode"
+      ISSUES=$((ISSUES+1))
+    fi
   fi
 else
   info "node-pty not installed — extension bundle may be missing too (see check 2)"

@@ -124,13 +124,23 @@ info "removing old binary + ABI marker to force a clean rebuild"
 rm -f "$NPTY_BIN" "$ABI_FILE" 2>/dev/null
 
 info "running: npx --yes @electron/rebuild --version=$ELECTRON_VERSION --only=node-pty --force"
+# M-36: 5-minute timeout ceiling — prevents indefinite hang on slow Electron header fetch.
+_rn_timeout_cmd=""
+if command -v timeout >/dev/null 2>&1; then _rn_timeout_cmd="timeout 300"
+elif command -v gtimeout >/dev/null 2>&1; then _rn_timeout_cmd="gtimeout 300"
+fi
 rebuild_log=$(mktemp -t claws-rebuild.XXXXXX.log)
-if ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --only=node-pty --force ) >"$rebuild_log" 2>&1; then
+if ( cd "$INSTALL_DIR/extension" && $_rn_timeout_cmd npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --only=node-pty --force ) >"$rebuild_log" 2>&1; then
   ok "@electron/rebuild completed"
   info "log: $rebuild_log (last 5 lines below)"
   tail -5 "$rebuild_log" | sed 's/^/    /'
 else
-  bad "@electron/rebuild FAILED"
+  _rn_rc=$?
+  if [ "$_rn_rc" = "124" ]; then
+    bad "@electron/rebuild timed out after 5 min — likely a slow Electron headers download. Check network / proxy settings."
+  else
+    bad "@electron/rebuild FAILED"
+  fi
   info "full log: $rebuild_log"
   info "last 20 lines:"
   tail -20 "$rebuild_log" | sed 's/^/    /'
