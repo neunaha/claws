@@ -5,6 +5,49 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-04-29 — Bulletproof regression fix release
+
+This release closes 50 findings surfaced by a 4-worker parallel audit of the v0.7.2 + v0.7.3 release cycle. After the user reported lifecycle breakage on `/claws-update`, we ran a full Plan→Implement→Review→Audit→Test→Fix→Repeat loop across 5 layers to deliver one bulletproof codebase that absorbs all in-flight unmerged work (γ.1 reverse channel, γ.2 event log core, MCP persistent socket fix) plus 50 regression fixes.
+
+### CRITICAL — confirmed data-loss prevention
+- **M-01** `install.sh` awk strip — anchored to Claws-marked block + timestamped dotfile backup before any modification
+- **M-02** `.mcp.json` silent reset — JSONC-tolerant safe-merge with abort-on-error; never wipes other MCP servers
+- **M-03** `~/.claude/settings.json` silent reset — JSONC-tolerant safe-merge; never wipes user's Claude Code config
+- **M-38** `inject-settings-hooks.js` non-atomic write — atomic write via L0 helpers
+- **M-39** `cli.js` MCP fallback non-atomic write — atomic write via L0 helpers
+
+### HIGH — silent lifecycle breaks
+- **M-04** Hook silent skip → forensic log (`/tmp/claws-hook-misfire.log` + stderr)
+- **M-05** Rosetta arch silent miscompile → auto-correct to arm64 (not x64)
+- **M-06** Stale-extension cleanup race → gate on `[ -d "$kept_dir" ]` before iterating
+- **M-07** `spawnSync` null-status (signal-killed rebuild) → explicit `result.status === null` detection + helpful error
+- **M-08** No rebuild timeout → 5-minute ceiling + SIGTERM detection
+- **M-09** Hooks dir wipe-then-copy non-atomic → atomic `copyDirAtomic` via L0 helper
+- **M-10** Health check 2s timeout → 8s + 3-attempt exponential backoff (8s/12s/16s)
+- **M-11** `mcp_server.js` orphan → SIGKILL escalation 500ms after SIGTERM + socket-unlink verify
+- **M-31** `fix.sh` `@electron/rebuild` no timeout → mirrored from M-08 (recovery path hardening)
+- **M-36** `rebuild-node-pty.sh` no timeout + no TERM_PROGRAM detection → mirrored trifecta
+- **M-44** `fix.sh` stale Content-Length framing → newline-delimited frames (MCP check was always false-failing)
+- **M-45** `fix.sh` `.mcp.json` repair silent-reset-to-`{}` → safe-merge + atomic write + env-var path (recovery path)
+
+### MEDIUM/LOW (M-12 to M-50 not listed above)
+50 total findings — see `.local/audits/regression-master-issues.md` for the complete catalog.
+
+### Foundation utilities (Layer 0)
+- `scripts/_helpers/json-safe.mjs` — JSONC parse + safe-merge + abort-on-error; used across install/update/fix/inject paths
+- `scripts/_helpers/atomic-file.mjs` — rename-pattern atomic file/dir ops with fsync; used for all config writes
+
+### Test coverage
+- 224 baseline → 501 PASS (+277 regression checks across ~40 new test files)
+- Every M-XX finding has a regression test that exercises its failure mode
+
+### Includes (rolled forward from open PRs)
+- γ.1 reverse channel (was PR #27)
+- γ.2 event log core (was PR #28)
+- MCP persistent socket fix (was PR #29)
+
+---
+
 ## [0.7.4-bulletproof-L4-fix] - 2026-04-29 — Layer 4 fix: code-review findings + audit items (F1–F7, M-44–M-50)
 
 ### Fixed
