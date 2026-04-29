@@ -32,20 +32,32 @@ const REMOVE  = process.argv.includes('--remove');
 const UPDATE  = process.argv.includes('--update');
 const SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 const SOURCE_TAG    = 'claws';
-// F5: advisory exclusive lock — prevents two concurrent inject-settings-hooks
+// F5: advisory exclusive lock — prevents concurrent inject-settings-hooks
 // invocations (e.g. install.sh + update.sh race) from producing a torn write.
-// 3 attempts × 100ms backoff; if still locked, throw so the caller sees the error.
+// 15 attempts × 100ms backoff = 1.5s max wait; handles bursts of concurrent writers.
 const LOCK_PATH = `${SETTINGS_PATH}.lock`;
 async function withLock(fn) {
   let fd;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 15; attempt++) {
     try {
       fd = fs.openSync(LOCK_PATH, 'wx');
       break;
     } catch (e) {
-      if (e.code !== 'EEXIST' || attempt === 2) throw e;
+      if (e.code === 'ENOENT') {
+        // Parent directory doesn't exist yet — create it (fresh install).
+        fs.mkdirSync(path.dirname(LOCK_PATH), { recursive: true });
+        try { fd = fs.openSync(LOCK_PATH, 'wx'); break; } catch (e2) {
+          if (e2.code !== 'EEXIST') throw e2; // unexpected error
+          // else: another process grabbed it after mkdir — fall through to sleep
+        }
+      } else if (e.code !== 'EEXIST') {
+        throw e; // unexpected error (not a lock contention)
+      }
       await new Promise(r => setTimeout(r, 100));
     }
+  }
+  if (fd === undefined) {
+    throw new Error(`settings.json lock busy after ${15 * 100}ms — another process may be stuck`);
   }
   try {
     return await fn();
