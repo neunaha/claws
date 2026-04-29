@@ -6,6 +6,7 @@ import {
   CmdSetPhaseV1, CmdSpawnV1, CmdInjectTextV1,
   SystemPeerJoinedV1, SystemPeerLeftV1, SystemPeerStaleV1,
   SystemGateFiredV1, SystemBudgetWarningV1, SystemMalformedReceivedV1,
+  VehicleStateV1,
 } from './event-schemas';
 
 export { matchTopic };
@@ -30,6 +31,9 @@ export const TOPIC_REGISTRY: ReadonlyArray<{ pattern: string; schema: z.ZodTypeA
   { pattern: 'system.gate.fired',         schema: SystemGateFiredV1 },
   { pattern: 'system.budget.warning',     schema: SystemBudgetWarningV1 },
   { pattern: 'system.malformed.received', schema: SystemMalformedReceivedV1 },
+  { pattern: 'vehicle.*.state',           schema: VehicleStateV1 },
+  { pattern: 'vehicle.*.created',         schema: VehicleStateV1 },
+  { pattern: 'vehicle.*.closed',          schema: VehicleStateV1 },
 ];
 
 /**

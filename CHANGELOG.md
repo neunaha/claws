@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — 0.7.6
 
+### Added — W1/L4 Vehicle State Machine
+
+- `extension/src/protocol.ts` — `TerminalDescriptor` now includes `vehicleState?: 'PROVISIONING' | 'BOOTING' | 'READY' | 'BUSY' | 'IDLE' | 'CLOSING' | 'CLOSED'` so `list` responses expose the current vehicle state.
+- `extension/src/event-schemas.ts` — `VehicleStateV1` Zod schema (terminalId, from, to, ts); `VehicleStateEnum` with all 7 states. `SCHEMA_BY_NAME` updated to include `vehicle-state-v1`.
+- `extension/src/topic-registry.ts` — three new topic patterns registered: `vehicle.*.state`, `vehicle.*.created`, `vehicle.*.closed`.
+- `extension/src/claws-pty.ts` — `ClawsPtyOptions` gains two optional hooks: `onOpenHook` (fires when VS Code calls Pseudoterminal.open()) and `onFirstOutputHook` (fires on the first byte of pty output). These let TerminalManager drive state transitions without coupling to the pty internals.
+- `extension/src/terminal-manager.ts` — `TerminalRecord` grows `vehicleState: VehicleStateName`; `TerminalManager` gains `setStateChangeCallback(cb)` and a private `transitionState(rec, to)` that enforces the valid-transition table (PROVISIONING→BOOTING→READY→BUSY/IDLE→CLOSING→CLOSED). `createWrapped` emits PROVISIONING then immediately BOOTING; `onOpenHook` fires BOOTING→READY when the pty opens; `close` and `onTerminalClosed` emit CLOSING→CLOSED.
+- `extension/src/server.ts` — wires `setStateChangeCallback` in the constructor; the callback calls `emitSystemEvent('vehicle.<id>.state', {terminalId, from, to, ts})` so every transition is appended to the event log and fanned out to subscribers.
+- `extension/test/claws-v2-vehicle-state.test.js` — 19-assertion integration test suite covering: PROVISIONING→BOOTING and BOOTING→READY push frames, close emitting CLOSING→CLOSED, vehicleState in list responses, ordering invariants, payload structure (terminalId, from, to, ts).
+
 ### Fixed
+- `extension/test/event-schemas.test.js` — update `SCHEMA_BY_NAME` count from 19 to 20 (added `vehicle-state-v1`).
+- `extension/test/topic-registry.test.js` — update `TOPIC_REGISTRY` count from 19 to 22 (added 3 vehicle.* patterns).
 - `extension/test/event-schemas.test.js` — align `SCHEMA_BY_NAME` count assertion with current registry: was 19, now 20 after v0.7.5 L1.1+L1.4 schemas added `vehicle-state-v1`; test now derives expected names explicitly and asserts the correct total.
 - `scripts/inject-settings-hooks.js` — hook commands must use absolute paths. `CLAWS_BIN` was used as-is when passed as a relative argument (e.g. `"scripts"`), producing hook commands like `node "scripts/hooks/pre-tool-use-claws.js"` that broke with `ERR_MODULE_NOT_FOUND` whenever Claude Code's CWD was not the project root. Fix: wrap the arg with `path.resolve()` before computing script paths. Regression test added: `extension/test/inject-settings-absolute-paths.test.js`.
 

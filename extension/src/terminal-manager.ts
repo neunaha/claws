@@ -2,6 +2,19 @@ import * as vscode from 'vscode';
 import { CaptureStore } from './capture-store';
 import { ClawsPty } from './claws-pty';
 import { TerminalDescriptor } from './protocol';
+import { VehicleStateName } from './event-schemas';
+
+type StateChangeCallback = (id: string, from: VehicleStateName | null, to: VehicleStateName) => void;
+
+const VALID_TRANSITIONS: Readonly<Record<VehicleStateName, readonly VehicleStateName[]>> = {
+  PROVISIONING: ['BOOTING', 'CLOSING'],
+  BOOTING:      ['READY', 'CLOSING'],
+  READY:        ['BUSY', 'IDLE', 'CLOSING'],
+  BUSY:         ['IDLE', 'CLOSING'],
+  IDLE:         ['BUSY', 'CLOSING'],
+  CLOSING:      ['CLOSED'],
+  CLOSED:       [],
+};
 
 interface TerminalRecord {
   id: string;
@@ -10,6 +23,7 @@ interface TerminalRecord {
   wrapped: boolean;
   logPath: string | null;
   name: string;
+  vehicleState: VehicleStateName;
 }
 
 export interface CreateOptions {
@@ -37,12 +51,32 @@ export class TerminalManager {
   private readonly byTerminal = new Map<vscode.Terminal, string>();
   private nextId = 1;
   private unopenedScanTimer: NodeJS.Timeout | null = null;
+  private onStateChange: StateChangeCallback | null = null;
 
   constructor(
     private readonly captureStore: CaptureStore,
     private readonly logger: (msg: string) => void,
   ) {
     this.startUnopenedScan();
+  }
+
+  /** Wire the vehicle state change callback. Called by ClawsServer after construction. */
+  setStateChangeCallback(cb: StateChangeCallback): void {
+    this.onStateChange = cb;
+  }
+
+  private transitionState(rec: TerminalRecord, to: VehicleStateName): void {
+    const from = rec.vehicleState;
+    if (!VALID_TRANSITIONS[from]?.includes(to)) {
+      this.logger(`[terminal-manager] invalid state transition ${from} → ${to} for terminal ${rec.id}`);
+      return;
+    }
+    rec.vehicleState = to;
+    this.onStateChange?.(rec.id, from, to);
+  }
+
+  private emitInitialState(rec: TerminalRecord): void {
+    this.onStateChange?.(rec.id, null, rec.vehicleState);
   }
 
   adoptExisting(terminals: readonly vscode.Terminal[]): void {
@@ -63,6 +97,7 @@ export class TerminalManager {
       wrapped: false,
       logPath: null,
       name: terminal.name,
+      vehicleState: 'PROVISIONING',
     });
     return id;
   }
@@ -119,6 +154,7 @@ export class TerminalManager {
       logPath: rec?.logPath ?? null,
       wrapped: rec?.wrapped ?? false,
       status: 'adopted',
+      vehicleState: rec?.vehicleState,
     };
   }
 
@@ -132,6 +168,21 @@ export class TerminalManager {
 
   createWrapped(options: CreateOptions): { id: string; terminal: vscode.Terminal; pty: ClawsPty } {
     const id = String(this.nextId++);
+    const rec: TerminalRecord = {
+      id,
+      terminal: null as unknown as vscode.Terminal, // set below after createTerminal
+      pty: null,
+      wrapped: true,
+      logPath: null,
+      name: options.name || `Claws ${id}`,
+      vehicleState: 'PROVISIONING',
+    };
+    this.records.set(id, rec);
+
+    // Emit PROVISIONING immediately, then transition to BOOTING synchronously.
+    this.emitInitialState(rec);
+    this.transitionState(rec, 'BOOTING');
+
     const pty = new ClawsPty({
       terminalId: id,
       shellPath: options.shellPath,
@@ -139,20 +190,18 @@ export class TerminalManager {
       env: options.env,
       captureStore: this.captureStore,
       logger: this.logger,
+      // When VS Code calls open() on the Pseudoterminal, flip to READY.
+      onOpenHook: () => this.transitionState(rec, 'READY'),
     });
+    rec.pty = pty;
+
     const terminal = vscode.window.createTerminal({
       name: options.name || `Claws ${id}`,
       pty,
     });
+    rec.terminal = terminal;
     this.byTerminal.set(terminal, id);
-    this.records.set(id, {
-      id,
-      terminal,
-      pty,
-      wrapped: true,
-      logPath: null,
-      name: terminal.name,
-    });
+
     if (options.show !== false) terminal.show(options.preserveFocus !== false);
     return { id, terminal, pty };
   }
@@ -173,6 +222,7 @@ export class TerminalManager {
       wrapped: false,
       logPath: null,
       name: terminal.name,
+      vehicleState: 'PROVISIONING',
     });
     if (options.show !== false) terminal.show(options.preserveFocus !== false);
     return { id, terminal };
@@ -182,6 +232,8 @@ export class TerminalManager {
     const key = String(id);
     const rec = this.records.get(key);
     if (!rec) return false;
+    this.transitionState(rec, 'CLOSING');
+    this.transitionState(rec, 'CLOSED');
     try { rec.terminal.dispose(); } catch { /* ignore */ }
     this.byTerminal.delete(rec.terminal);
     this.records.delete(key);
@@ -194,6 +246,10 @@ export class TerminalManager {
     if (!id) return;
     this.byTerminal.delete(terminal);
     const rec = this.records.get(id);
+    if (rec) {
+      this.transitionState(rec, 'CLOSING');
+      this.transitionState(rec, 'CLOSED');
+    }
     if (rec?.pty) rec.pty.close();
     this.records.delete(id);
     this.captureStore.clear(id);
@@ -212,6 +268,7 @@ export class TerminalManager {
       wrapped: true,
       logPath: null,
       name: terminal.name,
+      vehicleState: 'PROVISIONING',
     });
   }
 

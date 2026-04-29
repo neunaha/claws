@@ -110,6 +110,10 @@ export class ClawsServer {
 
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
+    opts.terminalManager.setStateChangeCallback((id, from, to) => {
+      const payload = { terminalId: id, from, to, ts: new Date().toISOString() };
+      void this.emitSystemEvent(`vehicle.${id}.state`, payload);
+    });
   }
 
   /** Milliseconds since this server instance was constructed. */

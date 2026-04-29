@@ -127,6 +127,10 @@ export interface ClawsPtyOptions {
   env?: NodeJS.ProcessEnv;
   captureStore: CaptureStore;
   logger: (msg: string) => void;
+  /** Called synchronously when VS Code invokes Pseudoterminal.open(). */
+  onOpenHook?: () => void;
+  /** Called on the first byte of output from the spawned process. */
+  onFirstOutputHook?: () => void;
 }
 
 export class ClawsPty implements vscode.Pseudoterminal {
@@ -141,6 +145,7 @@ export class ClawsPty implements vscode.Pseudoterminal {
   private isOpen = false;
   private openedAt: number | null = null;
   private readonly createdAt = Date.now();
+  private firstOutputFired = false;
 
   constructor(private readonly opts: ClawsPtyOptions) {}
 
@@ -167,6 +172,7 @@ export class ClawsPty implements vscode.Pseudoterminal {
   open(initialDimensions: vscode.TerminalDimensions | undefined): void {
     this.isOpen = true;
     this.openedAt = Date.now();
+    this.opts.onOpenHook?.();
     const shell = this.opts.shellPath || defaultShell();
     const args = this.opts.shellArgs ?? defaultShellArgs(shell);
     const cwd = this.opts.cwd || os.homedir();
@@ -271,6 +277,10 @@ export class ClawsPty implements vscode.Pseudoterminal {
   private handleOutput(data: string): void {
     this.writeEmitter.fire(data);
     this.opts.captureStore.append(this.opts.terminalId, data);
+    if (!this.firstOutputFired) {
+      this.firstOutputFired = true;
+      this.opts.onFirstOutputHook?.();
+    }
   }
 
   private handleExit(code: number): void {

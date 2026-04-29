@@ -306,6 +306,8 @@ export interface TerminalDescriptor {
   wrapped: boolean;
   /** 'unknown' is emitted for terminals the manager has never adopted. */
   status?: 'adopted' | 'unknown';
+  /** Current vehicle lifecycle state. Absent for unwrapped (non-pty) terminals. */
+  vehicleState?: 'PROVISIONING' | 'BOOTING' | 'READY' | 'BUSY' | 'IDLE' | 'CLOSING' | 'CLOSED';
 }
 
 export interface HistoryEvent {
