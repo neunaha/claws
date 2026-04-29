@@ -310,17 +310,15 @@ else
   mkdir -p "$PROJECT_ROOT/.claws-bin"
   cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js"
   chmod +x "$PROJECT_ROOT/.claws-bin/mcp_server.js"
-  node --no-deprecation -e "
-const fs = require('fs');
-const p = '$PROJECT_MCP';
-let cfg = {};
-try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
-if (!cfg.mcpServers) cfg.mcpServers = {};
-cfg.mcpServers.claws = { command: 'node', args: ['./.claws-bin/mcp_server.js'], env: { CLAWS_SOCKET: '.claws/claws.sock' } };
-fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-"
-  ok "wrote $PROJECT_MCP"
-  FIXED=$((FIXED+1))
+  # M-45: use fix-repair.js (json-safe.mjs: abort-on-malformed + atomic write).
+  # Path passed via env var — no string-interpolation into JS source (M-20).
+  if CLAWS_REPAIR_TARGET="$PROJECT_MCP" node --no-deprecation "$INSTALL_DIR/scripts/_helpers/fix-repair.js" mcp 2>&1 | sed 's/^/  /'; then
+    ok "wrote $PROJECT_MCP"
+    FIXED=$((FIXED+1))
+  else
+    fail "could not write $PROJECT_MCP — malformed JSON? Check backup above."
+    ISSUES=$((ISSUES+1))
+  fi
 fi
 
 # ─── 4b. Project .vscode/extensions.json recommends claws ─────────────────
@@ -331,19 +329,15 @@ if [ -f "$VSCODE_EXT_JSON" ] && grep -q "neunaha.claws" "$VSCODE_EXT_JSON" 2>/de
 else
   fix "adding neunaha.claws to workspace recommendations"
   mkdir -p "$PROJECT_ROOT/.vscode"
-  node --no-deprecation -e "
-const fs = require('fs');
-const p = process.argv[1];
-let cfg = {};
-try {
-  const raw = fs.readFileSync(p, 'utf8');
-  const stripped = raw.replace(/\/\/.*\$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-  cfg = JSON.parse(stripped);
-} catch {}
-if (!Array.isArray(cfg.recommendations)) cfg.recommendations = [];
-if (!cfg.recommendations.includes('neunaha.claws')) cfg.recommendations.push('neunaha.claws');
-fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-" "$VSCODE_EXT_JSON" 2>/dev/null && ok "wrote $VSCODE_EXT_JSON" && FIXED=$((FIXED+1)) || fail "could not write $VSCODE_EXT_JSON"
+  # M-46: use fix-repair.js (json-safe.mjs: abort-on-malformed + atomic write + JSONC-tolerant).
+  # Path passed via env var — no string-interpolation into JS source (M-20).
+  if CLAWS_REPAIR_TARGET="$VSCODE_EXT_JSON" node --no-deprecation "$INSTALL_DIR/scripts/_helpers/fix-repair.js" extensions 2>&1 | sed 's/^/  /'; then
+    ok "wrote $VSCODE_EXT_JSON"
+    FIXED=$((FIXED+1))
+  else
+    fail "could not write $VSCODE_EXT_JSON — malformed JSON? Check backup above."
+    ISSUES=$((ISSUES+1))
+  fi
 fi
 
 # ─── 5. MCP server handshake ───────────────────────────────────────────────
