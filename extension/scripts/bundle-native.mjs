@@ -52,24 +52,38 @@ function fail(msg, err) {
 }
 
 // ─── Step 1: detect Electron version ─────────────────────────────────────────
-function detectElectronVersion() {
+// Exported for testing (injectable platform/execFn/existsFn/termProgram).
+export function detectElectronVersion({
+  platform = process.platform,
+  execFn = execFileSync,
+  existsFn = existsSync,
+  termProgram = process.env.TERM_PROGRAM,
+} = {}) {
   const envOverride = process.env.CLAWS_ELECTRON_VERSION;
   if (envOverride) {
     log(`using CLAWS_ELECTRON_VERSION=${envOverride} (env override)`);
     return { version: envOverride, source: 'env' };
   }
 
-  if (process.platform === 'darwin') {
-    const candidates = [
-      '/Applications/Visual Studio Code.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist',
-      '/Applications/Visual Studio Code - Insiders.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist',
-      '/Applications/Cursor.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist',
-      '/Applications/Windsurf.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist',
+  if (platform === 'darwin') {
+    // M-22: prefer the editor that launched this shell session ($TERM_PROGRAM)
+    // so the user's daily-driver Electron version wins, not the first-found app.
+    const allCandidates = [
+      { key: 'vscode',         plist: '/Applications/Visual Studio Code.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist' },
+      { key: 'vscode-insiders', plist: '/Applications/Visual Studio Code - Insiders.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist' },
+      { key: 'cursor',         plist: '/Applications/Cursor.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist' },
+      { key: 'windsurf',       plist: '/Applications/Windsurf.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist' },
     ];
-    for (const plist of candidates) {
-      if (!existsSync(plist)) continue;
+    const tp = (termProgram || '').toLowerCase();
+    // Move the TERM_PROGRAM-matching editor to the front of the list.
+    const sorted = [
+      ...allCandidates.filter(c => tp && (c.key === tp || (tp === 'vscode' && c.key === 'vscode'))),
+      ...allCandidates.filter(c => !(tp && (c.key === tp || (tp === 'vscode' && c.key === 'vscode')))),
+    ];
+    for (const { plist } of sorted) {
+      if (!existsFn(plist)) continue;
       try {
-        const v = execFileSync('plutil', ['-extract', 'CFBundleVersion', 'raw', plist], {
+        const v = execFn('plutil', ['-extract', 'CFBundleVersion', 'raw', plist], {
           encoding: 'utf8',
         }).trim();
         if (v) {
@@ -82,19 +96,30 @@ function detectElectronVersion() {
     }
   }
 
-  if (process.platform === 'linux') {
-    // VS Code on Linux bundles its own electron binary. Try known install paths.
-    const electronCandidates = [
-      '/usr/share/code/electron',
-      '/usr/lib/code/electron',
-      '/opt/visual-studio-code/electron',
-      '/snap/code/current/electron',
-      '/snap/code/current/usr/share/code/electron',
+  if (platform === 'linux') {
+    // M-25: VS Code + Cursor + Windsurf Linux install paths.
+    const allLinuxCandidates = [
+      { key: 'vscode',    ep: '/usr/share/code/electron' },
+      { key: 'vscode',    ep: '/usr/lib/code/electron' },
+      { key: 'vscode',    ep: '/opt/visual-studio-code/electron' },
+      { key: 'vscode',    ep: '/snap/code/current/electron' },
+      { key: 'vscode',    ep: '/snap/code/current/usr/share/code/electron' },
+      { key: 'cursor',    ep: '/usr/share/cursor/electron' },
+      { key: 'cursor',    ep: '/opt/cursor/electron' },
+      { key: 'cursor',    ep: '/snap/cursor/current/usr/share/cursor/electron' },
+      { key: 'windsurf',  ep: '/usr/share/windsurf/electron' },
+      { key: 'windsurf',  ep: '/opt/windsurf/electron' },
     ];
-    for (const ep of electronCandidates) {
-      if (!existsSync(ep)) continue;
+    // M-22: prefer TERM_PROGRAM-matching editor on Linux too.
+    const tp = (termProgram || '').toLowerCase();
+    const sorted = [
+      ...allLinuxCandidates.filter(c => tp && c.key === tp),
+      ...allLinuxCandidates.filter(c => !(tp && c.key === tp)),
+    ];
+    for (const { ep } of sorted) {
+      if (!existsFn(ep)) continue;
       try {
-        const v = execFileSync(ep, ['--version'], { encoding: 'utf8' }).trim().replace(/^v/, '');
+        const v = execFn(ep, ['--version'], { encoding: 'utf8' }).trim().replace(/^v/, '');
         if (v && /^\d+\.\d+\.\d+$/.test(v)) {
           log(`detected Electron ${v} from ${ep}`);
           return { version: v, source: ep };
@@ -105,16 +130,21 @@ function detectElectronVersion() {
     }
     // Fallback: ask the `electron` CLI if it's on PATH (unlikely but possible)
     try {
-      const v = execFileSync('electron', ['--version'], { encoding: 'utf8' }).trim().replace(/^v/, '');
+      const v = execFn('electron', ['--version'], { encoding: 'utf8' }).trim().replace(/^v/, '');
       if (v && /^\d+\.\d+\.\d+$/.test(v)) {
         log(`detected Electron ${v} from electron CLI`);
         return { version: v, source: 'electron-cli' };
       }
     } catch { /* not available */ }
-    log(`WARNING: could not detect VS Code Electron version on Linux.`);
-    log(`Set CLAWS_ELECTRON_VERSION=<version> to override. Falling back to ${FALLBACK_ELECTRON}.`);
   }
 
+  // M-23: explicit warning when no editor was found — don't silently fall back.
+  if (platform === 'darwin' || platform === 'linux') {
+    process.stderr.write(
+      '[bundle-native] WARNING: could not detect VS Code/Cursor/Windsurf Electron version.\n' +
+      '[bundle-native] Set CLAWS_ELECTRON_VERSION=<version> to specify your editor\'s Electron version explicitly.\n',
+    );
+  }
   log(`no Electron install found; falling back to ${FALLBACK_ELECTRON}`);
   return { version: FALLBACK_ELECTRON, source: 'fallback' };
 }

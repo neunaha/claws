@@ -372,24 +372,57 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
     _claws_last_elec=$(node -e "try{console.log(require('$INSTALL_DIR/extension/native/.metadata.json').electronVersion||'')}catch(e){}" 2>/dev/null || echo "")
     _claws_curr_elec=""
     if [ "$PLATFORM" = "Darwin" ]; then
-      for _claws_app in \
-        "/Applications/Visual Studio Code.app" \
-        "/Applications/Visual Studio Code - Insiders.app" \
-        "/Applications/Cursor.app" \
-        "/Applications/Windsurf.app"; do
+      # M-22: build candidate list with TERM_PROGRAM-matching editor first so the
+      # user's daily-driver wins the ABI check instead of the hardcoded VS Code path.
+      _tp="${TERM_PROGRAM:-}"
+      case "$_tp" in
+        cursor)
+          _claws_darwin_apps='"/Applications/Cursor.app" "/Applications/Visual Studio Code.app" "/Applications/Visual Studio Code - Insiders.app" "/Applications/Windsurf.app"'
+          ;;
+        windsurf)
+          _claws_darwin_apps='"/Applications/Windsurf.app" "/Applications/Visual Studio Code.app" "/Applications/Visual Studio Code - Insiders.app" "/Applications/Cursor.app"'
+          ;;
+        *)
+          _claws_darwin_apps='"/Applications/Visual Studio Code.app" "/Applications/Visual Studio Code - Insiders.app" "/Applications/Cursor.app" "/Applications/Windsurf.app"'
+          ;;
+      esac
+      eval "set -- $_claws_darwin_apps"
+      for _claws_app in "$@"; do
         _claws_plist="$_claws_app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
         if [ -f "$_claws_plist" ]; then
           _claws_curr_elec=$(plutil -extract CFBundleVersion raw "$_claws_plist" 2>/dev/null || true)
           [ -n "$_claws_curr_elec" ] && break
         fi
       done
+      unset _tp _claws_darwin_apps
     elif [ "$PLATFORM" = "Linux" ]; then
-      for _claws_ep in /usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron; do
+      # M-22: prefer TERM_PROGRAM editor on Linux too.
+      # M-25: add Cursor + Windsurf Linux paths.
+      _tp="${TERM_PROGRAM:-}"
+      case "$_tp" in
+        cursor)
+          _claws_linux_eps="/usr/share/cursor/electron /opt/cursor/electron /snap/cursor/current/usr/share/cursor/electron /usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron /usr/share/windsurf/electron /opt/windsurf/electron"
+          ;;
+        windsurf)
+          _claws_linux_eps="/usr/share/windsurf/electron /opt/windsurf/electron /usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron /usr/share/cursor/electron /opt/cursor/electron"
+          ;;
+        *)
+          _claws_linux_eps="/usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron /usr/share/cursor/electron /opt/cursor/electron /snap/cursor/current/usr/share/cursor/electron /usr/share/windsurf/electron /opt/windsurf/electron"
+          ;;
+      esac
+      for _claws_ep in $_claws_linux_eps; do
         if [ -x "$_claws_ep" ]; then
           _claws_curr_elec=$("$_claws_ep" --version 2>/dev/null | sed 's/^v//' | head -1)
           [ -n "$_claws_curr_elec" ] && break
         fi
       done
+      unset _tp _claws_linux_eps
+    fi
+    # M-23: warn when detection returns empty — don't silently skip drift check.
+    if [ -z "$_claws_curr_elec" ] && [ -n "$_claws_last_elec" ]; then
+      warn "Could not detect the current VS Code/Cursor/Windsurf Electron version."
+      warn "Set CLAWS_ELECTRON_VERSION=<version> to specify it explicitly."
+      warn "(run: plutil -extract CFBundleVersion raw '/Applications/Cursor.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist')"
     fi
     if [ -n "$_claws_curr_elec" ] && [ -n "$_claws_last_elec" ] && [ "$_claws_curr_elec" != "$_claws_last_elec" ]; then
       info "Electron version changed since last build ($_claws_last_elec → $_claws_curr_elec) — forcing pty.node rebuild"
