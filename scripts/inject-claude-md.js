@@ -16,12 +16,19 @@ const path = require('path');
 
 // M-27: atomic write helper (tmp + renameSync) — mirrors atomic-file.mjs writeAtomic.
 // Prevents partial project CLAUDE.md if the process is killed mid-write.
+// F3: open+writeSync+fsyncSync+close before rename for durability on power-cut.
 function writeAtomic(filePath, content) {
   const tmp = filePath + '.claws-tmp.' + process.pid + '-' + (++writeAtomic._nonce);
+  let _fd;
   try {
-    fs.writeFileSync(tmp, content, { mode: 0o644 });
+    _fd = fs.openSync(tmp, 'w', 0o644);
+    fs.writeSync(_fd, content);
+    fs.fsyncSync(_fd);
+    fs.closeSync(_fd);
+    _fd = null;
     fs.renameSync(tmp, filePath);
   } catch (err) {
+    if (_fd != null) { try { fs.closeSync(_fd); } catch { /* ignore */ } }
     try { fs.unlinkSync(tmp); } catch { /* ignore */ }
     throw err;
   }

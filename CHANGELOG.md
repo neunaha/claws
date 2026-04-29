@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **F5 test** `extension/test/install-mcp-merge.test.sh`: added apostrophe path test (creates a project dir named `user's-project`, runs M-02 merge via env vars, asserts claws entry written).
 - **F1 test** `extension/test/install-error-path.test.sh` (9 checks): static checks that `_hooks_exit` and `_mcp_exit` capture patterns are present; behavioral harness proving the message fires before set-e exit.
 - **F2** `extension/test/install-hooks-atomic.test.sh`: replaced polling simulation (1ms interval checks) with a real SIGKILL mid-copy test. Spawns `copyDirAtomic` in a subprocess, sends SIGKILL after 5ms (during the 100-file step-1 copy phase), then asserts dest has either complete OLD content or complete NEW content — never an empty dir or a partial mix.
+- **F3** `scripts/inject-claude-md.js`, `scripts/inject-global-claude-md.js`, `scripts/hooks/lifecycle-state.js`, `extension/src/uninstall-cleanup.ts`: replaced `writeFileSync(tmp)` with `openSync(tmp, 'w') → writeSync → fsyncSync → closeSync` in all four inline `writeAtomic` helpers. Adds durability for power-cut scenarios where the OS page cache hasn't been flushed — mirrors the `fd.sync()` call that `scripts/_helpers/atomic-file.mjs` (L0) already does in its async variant.
 
 ## [0.7.4-bulletproof-L2] - 2026-04-29 — Layer 2: install.sh data-loss + atomicity fixes (M-01, M-02, M-09, M-17, M-27–M-30)
 
