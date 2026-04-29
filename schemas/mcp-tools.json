@@ -566,5 +566,64 @@
       ],
       "additionalProperties": false
     }
+  },
+  {
+    "name": "claws_schema_list",
+    "description": "Return a sorted list of all Zod schema names registered in the Claws schema registry. Use this to discover which schemas are available before calling claws_schema_get.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_schema_get",
+    "description": "Return a simplified JSON representation of one registered Zod schema by name (e.g. 'worker-boot-v1', 'rpc-request-v1'). Use claws_schema_list to discover valid names.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Schema name as returned by claws_schema_list (e.g. 'worker-boot-v1')."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_rpc_call",
+    "description": "Issue a typed RPC call to a target peer. The server routes the call to rpc.<targetPeerId>.request and waits for the worker to publish a response to rpc.response.<callerPeerId>.<requestId>. Returns the result or a timeout error.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "targetPeerId": {
+          "type": "string",
+          "description": "peerId of the peer to call."
+        },
+        "method": {
+          "type": "string",
+          "description": "RPC method name (e.g. 'introspect', 'status')."
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "Optional method parameters."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000,
+          "description": "Milliseconds before the call times out. Default: 5000."
+        }
+      },
+      "required": [
+        "targetPeerId",
+        "method"
+      ],
+      "additionalProperties": false
+    }
   }
 ]

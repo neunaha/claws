@@ -991,6 +991,34 @@ async function handleTool(name, args) {
     return { content: [{ type: 'text', text: JSON.stringify({ ok: true }, null, 2) }] };
   }
 
+  if (name === 'claws_pipeline_create') {
+    const steps = typeof args.steps === 'string' ? JSON.parse(args.steps) : args.steps;
+    const resp = await clawsRpc(sock, {
+      cmd: 'pipeline.create',
+      name: args.name || 'pipeline',
+      steps,
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ pipelineId: resp.pipelineId, pipeline: resp.pipeline }, null, 2),
+      }],
+    };
+  }
+
+  if (name === 'claws_pipeline_list') {
+    const resp = await clawsRpc(sock, { cmd: 'pipeline.list' });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify(resp.pipelines, null, 2) }] };
+  }
+
+  if (name === 'claws_pipeline_close') {
+    const resp = await clawsRpc(sock, { cmd: 'pipeline.close', pipelineId: args.pipelineId });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, pipelineId: resp.pipelineId }, null, 2) }] };
+  }
+
   if (name === 'claws_dispatch_subworker') {
     const workerName = `wave-${args.waveId}-${args.role}`;
     const cr = await clawsRpc(sock, {
@@ -1036,6 +1064,31 @@ async function handleTool(name, args) {
         text: JSON.stringify({ terminal_id: termId, waveId: args.waveId, role: args.role, name: workerName }, null, 2),
       }],
     };
+  }
+
+  if (name === 'claws_schema_list') {
+    const resp = await clawsRpc(sock, { cmd: 'schema.list', protocol: 'claws/2' });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ schemas: resp.schemas }, null, 2) }] };
+  }
+
+  if (name === 'claws_schema_get') {
+    const resp = await clawsRpc(sock, { cmd: 'schema.get', protocol: 'claws/2', name: args.name });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ name: resp.name, schema: resp.schema }, null, 2) }] };
+  }
+
+  if (name === 'claws_rpc_call') {
+    const resp = await clawsRpc(sock, {
+      cmd: 'rpc.call',
+      protocol: 'claws/2',
+      targetPeerId: args.targetPeerId,
+      method: args.method,
+      ...(args.params ? { params: args.params } : {}),
+      ...(args.timeoutMs ? { timeoutMs: args.timeoutMs } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ requestId: resp.requestId, result: resp.result }, null, 2) }] };
   }
 
   return toolError(`unknown tool: ${name}`);

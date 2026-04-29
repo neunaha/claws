@@ -7,7 +7,7 @@ import {
   SystemPeerJoinedV1, SystemPeerLeftV1, SystemPeerStaleV1,
   SystemGateFiredV1, SystemBudgetWarningV1, SystemMalformedReceivedV1,
   VehicleStateV1, VehicleContentV1, CommandStartV1, CommandEndV1,
-  CmdAckV1,
+  CmdAckV1, PipelineStepV1, RpcRequestV1, RpcResponseV1,
 } from './event-schemas';
 
 export { matchTopic };
@@ -46,6 +46,11 @@ export const TOPIC_REGISTRY: ReadonlyArray<{ pattern: string; schema: z.ZodTypeA
   }) },
   { pattern: 'wave.**',                    schema: z.record(z.unknown()) },
   { pattern: 'cmd.*.ack',                  schema: CmdAckV1 },
+  { pattern: 'pipeline.*.step.*',          schema: PipelineStepV1 },
+  { pattern: 'pipeline.*.created',         schema: z.record(z.unknown()) },
+  { pattern: 'pipeline.*.closed',          schema: z.record(z.unknown()) },
+  { pattern: 'rpc.*.request',              schema: RpcRequestV1 },
+  { pattern: 'rpc.response.**',            schema: RpcResponseV1 },
 ];
 
 /**

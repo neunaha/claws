@@ -332,6 +332,40 @@ export const CmdAckV1 = z.object({
 });
 export type CmdAck = z.infer<typeof CmdAckV1>;
 
+// ── Typed RPC schemas (L16) ───────────────────────────────────────────────
+
+export const RpcRequestV1 = z.object({
+  requestId:    z.string().uuid(),
+  method:       z.string().min(1),
+  params:       z.record(z.unknown()).optional(),
+  callerPeerId: z.string().min(1),
+});
+export type RpcRequest = z.infer<typeof RpcRequestV1>;
+
+export const RpcResponseV1 = z.object({
+  requestId: z.string().uuid(),
+  ok:        z.boolean(),
+  result:    z.unknown().optional(),
+  error:     z.string().optional(),
+});
+export type RpcResponse = z.infer<typeof RpcResponseV1>;
+
+// ── Pipeline schemas (L11 composition) ────────────────────────────────────
+
+export const PIPELINE_STEP_STATES = ['active', 'degraded', 'closed'] as const;
+export const PipelineStepStateEnum = z.enum(PIPELINE_STEP_STATES);
+export type PipelineStepStateName = z.infer<typeof PipelineStepStateEnum>;
+
+export const PipelineStepV1 = z.object({
+  pipelineId: z.string().min(1),
+  stepId:     z.string().min(1),
+  role:       z.enum(['source', 'sink']),
+  terminalId: z.string().min(1),
+  state:      PipelineStepStateEnum,
+  ts:         z.string().datetime(),
+});
+export type PipelineStep = z.infer<typeof PipelineStepV1>;
+
 // ── Schema name → Zod schema map (for server validation and SDK use) ───────
 
 export const SCHEMA_BY_NAME: Record<string, z.ZodTypeAny> = {
@@ -367,4 +401,7 @@ export const SCHEMA_BY_NAME: Record<string, z.ZodTypeAny> = {
   'wave-doc-complete-v1':          WaveDocCompleteV1,
   'cmd-deliver-v1':                CmdDeliverV1,
   'cmd-ack-v1':                    CmdAckV1,
+  'pipeline-step-v1':              PipelineStepV1,
+  'rpc-request-v1':                RpcRequestV1,
+  'rpc-response-v1':               RpcResponseV1,
 };

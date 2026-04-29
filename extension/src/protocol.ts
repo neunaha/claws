@@ -328,6 +328,50 @@ export interface CmdAckRequest extends BaseRequest {
   correlation_id?: string;
 }
 
+/**
+ * L16 TYPED-RPC — issue a typed RPC call to a target peer. The server pushes
+ * the call to `rpc.<targetPeerId>.request` and holds this request open until
+ * the target publishes to `rpc.response.<callerPeerId>.<requestId>` or the
+ * timeout fires.
+ */
+export interface RpcCallRequest extends BaseRequest {
+  cmd: 'rpc.call';
+  targetPeerId: string;
+  method: string;
+  params?: Record<string, unknown>;
+  /** Milliseconds before the caller receives a timeout error. Default: 5000. */
+  timeoutMs?: number;
+}
+
+/** L7 Schema Registry — return sorted list of all registered schema names. */
+export interface SchemaListRequest extends BaseRequest {
+  cmd: 'schema.list';
+}
+
+/** L7 Schema Registry — return a simplified JSON representation of one schema. */
+export interface SchemaGetRequest extends BaseRequest {
+  cmd: 'schema.get';
+  name: string;
+}
+
+/** Create a named pipeline connecting source vehicle output to sink vehicle input. */
+export interface PipelineCreateRequest extends BaseRequest {
+  cmd: 'pipeline.create';
+  name?: string;
+  steps: Array<{ role: 'source' | 'sink'; terminalId: string }>;
+}
+
+/** List all pipelines (active and closed). */
+export interface PipelineListRequest extends BaseRequest {
+  cmd: 'pipeline.list';
+}
+
+/** Destroy a pipeline and emit pipeline.<id>.closed event. */
+export interface PipelineCloseRequest extends BaseRequest {
+  cmd: 'pipeline.close';
+  pipelineId: string;
+}
+
 export type ClawsRequest =
   | ListRequest
   | CreateRequest
@@ -359,6 +403,12 @@ export type ClawsRequest =
   | WaveStatusRequest
   | DeliverCmdRequest
   | CmdAckRequest
+  | PipelineCreateRequest
+  | PipelineListRequest
+  | PipelineCloseRequest
+  | RpcCallRequest
+  | SchemaListRequest
+  | SchemaGetRequest
   | BaseRequest;
 
 export interface TerminalDescriptor {

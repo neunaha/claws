@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — 0.7.6
 
+### Added — W9/L11+L17 Pipeline Composition + Workflow DAG Foundation (Wave 9)
+
+- `extension/src/pipeline-registry.ts` (new) — `PipelineRegistry` with `create`, `get`, `list`, `close`, `findBySource`, `clear`; `PipelineRecord` and `PipelineStep` types; `pipe_NNNN` monotonic IDs; `findBySource` returns only active pipelines for O(n) output-wiring dispatch.
+- `extension/src/server.ts` — `pipeline.create` handler (orchestrator-only, ≥2 steps with source+sink required); `pipeline.list` and `pipeline.close` handlers; output→sink wiring in `publish` handler: `output.<id>.*` topics matched by regex, active pipelines found via `findBySource`, text forwarded to sink via pty `writeInjected` or VS Code `sendText`, `pipeline.<id>.step.<stepId>` event emitted for each delivery.
+- `extension/src/event-schemas.ts` — `PipelineStepV1` Zod schema (pipelineId, stepId, role, terminalId, state, ts); `SCHEMA_BY_NAME` grows from 34 → 35 (also adds previously-missing `rpc-request-v1` and `rpc-response-v1` entries).
+- `extension/src/topic-registry.ts` — `pipeline.*.step.*`, `pipeline.*.created`, `pipeline.*.closed` patterns registered; registry grows 31 → 34.
+- `extension/src/protocol.ts` — `PipelineCreateRequest`, `PipelineListRequest`, `PipelineCloseRequest` interfaces added to the `ClawsRequest` union.
+- `mcp_server.js` — `claws_pipeline_create`, `claws_pipeline_list`, `claws_pipeline_close` handlers.
+- `schemas/mcp-tools.json` — 3 new tool definitions for the pipeline MCP tools.
+- `extension/test/claws-v2-pipeline.test.js` (new) — 34-check integration suite: create/list/close lifecycle (pipeline.*.created push, list active, close emits pipeline.*.closed, list shows closed state), output wiring (output.tA.line publish → step event + sink sendText), error cases (empty steps, missing source/sink, unknown pipelineId), topic subscription acceptance.
+
 ### Added — W6/L10 Structured Control — deliver-cmd + cmd.ack (Wave 6)
 
 - `extension/src/server.ts` — `deliver-cmd` handler: orchestrator-only; validates target peer exists, deduplicates by `idempotencyKey`, allocates monotonic `seq`, appends to event log, and pushes the command envelope to the worker's auto-subscription topic. `cmd.ack` handler: worker-only; fans out `cmd.<peerId>.ack` to all subscribed orchestrators with the `seq` and `status` fields.

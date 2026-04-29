@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
+import { z } from 'zod';
 import { CaptureStore } from './capture-store';
 import { TerminalManager } from './terminal-manager';
 import { ClawsRequest, ClawsResponse, HistoryEvent, PROTOCOL_VERSION, PROTOCOL_VERSION_V2, SubWorkerRole } from './protocol';
@@ -14,9 +16,10 @@ import {
 import { PeerConnection, DisconnectedPeer, ClawsRole, allocPeerId, fingerprintPeer, matchTopic } from './peer-registry';
 import { TaskRecord, allocTaskId } from './task-registry';
 import { LifecycleStore } from './lifecycle-store';
-import { EnvelopeV1 } from './event-schemas';
+import { EnvelopeV1, SCHEMA_BY_NAME } from './event-schemas';
 import { schemaForTopic } from './topic-registry';
 import { EventLogWriter, EventLogReader, parseCursor } from './event-log';
+import { PipelineRegistry } from './pipeline-registry';
 
 /**
  * Per-connection context threaded into `handle()`. Holds the raw socket
@@ -148,8 +151,21 @@ export class ClawsServer {
   /** Delivery record: seq → {targetPeerId, from, cmdTopic}. Needed to fan-out cmd.ack to orchestrator. */
   private readonly cmdDeliveryMap = new Map<number, { targetPeerId: string; from: string; cmdTopic: string }>();
 
+  /**
+   * L16 TYPED-RPC correlation map. Keyed by requestId (UUID). Each entry holds the
+   * resolve callback for the pending `rpc.call` handler and a timeout timer. Entries
+   * are deleted on response receipt or timeout — no unbounded growth.
+   */
+  private readonly rpcPending = new Map<string, {
+    resolve: (res: ClawsResponse) => void;
+    callerPeerId: string;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+
   private readonly eventLog = new EventLogWriter();
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  /** L11 Pipeline composition registry. */
+  private readonly pipelineRegistry = new PipelineRegistry();
 
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
@@ -1150,6 +1166,56 @@ export class ClawsServer {
         }
 
         const delivered = this.fanOut(r.topic, peerId, r.payload, r.echo ?? false, sequence);
+
+        // L16 TYPED-RPC: resolve any pending rpc.call waiting on this response topic.
+        // Topic: rpc.response.<callerPeerId>.<requestId> — parts[3] is the requestId.
+        if (r.topic.startsWith('rpc.response.')) {
+          const parts = r.topic.split('.');
+          if (parts.length >= 4) {
+            const requestId = parts[parts.length - 1];
+            const pending = this.rpcPending.get(requestId);
+            if (pending) {
+              clearTimeout(pending.timer);
+              this.rpcPending.delete(requestId);
+              pending.resolve({ ok: true, requestId, result: r.payload });
+            }
+          }
+        }
+
+        // L11 Pipeline: if topic matches output.<sourceId>.*, route output to sink terminals.
+        const outputMatch = /^output\.([^.]+)\./.exec(r.topic);
+        if (outputMatch) {
+          const sourceTerminalId = outputMatch[1];
+          const activePipelines = this.pipelineRegistry.findBySource(sourceTerminalId);
+          for (const pipeline of activePipelines) {
+            const sourceStep = pipeline.steps.find((s) => s.role === 'source');
+            const sinkStep = pipeline.steps.find((s) => s.role === 'sink');
+            if (!sourceStep || !sinkStep) continue;
+            const payloadObj = typeof r.payload === 'object' && r.payload !== null
+              ? r.payload as Record<string, unknown>
+              : {};
+            const text = typeof payloadObj['text'] === 'string'
+              ? payloadObj['text']
+              : JSON.stringify(r.payload);
+            const sinkRec = this.opts.terminalManager.recordById(sinkStep.terminalId);
+            if (sinkRec) {
+              if (sinkRec.pty) {
+                sinkRec.pty.writeInjected(text, true, false);
+              } else {
+                sinkRec.terminal.sendText(text, true);
+              }
+            }
+            void this.emitSystemEvent(`pipeline.${pipeline.pipelineId}.step.${sourceStep.stepId}`, {
+              pipelineId: pipeline.pipelineId,
+              stepId:     sourceStep.stepId,
+              role:       'source',
+              terminalId: sourceTerminalId,
+              state:      'active',
+              ts:         new Date().toISOString(),
+            });
+          }
+        }
+
         return { ok: true, deliveredTo: delivered };
       } finally {
         this.serverInFlight--;
@@ -1485,7 +1551,140 @@ export class ClawsServer {
       return { ok: true };
     }
 
+    if (cmd === 'pipeline.create') {
+      const denied = this.requireRole(ctx, ['orchestrator']);
+      if (denied) return denied;
+      const r = req as import('./protocol').PipelineCreateRequest;
+      if (!Array.isArray(r.steps) || r.steps.length < 2) {
+        return { ok: false, error: 'pipeline.create:steps-required (min 2 steps)' };
+      }
+      if (!r.steps.some((s) => s.role === 'source')) {
+        return { ok: false, error: 'pipeline.create:source-step-required' };
+      }
+      if (!r.steps.some((s) => s.role === 'sink')) {
+        return { ok: false, error: 'pipeline.create:sink-step-required' };
+      }
+      const pipeline = this.pipelineRegistry.create(r.name ?? 'pipeline', r.steps);
+      await this.emitSystemEvent(`pipeline.${pipeline.pipelineId}.created`, {
+        pipelineId: pipeline.pipelineId,
+        name:       pipeline.name,
+        steps:      pipeline.steps,
+        state:      pipeline.state,
+        createdAt:  pipeline.createdAt,
+      });
+      return { ok: true, pipelineId: pipeline.pipelineId, pipeline };
+    }
+
+    if (cmd === 'pipeline.list') {
+      return { ok: true, pipelines: this.pipelineRegistry.list() };
+    }
+
+    if (cmd === 'pipeline.close') {
+      const denied = this.requireRole(ctx, ['orchestrator']);
+      if (denied) return denied;
+      const r = req as import('./protocol').PipelineCloseRequest;
+      if (!r.pipelineId) return { ok: false, error: 'pipeline.close:pipelineId-required' };
+      const closed = this.pipelineRegistry.close(r.pipelineId);
+      if (!closed) return { ok: false, error: `pipeline.close:not-found:${r.pipelineId}` };
+      await this.emitSystemEvent(`pipeline.${r.pipelineId}.closed`, {
+        pipelineId: r.pipelineId,
+        state:      'closed',
+        closedAt:   closed.closedAt,
+        steps:      closed.steps,
+      });
+      return { ok: true, pipelineId: r.pipelineId };
+    }
+
+    // ── L16 TYPED-RPC ───────────────────────────────────────────────────────
+
+    if (cmd === 'rpc.call') {
+      const denied = this.requireRole(ctx, ['orchestrator', 'worker', 'observer']);
+      if (denied) return denied;
+      const r = req as import('./protocol').RpcCallRequest;
+      if (!r.targetPeerId) return { ok: false, error: 'rpc.call:missing-targetPeerId' };
+      if (!r.method)       return { ok: false, error: 'rpc.call:missing-method' };
+
+      const targetPeer = this.peers.get(r.targetPeerId);
+      if (!targetPeer) return { ok: false, error: `rpc.call:target-not-found:${r.targetPeerId}` };
+
+      const requestId = randomUUID();
+      const callerPeerId = ctx.getPeerId()!;
+      const timeoutMs = r.timeoutMs ?? 5000;
+
+      // Returns a Promise held open until the worker responds or times out.
+      return new Promise<ClawsResponse>((resolve) => {
+        const timer = setTimeout(() => {
+          if (this.rpcPending.delete(requestId)) {
+            resolve({ ok: false, error: 'rpc.call:timeout', requestId });
+          }
+        }, timeoutMs);
+
+        this.rpcPending.set(requestId, { resolve, callerPeerId, timer });
+
+        this.pushFrame(targetPeer.socket, `rpc.${r.targetPeerId}.request`, callerPeerId, {
+          requestId,
+          method: r.method,
+          params: r.params ?? {},
+          callerPeerId,
+        });
+      });
+    }
+
+    // ── L7 Schema Registry ──────────────────────────────────────────────────
+
+    if (cmd === 'schema.list') {
+      return { ok: true, schemas: Object.keys(SCHEMA_BY_NAME).sort() };
+    }
+
+    if (cmd === 'schema.get') {
+      const r = req as import('./protocol').SchemaGetRequest;
+      if (!r.name) return { ok: false, error: 'schema.get:missing-name' };
+      const schema = SCHEMA_BY_NAME[r.name];
+      if (!schema) return { ok: false, error: `schema.get:not-found:${r.name}` };
+      return { ok: true, name: r.name, schema: serializeZodSchema(schema) };
+    }
+
     return { ok: false, error: `unknown cmd: ${cmd}` };
+  }
+}
+
+/**
+ * Serialize a Zod schema to a plain JSON-compatible object suitable for the
+ * schema registry `schema.get` response. Covers the shapes used in
+ * event-schemas.ts; unknown wrapper types fall back to `{ type: typeName }`.
+ */
+function serializeZodSchema(schema: z.ZodTypeAny): Record<string, unknown> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const def = (schema as any)._def as Record<string, unknown>;
+  const typeName = String(def.typeName ?? 'unknown');
+
+  switch (typeName) {
+    case 'ZodObject': {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const shapeMap = (schema as any).shape as Record<string, z.ZodTypeAny>;
+      const fields: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(shapeMap)) {
+        fields[k] = serializeZodSchema(v);
+      }
+      return { type: 'object', fields };
+    }
+    case 'ZodString':  return { type: 'string' };
+    case 'ZodNumber':  return { type: 'number' };
+    case 'ZodBoolean': return { type: 'boolean' };
+    case 'ZodArray':
+      return { type: 'array', items: serializeZodSchema(def.type as z.ZodTypeAny) };
+    case 'ZodEnum':
+      return { type: 'enum', values: def.values as string[] };
+    case 'ZodOptional':
+      return { ...serializeZodSchema(def.innerType as z.ZodTypeAny), optional: true };
+    case 'ZodNullable':
+      return { ...serializeZodSchema(def.innerType as z.ZodTypeAny), nullable: true };
+    case 'ZodLiteral':
+      return { type: 'literal', value: def.value as unknown };
+    case 'ZodRecord':
+      return { type: 'record', values: serializeZodSchema(def.valueType as z.ZodTypeAny) };
+    case 'ZodUnknown': return { type: 'unknown' };
+    default:           return { type: typeName };
   }
 }
 
