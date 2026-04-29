@@ -151,25 +151,53 @@ function cleanTmpDir(dir) {
     } finally { cleanTmpDir(dir); }
   });
 
-  // 10. mergeIntoFile concurrent calls — atomic write, no corruption
-  await check('mergeIntoFile: concurrent writes produce valid JSON (atomic)', async () => {
+  // 10. mergeIntoFile concurrent calls — all succeed, no .claws-tmp.* leftovers (F1+F2)
+  await check('mergeIntoFile: 10 concurrent calls all succeed, no tmp leftover', async () => {
     const dir = makeTmpDir();
     try {
       const p = path.join(dir, 'concurrent.json');
       fs.writeFileSync(p, '{"calls":0}');
-      // 10 concurrent merges each incrementing a different key
-      await Promise.all(
+      const results = await Promise.all(
         Array.from({ length: 10 }, (_, i) =>
           mergeIntoFile(p, cfg => { cfg[`key${i}`] = i; })
         )
       );
-      // File must be valid JSON (atomicity means no partial write corruption)
+      // All 10 calls must succeed (nonce ensures unique tmp per call)
+      results.forEach((r, i) =>
+        assert.strictEqual(r.ok, true, `call ${i} must succeed, got: ${JSON.stringify(r.error)}`)
+      );
+      // File must be valid JSON with no corruption
       const written = JSON.parse(fs.readFileSync(p, 'utf8'));
       assert.ok(typeof written === 'object', 'result must be valid JSON object');
+      // No .claws-tmp.* files should remain
+      const leftovers = fs.readdirSync(dir).filter(n => n.includes('.claws-tmp.'));
+      assert.deepStrictEqual(leftovers, [], `tmp files leaked: ${leftovers.join(', ')}`);
     } finally { cleanTmpDir(dir); }
   });
 
-  // 11. JsonSafeError is an Error subclass
+  // 11. writeAtomicInline concurrent calls don't collide — unique nonce per call (F1)
+  await check('writeAtomicInline: concurrent in-process calls do not collide', async () => {
+    const dir = makeTmpDir();
+    try {
+      const p = path.join(dir, 'nonce-test.json');
+      fs.writeFileSync(p, '{}');
+      const inputs = Array.from({ length: 10 }, (_, i) => JSON.stringify({ v: i }) + '\n');
+      // mergeIntoFile uses writeAtomicInline internally — 10 concurrent mutations
+      const results = await Promise.all(
+        inputs.map((_, i) => mergeIntoFile(p, () => ({ v: i })))
+      );
+      // All must succeed — pid-only suffix would cause collisions and WRITE_ERROR returns
+      results.forEach((r, i) =>
+        assert.strictEqual(r.ok, true, `call ${i} returned error: ${JSON.stringify(r.error)}`)
+      );
+      // File must be valid JSON, no .claws-tmp.* leftovers
+      JSON.parse(fs.readFileSync(p, 'utf8'));
+      const leftovers = fs.readdirSync(dir).filter(n => n.includes('.claws-tmp.'));
+      assert.deepStrictEqual(leftovers, [], `tmp files leaked: ${leftovers.join(', ')}`);
+    } finally { cleanTmpDir(dir); }
+  });
+
+  // 13. JsonSafeError is an Error subclass
   await check('JsonSafeError is an Error subclass', () => {
     const e = new JsonSafeError('test', 'TEST_CODE');
     assert.ok(e instanceof Error);
@@ -177,21 +205,21 @@ function cleanTmpDir(dir) {
     assert.strictEqual(e.code, 'TEST_CODE');
   });
 
-  // 12. parseJsonSafe: // inside a string value is preserved (not treated as comment)
+  // 14. parseJsonSafe: // inside a string value is preserved (not treated as comment)
   await check('parseJsonSafe: // inside string value is not stripped', () => {
     const r = parseJsonSafe('{"url":"http://example.com/path"}');
     assert.strictEqual(r.ok, true);
     assert.strictEqual(r.data.url, 'http://example.com/path');
   });
 
-  // 13. parseJsonSafe: inline /* block comment */ is stripped (F3)
+  // 15. parseJsonSafe: inline /* block comment */ is stripped (F3)
   await check('parseJsonSafe: inline /* block comment */ stripped', () => {
     const r = parseJsonSafe('{ "a": 1 /* inline */, "b": 2 }');
     assert.strictEqual(r.ok, true, `expected ok:true but got: ${JSON.stringify(r.error)}`);
     assert.deepStrictEqual(r.data, { a: 1, b: 2 });
   });
 
-  // 14. parseJsonSafe: multi-line /* block comment */ is stripped (F3)
+  // 16. parseJsonSafe: multi-line /* block comment */ is stripped (F3)
   await check('parseJsonSafe: multiline /* block comment */ stripped', () => {
     const r = parseJsonSafe('{\n  /* multi\n  line */\n  "x": 3\n}');
     assert.strictEqual(r.ok, true, `expected ok:true but got: ${JSON.stringify(r.error)}`);

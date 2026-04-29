@@ -118,14 +118,27 @@ export function parseJsonSafe(input, opts = {}) {
   }
 }
 
+// Per-call nonce for unique tmp filenames across concurrent mergeIntoFile calls (F1).
+let _mergeNonce = 0;
+
 // Minimal inline atomic write (rename pattern) — avoids importing atomic-file.mjs
 // so each L0 helper stays self-contained. Layer 2/3 wiring may replace this.
+// Uses pid+nonce for tmp uniqueness (F1) and fsyncs before rename for durability (F2).
 async function writeAtomicInline(filePath, content) {
-  const tmp = `${filePath}.claws-tmp.${process.pid}`;
+  const tmp = `${filePath}.claws-tmp.${process.pid}-${++_mergeNonce}`;
+  let fd;
   try {
-    await fs.promises.writeFile(tmp, content, 'utf8');
+    fd = await fs.promises.open(tmp, 'w', 0o644);
+    await fd.writeFile(content);
+    await fd.sync();
+    await fd.close();
+    fd = null;
     await fs.promises.rename(tmp, filePath);
   } catch (err) {
+    if (fd) {
+      try { await fd.close(); } catch { /* ignore */ }
+      fd = null;
+    }
     try { await fs.promises.unlink(tmp); } catch { /* best-effort cleanup */ }
     throw err;
   }
