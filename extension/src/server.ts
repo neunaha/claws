@@ -100,6 +100,7 @@ export class ClawsServer {
   private readonly lifecycleStore: LifecycleStore;
 
   private readonly eventLog = new EventLogWriter();
+  private heartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
@@ -108,6 +109,27 @@ export class ClawsServer {
   /** Milliseconds since this server instance was constructed. */
   uptimeMs(): number {
     return Date.now() - this.startedAt;
+  }
+
+  /**
+   * Appends an event to the log and fans it out to subscribers. Skips both
+   * steps if the event log is degraded. Errors are swallowed so callers
+   * (heartbeat timer, task handlers) never crash the extension.
+   */
+  private async emitSystemEvent(topic: string, payload: unknown): Promise<void> {
+    if (this.eventLog.isDegraded) return;
+    try {
+      const result = await this.eventLog.append({
+        topic,
+        from: 'server',
+        ts_server: new Date().toISOString(),
+        payload,
+      });
+      const sequence = result.sequence >= 0 ? result.sequence : undefined;
+      this.fanOut(topic, 'server', payload, false, sequence);
+    } catch {
+      // heartbeat failures must never crash the extension
+    }
   }
 
   /**
@@ -133,6 +155,18 @@ export class ClawsServer {
         this.opts.logger(`[claws] event log disabled at startup: ${String(err)}`);
       }))
       .then(() => this.bind(this.socketPath!))
+      .then(() => {
+        const intervalMs = this.getConfig().heartbeatIntervalMs;
+        if (intervalMs > 0) {
+          this.heartbeatTimer = setInterval(() => {
+            void this.emitSystemEvent('system.heartbeat', {
+              uptimeMs: this.uptimeMs(),
+              peers: this.peers.size,
+              terminals: this.opts.terminalManager.terminalCount,
+            });
+          }, intervalMs);
+        }
+      })
       .catch((err) => {
         this.startError = err instanceof Error ? err : new Error(String(err));
         this.opts.logger(`[claws] server start failed: ${this.startError.message}`);
@@ -145,6 +179,10 @@ export class ClawsServer {
   }
 
   stop(): void {
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
     // Best-effort flush: manifest is written synchronously inside close(); the
     // stream.end() drain is async but VS Code deactivation gives it time.
     this.eventLog.close().catch(() => { /* best-effort */ });
@@ -869,13 +907,13 @@ export class ClawsServer {
       if (r.note !== undefined) task.note = r.note;
       task.updatedAt = Date.now();
       // Publish task.status for orchestrator subscribers
-      this.fanOut('task.status', 'server', {
+      await this.emitServerEvent('task.status', {
         taskId: task.taskId,
         assignee: task.assignee,
         status: task.status,
         progressPct: task.progressPct,
         note: task.note,
-      }, false);
+      });
       return { ok: true };
     }
 
@@ -894,12 +932,12 @@ export class ClawsServer {
       task.artifacts = r.artifacts;
       task.completedAt = now;
       task.updatedAt = now;
-      this.fanOut('task.completed', 'server', {
+      await this.emitServerEvent('task.completed', {
         taskId: task.taskId,
         status: task.status,
         result: task.result,
         artifacts: task.artifacts,
-      }, false);
+      });
       this.opts.logger(`[claws/2] task completed: ${task.taskId} status=${task.status}`);
       return { ok: true };
     }
@@ -913,10 +951,10 @@ export class ClawsServer {
       task.cancelRequested = true;
       task.cancelReason = r.reason;
       task.updatedAt = Date.now();
-      this.fanOut(`task.cancel_requested.${task.assignee}`, 'server', {
+      await this.emitServerEvent(`task.cancel_requested.${task.assignee}`, {
         taskId: task.taskId,
         reason: r.reason,
-      }, false);
+      });
       return { ok: true };
     }
 
