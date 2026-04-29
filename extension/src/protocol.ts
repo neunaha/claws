@@ -153,6 +153,18 @@ export interface HelloRequest extends BaseRequest {
   waveId?: string;
   /** Sub-worker role within the wave (wave army protocol). */
   subWorkerRole?: SubWorkerRole;
+  /**
+   * L18 AUTH — HMAC-SHA256 token. Required when server auth is enabled.
+   * Computed as: HMAC-SHA256(secret, `${peerName}:${role}:${nonce}:${timestamp}`).
+   */
+  token?: string;
+  /** L18 AUTH — random hex nonce. Prevents replay attacks; single-use. */
+  nonce?: string;
+  /**
+   * L18 AUTH — Unix epoch milliseconds at token creation time. The server
+   * rejects tokens older than AUTH_MAX_TOKEN_AGE_MS (5 minutes).
+   */
+  timestamp?: number;
 }
 
 /** Create a new wave, registering expected sub-worker roles and heartbeat manifest. */

@@ -11,6 +11,30 @@ export interface EventLogConfig {
   compact: boolean;
 }
 
+/** L18 AUTH — token-based authentication configuration. */
+export interface AuthConfig {
+  /** When true, hello requests without a valid HMAC token are rejected. Default: false. */
+  enabled: boolean;
+  /**
+   * Path to a file containing the shared secret used for HMAC-SHA256 token
+   * validation. Required when enabled=true. May be absolute or relative to
+   * the workspace root.
+   */
+  tokenPath: string;
+}
+
+/** L19 TRANSPORT-X — optional WebSocket server configuration. */
+export interface WebSocketConfig {
+  /** When true, a WebSocket server is started alongside the Unix socket. Default: false. */
+  enabled: boolean;
+  /** TCP port for the WebSocket server. Default: 5678. */
+  port: number;
+  /** Absolute path to TLS certificate file. Empty string = plain ws://. */
+  certPath: string;
+  /** Absolute path to TLS private key file. Empty string = plain ws://. */
+  keyPath: string;
+}
+
 export interface ServerConfig {
   /** Maximum wall-clock time for an `exec` request before it rejects. */
   execTimeoutMs: number;
@@ -41,6 +65,10 @@ export interface ServerConfig {
   maxQueueDepth: number;
   /** Event log durability settings. */
   eventLog: EventLogConfig;
+  /** L18 AUTH — token-based authentication. */
+  auth: AuthConfig;
+  /** L19 TRANSPORT-X — optional WebSocket transport. */
+  webSocket: WebSocketConfig;
 }
 
 export type ServerConfigProvider = () => ServerConfig;
@@ -65,4 +93,6 @@ export const defaultServerConfig: ServerConfig = {
     retentionDays: DEFAULT_EVENT_LOG_RETENTION_DAYS,
     compact: DEFAULT_EVENT_LOG_COMPACT,
   },
+  auth: { enabled: false, tokenPath: '' },
+  webSocket: { enabled: false, port: 5678, certPath: '', keyPath: '' },
 };

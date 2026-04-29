@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — 0.7.6
 
+### Added — W10/L18+L19 Token Auth + WebSocket Transport (Wave 10 — FINAL)
+
+- `extension/src/server-config.ts` — `AuthConfig` (`enabled`, `tokenPath`), `WebSocketConfig` (`enabled`, `port`, `certPath`, `keyPath`) sub-configs added to `ServerConfig`; `defaultServerConfig` defaults to both disabled.
+- `extension/src/protocol.ts` — `HelloRequest` gains `token?`, `nonce?`, `timestamp?` fields for L18 auth.
+- `extension/src/server.ts` — `validateAuthToken()`: HMAC-SHA256 over `peerName:role:nonce:timestamp`; checks token present, timestamp ≤5 min stale, nonce single-use, HMAC `timingSafeEqual`; `usedNonces` Set cleared on `stop()`; auth called at start of `hello` handler before any other logic; `wsTransport.start()` invoked in `start()` chain when `webSocket.enabled`; `wsTransport.stop()` in `stop()`.
+- `extension/src/websocket-transport.ts` (new) — `WebSocketTransport` class: `WsSocketAdapter` wraps `ws.WebSocket` in a `net.Socket`-compatible EventEmitter shim (adapts message→data, close→end, write strips `\n` and calls `ws.send`); `WebSocketServer` created over http/https server; TLS when `certPath`+`keyPath` provided; loaded lazily so no cost when WS disabled.
+- `extension/src/extension.ts` — `getConfig()` wires `auth.*` and `webSocket.*` from VS Code settings.
+- `extension/package.json` — `ws@8` + `@types/ws@8` as optional/dev deps; VS Code config contributions for all 6 new config keys; `test:auth` and `test:ws-transport` scripts; both added to `test` chain.
+- `extension/test/claws-auth.test.js` (new) — 6-check auth suite: no-token, wrong-HMAC, valid-HMAC, stale-timestamp, nonce-reuse, auth-disabled.
+- `extension/test/claws-ws-transport.test.js` (new) — 5-check WS suite: hello, pub/sub round-trip, shared peer registry with Unix socket, protocol tag, worker auto-subscribe.
+
 ### Added — W8/L16+L7 Typed RPC + Schema Registry (Wave 8)
 
 - `extension/src/server.ts` — `rpc.call` command: synchronous blocking RPC — caller's request is held open (like `exec`) until the target peer publishes to `rpc.response.<callerPeerId>.<requestId>` or the timeout fires; `rpcPending` correlation map with `clearTimeout` cleanup on resolution; `schema.list` command returns sorted keys from `SCHEMA_BY_NAME`; `schema.get` command returns a simplified JSON representation via `serializeZodSchema` (recursive Zod `_def` traversal covering object, string, number, boolean, array, record, enum, literal, optional, nullable, unknown).

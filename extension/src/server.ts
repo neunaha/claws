@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHmac, timingSafeEqual } from 'crypto';
 import { z } from 'zod';
 import { CaptureStore } from './capture-store';
 import { TerminalManager } from './terminal-manager';
@@ -20,6 +20,7 @@ import { EnvelopeV1, SCHEMA_BY_NAME } from './event-schemas';
 import { schemaForTopic } from './topic-registry';
 import { EventLogWriter, EventLogReader, parseCursor } from './event-log';
 import { PipelineRegistry } from './pipeline-registry';
+import { WebSocketTransport } from './websocket-transport';
 
 /**
  * Per-connection context threaded into `handle()`. Holds the raw socket
@@ -37,6 +38,8 @@ interface ConnCtx {
 const MAX_READLOG_BYTES = 512 * 1024;
 const DEFAULT_SOCKET_REL = '.claws/claws.sock';
 const MAX_LINE_BYTES = 1024 * 1024;
+/** L18 AUTH — maximum token age before it is rejected as stale (5 minutes). */
+const AUTH_MAX_TOKEN_AGE_MS = 5 * 60 * 1000;
 // How long to wait for an existing socket to respond before declaring it
 // stale. 250ms is a live-server SLA on localhost — a real server answers in
 // single-digit ms; no answer means nobody's there.
@@ -166,6 +169,13 @@ export class ClawsServer {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   /** L11 Pipeline composition registry. */
   private readonly pipelineRegistry = new PipelineRegistry();
+  /**
+   * L18 AUTH — consumed nonce set. Nonces are single-use; a second hello
+   * with an already-seen nonce is rejected as a replay attack. Cleared on stop().
+   */
+  private readonly usedNonces = new Set<string>();
+  /** L19 TRANSPORT-X — optional WebSocket transport alongside the Unix socket. */
+  private readonly wsTransport = new WebSocketTransport();
 
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
@@ -197,6 +207,63 @@ export class ClawsServer {
   /** Milliseconds since this server instance was constructed. */
   uptimeMs(): number {
     return Date.now() - this.startedAt;
+  }
+
+  /**
+   * L18 AUTH — validate a hello token against the configured shared secret.
+   * Returns null on success, or an error string ('auth:required'|'auth:invalid').
+   *
+   * Token = HMAC-SHA256(secret, `${peerName}:${role}:${nonce}:${timestamp}`).
+   * Checks: token present, timestamp not stale, nonce not reused, HMAC correct.
+   */
+  private validateAuthToken(r: import('./protocol').HelloRequest): string | null {
+    const cfg = this.getConfig().auth;
+    if (!cfg?.enabled) return null;
+
+    if (!r.token || !r.nonce || r.timestamp === undefined) {
+      return 'auth:required';
+    }
+
+    // Reject stale tokens (replay window).
+    const age = Date.now() - r.timestamp;
+    if (age < 0 || age > AUTH_MAX_TOKEN_AGE_MS) {
+      return 'auth:invalid';
+    }
+
+    // Reject replayed nonces.
+    if (this.usedNonces.has(r.nonce)) {
+      return 'auth:invalid';
+    }
+
+    // Load and validate HMAC.
+    let secret: string;
+    try {
+      const tokenPath = path.isAbsolute(cfg.tokenPath)
+        ? cfg.tokenPath
+        : path.join(this.opts.workspaceRoot, cfg.tokenPath);
+      secret = fs.readFileSync(tokenPath, 'utf8').trim();
+    } catch {
+      // Token file missing or unreadable — auth is misconfigured, reject all.
+      return 'auth:invalid';
+    }
+
+    const expected = createHmac('sha256', secret)
+      .update(`${r.peerName}:${r.role}:${r.nonce}:${r.timestamp}`)
+      .digest('hex');
+
+    let valid = false;
+    try {
+      valid = timingSafeEqual(Buffer.from(r.token, 'hex'), Buffer.from(expected, 'hex'));
+    } catch {
+      // Mismatched buffer lengths (malformed token) → not equal.
+      valid = false;
+    }
+
+    if (!valid) return 'auth:invalid';
+
+    // Consume the nonce — prevents replay on a second connection.
+    this.usedNonces.add(r.nonce);
+    return null;
   }
 
   /**
@@ -300,6 +367,23 @@ export class ClawsServer {
           }, intervalMs);
         }
       })
+      .then(() => {
+        // L19 TRANSPORT-X — start WebSocket server alongside Unix socket if enabled.
+        const wsCfg = this.getConfig().webSocket;
+        if (wsCfg?.enabled) {
+          return this.wsTransport.start({
+            port: wsCfg.port,
+            certPath: wsCfg.certPath || undefined,
+            keyPath: wsCfg.keyPath || undefined,
+            logger: this.opts.logger,
+            onConnection: (socket) => this.handleConnection(socket),
+          }).catch((err: unknown) => {
+            // WebSocket failure is non-fatal — Unix socket still works.
+            this.opts.logger(`[claws/ws] failed to start: ${String(err)}`);
+          });
+        }
+        return undefined;
+      })
       .catch((err) => {
         this.startError = err instanceof Error ? err : new Error(String(err));
         this.opts.logger(`[claws] server start failed: ${this.startError.message}`);
@@ -317,6 +401,8 @@ export class ClawsServer {
       this.heartbeatTimer = null;
     }
     this.waveRegistry.dispose();
+    // L19 TRANSPORT-X — stop WebSocket server if running.
+    this.wsTransport.stop();
     // Best-effort flush: manifest is written synchronously inside close(); the
     // stream.end() drain is async but VS Code deactivation gives it time.
     this.eventLog.close().catch(() => { /* best-effort */ });
@@ -328,6 +414,7 @@ export class ClawsServer {
     this.subSeq = 0;
     this.tasks.clear();
     this.taskSeq = 0;
+    this.usedNonces.clear();
   }
 
   getSocketPath(): string | null { return this.socketPath; }
@@ -969,6 +1056,11 @@ export class ClawsServer {
     if (cmd === 'hello') {
       const r = req as import('./protocol').HelloRequest;
       if (r.protocol !== 'claws/2') return { ok: false, error: 'hello requires protocol: claws/2' };
+
+      // L18 AUTH — validate token before any other checks.
+      const authErr = this.validateAuthToken(r);
+      if (authErr) return { ok: false, error: authErr };
+
       if (r.role === 'orchestrator' && this.hasOrchestrator()) {
         return { ok: false, error: 'orchestrator already registered' };
       }

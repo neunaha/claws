@@ -294,6 +294,16 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
       retentionDays: cfg('eventLog.retentionDays', DEFAULT_EVENT_LOG_RETENTION_DAYS),
       compact: cfg('eventLog.compact', DEFAULT_EVENT_LOG_COMPACT),
     },
+    auth: {
+      enabled: cfg('auth.enabled', false),
+      tokenPath: cfg('auth.tokenPath', '.claws/auth.token'),
+    },
+    webSocket: {
+      enabled: cfg('webSocket.enabled', false),
+      port: cfg('webSocket.port', 5678),
+      certPath: cfg('webSocket.certPath', ''),
+      keyPath: cfg('webSocket.keyPath', ''),
+    },
   });
 
   const buildIntrospectSnapshot = (): IntrospectSnapshot => {
