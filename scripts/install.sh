@@ -963,21 +963,37 @@ CLAWSBIN
     # Write or merge .mcp.json with absolute args path so Claude Code can start
     # the server regardless of its cwd. __dirname walk-up in mcp_server.js
     # handles socket discovery once the server is running — no CLAWS_SOCKET needed.
+    #
+    # M-02: use json-safe.mjs mergeIntoFile — JSONC-tolerant, never resets cfg to {}
+    # on parse error (which would silently wipe the user's other MCP servers).
     PROJECT_MCP="$PROJECT_ROOT/.mcp.json"
-    node --no-deprecation -e "
-const fs = require('fs');
-const p = process.argv[1];
-const projectRoot = process.argv[2];
-let cfg = {};
-try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
-cfg.mcpServers = cfg.mcpServers || {};
-cfg.mcpServers.claws = { command: process.argv[3] || 'node', args: [projectRoot + '/.claws-bin/mcp_server.js'] };
-fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-" "$PROJECT_MCP" "$PROJECT_ROOT"
-    ok "wrote $PROJECT_MCP"
-    if ! node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
-      bad ".mcp.json written to $PROJECT_ROOT but is not valid JSON — MCP server will fail to load"
-      bad "Check $CLAWS_LOG for jq/cat errors above"
+    node --no-deprecation --input-type=module <<MCPMERGEEOF
+import { mergeIntoFile } from '${INSTALL_DIR}/scripts/_helpers/json-safe.mjs';
+const mcpPath = '${PROJECT_MCP}';
+const projectRoot = '${PROJECT_ROOT}';
+const result = await mergeIntoFile(mcpPath, cfg => {
+  if (!cfg.mcpServers) cfg.mcpServers = {};
+  cfg.mcpServers.claws = { command: 'node', args: [projectRoot + '/.claws-bin/mcp_server.js'] };
+});
+if (!result.ok) {
+  const e = result.error;
+  process.stderr.write('[M-02] .mcp.json merge failed: ' + e.message + '\\n');
+  if (e.backupSavedAt) {
+    process.stderr.write('[M-02] Malformed original backed up to: ' + e.backupSavedAt + '\\n');
+    process.stderr.write('[M-02] Fix the JSON then re-run /claws-update\\n');
+  }
+  process.exit(1);
+}
+MCPMERGEEOF
+    if [ $? -ne 0 ]; then
+      bad ".mcp.json merge failed — original preserved, see above for details"
+      bad "Fix the JSON in $PROJECT_MCP and re-run /claws-update"
+    else
+      ok "wrote $PROJECT_MCP"
+      if ! node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
+        bad ".mcp.json written to $PROJECT_ROOT but is not valid JSON — MCP server will fail to load"
+        bad "Check $CLAWS_LOG for jq/cat errors above"
+      fi
     fi
     touch "$PROJECT_ROOT/.gitignore" 2>/dev/null || true
     if ! grep -q "^\.claws/" "$PROJECT_ROOT/.gitignore" 2>/dev/null; then
