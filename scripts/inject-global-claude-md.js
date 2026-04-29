@@ -15,6 +15,21 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 
+// M-28: atomic write helper (tmp + renameSync) — mirrors atomic-file.mjs writeAtomic.
+// Prevents partial ~/.claude/CLAUDE.md if the process is killed mid-write.
+// This is machine-wide config — corruption here breaks ALL Claude Code sessions.
+function writeAtomic(filePath, content) {
+  const tmp = filePath + '.claws-tmp.' + process.pid + '-' + (++writeAtomic._nonce);
+  try {
+    fs.writeFileSync(tmp, content, { mode: 0o644 });
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
+}
+writeAtomic._nonce = 0;
+
 const DRY_RUN = process.argv.includes('--dry-run');
 
 const GLOBAL_CLAUDE_MD = path.join(os.homedir(), '.claude', 'CLAUDE.md');
@@ -77,7 +92,7 @@ let orig = '';
 try { orig = fs.readFileSync(GLOBAL_CLAUDE_MD, 'utf8'); } catch { /* ignore */ }
 
 if (next !== orig) {
-  fs.writeFileSync(GLOBAL_CLAUDE_MD, next);
+  writeAtomic(GLOBAL_CLAUDE_MD, next);
   console.log(`~/.claude/CLAUDE.md ${existed ? (beginIdx !== -1 ? 'Claws global block updated' : 'Claws global block inserted') : 'created with Claws global block'}`);
 } else {
   console.log('~/.claude/CLAUDE.md already has the current Claws global block');
