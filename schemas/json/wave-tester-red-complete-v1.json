@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wave-tester-red-complete-v1",
+  "$ref": "#/definitions/wave-tester-red-complete-v1",
+  "definitions": {
+    "wave-tester-red-complete-v1": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "test_file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "failing_tests": {
+          "type": "number",
+          "minimum": 0
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "waveId",
+        "test_file",
+        "failing_tests",
+        "ts"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

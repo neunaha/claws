@@ -121,7 +121,7 @@ export class WaveRegistry {
     regressionClean?: boolean,
   ): WaveRecord | null {
     const wave = this.waves.get(waveId);
-    if (!wave || wave.complete) return wave ?? null;
+    if (!wave || wave.complete) return null;
 
     for (const entry of wave.subWorkers.values()) {
       if (entry.violationTimer !== undefined) {

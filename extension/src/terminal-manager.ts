@@ -5,6 +5,7 @@ import { TerminalDescriptor } from './protocol';
 import { VehicleStateName } from './event-schemas';
 
 type StateChangeCallback = (id: string, from: VehicleStateName | null, to: VehicleStateName) => void;
+type ContentChangeCallback = (id: string, pid: number | null, basename: string | null) => void;
 
 const VALID_TRANSITIONS: Readonly<Record<VehicleStateName, readonly VehicleStateName[]>> = {
   PROVISIONING: ['BOOTING', 'CLOSING'],
@@ -16,6 +17,8 @@ const VALID_TRANSITIONS: Readonly<Record<VehicleStateName, readonly VehicleState
   CLOSED:       [],
 };
 
+const CONTENT_DETECTION_INTERVAL_MS = 2000;
+
 interface TerminalRecord {
   id: string;
   terminal: vscode.Terminal;
@@ -24,6 +27,8 @@ interface TerminalRecord {
   logPath: string | null;
   name: string;
   vehicleState: VehicleStateName;
+  contentDetectionTimer: NodeJS.Timeout | null;
+  lastForegroundBasename: string | null | undefined;
 }
 
 export interface CreateOptions {
@@ -52,6 +57,7 @@ export class TerminalManager {
   private nextId = 1;
   private unopenedScanTimer: NodeJS.Timeout | null = null;
   private onStateChange: StateChangeCallback | null = null;
+  private onContentChange: ContentChangeCallback | null = null;
 
   constructor(
     private readonly captureStore: CaptureStore,
@@ -63,6 +69,11 @@ export class TerminalManager {
   /** Wire the vehicle state change callback. Called by ClawsServer after construction. */
   setStateChangeCallback(cb: StateChangeCallback): void {
     this.onStateChange = cb;
+  }
+
+  /** Wire the content change callback. Called by ClawsServer after construction. */
+  setContentChangeCallback(cb: ContentChangeCallback): void {
+    this.onContentChange = cb;
   }
 
   private transitionState(rec: TerminalRecord, to: VehicleStateName): void {
@@ -77,6 +88,30 @@ export class TerminalManager {
 
   private emitInitialState(rec: TerminalRecord): void {
     this.onStateChange?.(rec.id, null, rec.vehicleState);
+  }
+
+  private startContentDetection(rec: TerminalRecord): void {
+    if (rec.contentDetectionTimer || !rec.pty) return;
+    const poll = () => {
+      if (!rec.pty) return;
+      const { pid, basename } = rec.pty.getForegroundProcess();
+      if (basename !== rec.lastForegroundBasename) {
+        rec.lastForegroundBasename = basename;
+        this.onContentChange?.(rec.id, pid, basename);
+      }
+    };
+    // Fire immediately after a short delay to capture the initial shell state.
+    setTimeout(poll, 1500);
+    const timer = setInterval(poll, CONTENT_DETECTION_INTERVAL_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+    rec.contentDetectionTimer = timer;
+  }
+
+  private stopContentDetection(rec: TerminalRecord): void {
+    if (rec.contentDetectionTimer) {
+      clearInterval(rec.contentDetectionTimer);
+      rec.contentDetectionTimer = null;
+    }
   }
 
   adoptExisting(terminals: readonly vscode.Terminal[]): void {
@@ -98,6 +133,8 @@ export class TerminalManager {
       logPath: null,
       name: terminal.name,
       vehicleState: 'PROVISIONING',
+      contentDetectionTimer: null,
+      lastForegroundBasename: undefined,
     });
     return id;
   }
@@ -176,6 +213,8 @@ export class TerminalManager {
       logPath: null,
       name: options.name || `Claws ${id}`,
       vehicleState: 'PROVISIONING',
+      contentDetectionTimer: null,
+      lastForegroundBasename: undefined,
     };
     this.records.set(id, rec);
 
@@ -190,8 +229,12 @@ export class TerminalManager {
       env: options.env,
       captureStore: this.captureStore,
       logger: this.logger,
-      // When VS Code calls open() on the Pseudoterminal, flip to READY.
-      onOpenHook: () => this.transitionState(rec, 'READY'),
+      // When VS Code calls open() on the Pseudoterminal, flip to READY and
+      // start polling for foreground process changes.
+      onOpenHook: () => {
+        this.transitionState(rec, 'READY');
+        this.startContentDetection(rec);
+      },
     });
     rec.pty = pty;
 
@@ -223,6 +266,8 @@ export class TerminalManager {
       logPath: null,
       name: terminal.name,
       vehicleState: 'PROVISIONING',
+      contentDetectionTimer: null,
+      lastForegroundBasename: undefined,
     });
     if (options.show !== false) terminal.show(options.preserveFocus !== false);
     return { id, terminal };
@@ -232,6 +277,7 @@ export class TerminalManager {
     const key = String(id);
     const rec = this.records.get(key);
     if (!rec) return false;
+    this.stopContentDetection(rec);
     this.transitionState(rec, 'CLOSING');
     this.transitionState(rec, 'CLOSED');
     try { rec.terminal.dispose(); } catch { /* ignore */ }
@@ -247,6 +293,7 @@ export class TerminalManager {
     this.byTerminal.delete(terminal);
     const rec = this.records.get(id);
     if (rec) {
+      this.stopContentDetection(rec);
       this.transitionState(rec, 'CLOSING');
       this.transitionState(rec, 'CLOSED');
     }
@@ -269,6 +316,8 @@ export class TerminalManager {
       logPath: null,
       name: terminal.name,
       vehicleState: 'PROVISIONING',
+      contentDetectionTimer: null,
+      lastForegroundBasename: undefined,
     });
   }
 
@@ -277,6 +326,9 @@ export class TerminalManager {
    * Call this during extension deactivation.
    */
   dispose(): void {
+    for (const rec of this.records.values()) {
+      this.stopContentDetection(rec);
+    }
     if (this.unopenedScanTimer) {
       clearInterval(this.unopenedScanTimer);
       this.unopenedScanTimer = null;
@@ -299,6 +351,7 @@ export class TerminalManager {
       this.logger(
         `[terminal-manager] pty id=${id} never opened after ${rec.pty.ageMs()}ms — disposing orphan`,
       );
+      this.stopContentDetection(rec);
       try { rec.pty.close(); } catch { /* ignore */ }
       try { rec.terminal.dispose(); } catch { /* ignore */ }
       this.byTerminal.delete(rec.terminal);

@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "command-end-v1",
+  "$ref": "#/definitions/command-end-v1",
+  "definitions": {
+    "command-end-v1": {
+      "type": "object",
+      "properties": {
+        "terminalId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exitCode": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "durationMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "degraded": {
+          "type": "boolean"
+        },
+        "endedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "terminalId",
+        "command",
+        "exitCode",
+        "durationMs",
+        "endedAt"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wave-doc-complete-v1",
+  "$ref": "#/definitions/wave-doc-complete-v1",
+  "definitions": {
+    "wave-doc-complete-v1": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "files_updated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "waveId",
+        "files_updated",
+        "ts"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

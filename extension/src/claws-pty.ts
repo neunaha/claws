@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -167,6 +167,39 @@ export class ClawsPty implements vscode.Pseudoterminal {
   /** Wall-clock ms since this ClawsPty was constructed. */
   ageMs(): number {
     return Date.now() - this.createdAt;
+  }
+
+  /**
+   * Returns the foreground process running under the shell managed by this
+   * PTY. Uses pgrep to find the most recent child of the shell PID, then ps
+   * to get its basename. Falls back to the shell PID itself if no child is
+   * found. Returns { pid: null, basename: null } if the PTY has no spawned
+   * process yet.
+   */
+  getForegroundProcess(): { pid: number | null; basename: string | null } {
+    const shellPid = this.ptyProc?.pid ?? this.childProc?.pid;
+    if (!shellPid) return { pid: null, basename: null };
+    try {
+      const pgrepResult = spawnSync('pgrep', ['-P', String(shellPid)], { encoding: 'utf8', timeout: 500 });
+      const childOutput = (pgrepResult.stdout ?? '').trim();
+      let targetPid: number = shellPid;
+      if (childOutput) {
+        const childPids = childOutput.split('\n').filter(Boolean);
+        const candidatePid = parseInt(childPids[childPids.length - 1], 10);
+        if (!isNaN(candidatePid)) targetPid = candidatePid;
+      }
+      const psResult = spawnSync('ps', ['-p', String(targetPid), '-o', 'comm='], { encoding: 'utf8', timeout: 500 });
+      let basename = (psResult.stdout ?? '').trim() || null;
+      // If the child process has already exited, fall back to the shell itself.
+      if (!basename && targetPid !== shellPid) {
+        const fallback = spawnSync('ps', ['-p', String(shellPid), '-o', 'comm='], { encoding: 'utf8', timeout: 500 });
+        basename = (fallback.stdout ?? '').trim() || null;
+        targetPid = shellPid;
+      }
+      return { pid: targetPid, basename };
+    } catch {
+      return { pid: shellPid, basename: null };
+    }
   }
 
   open(initialDimensions: vscode.TerminalDimensions | undefined): void {

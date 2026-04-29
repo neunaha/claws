@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { matchTopic } from './topic-utils';
 
 const SEGMENT_SIZE_THRESHOLD = 10 * 1024 * 1024; // 10 MB
 const SEGMENT_AGE_THRESHOLD_MS = 3600_000;        // 1 hour
@@ -348,5 +349,78 @@ export class EventLogWriter {
       this.fd = null;
     }
     return Promise.resolve();
+  }
+}
+
+export class EventLogReader {
+  private readonly streamDir: string;
+
+  constructor(workspaceRoot: string) {
+    this.streamDir = path.join(workspaceRoot, '.claws', 'events', 'default');
+  }
+
+  async *scanFrom(cursor: string, topicPattern: string): AsyncIterable<LogRecord> {
+    const parsed = parseCursor(cursor);
+    if (!parsed) return;
+    const { segmentId, offset } = parsed;
+    const segments = this.listSegments();
+    const relevant = segments
+      .filter(s => s.id >= segmentId)
+      .sort((a, b) => a.id - b.id);
+    for (const seg of relevant) {
+      const startOffset = seg.id === segmentId ? offset : 0;
+      yield* this.readSegmentFrom(seg.filePath, startOffset, topicPattern);
+    }
+  }
+
+  private listSegments(): Array<{ id: number; filePath: string }> {
+    try {
+      const raw = fs.readFileSync(path.join(this.streamDir, 'manifest.json'), 'utf8');
+      const m = JSON.parse(raw) as { segments?: Array<{ id: string; path: string }> };
+      if (Array.isArray(m.segments)) {
+        return m.segments
+          .map(s => ({ id: parseInt(s.id, 10), filePath: path.join(this.streamDir, s.path) }))
+          .filter(s => !isNaN(s.id));
+      }
+    } catch { /* fall through */ }
+    try {
+      return fs.readdirSync(this.streamDir)
+        .filter(n => /^\d{4}-.*\.jsonl$/.test(n))
+        .map(n => ({ id: parseInt(n.slice(0, 4), 10), filePath: path.join(this.streamDir, n) }))
+        .filter(s => !isNaN(s.id));
+    } catch {
+      return [];
+    }
+  }
+
+  private async *readSegmentFrom(
+    filePath: string,
+    startOffset: number,
+    topicPattern: string,
+  ): AsyncGenerator<LogRecord> {
+    let data: Buffer;
+    try {
+      const stat = fs.statSync(filePath);
+      const size = stat.size - startOffset;
+      if (size <= 0) return;
+      const fd = fs.openSync(filePath, 'r');
+      try {
+        data = Buffer.alloc(size);
+        fs.readSync(fd, data, 0, size, startOffset);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return;
+    }
+    for (const line of data.toString('utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line) as LogRecord;
+        if (typeof record.topic === 'string' && matchTopic(record.topic, topicPattern)) {
+          yield record;
+        }
+      } catch { /* skip malformed lines */ }
+    }
   }
 }

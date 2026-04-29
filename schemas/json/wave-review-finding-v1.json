@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wave-review-finding-v1",
+  "$ref": "#/definitions/wave-review-finding-v1",
+  "definitions": {
+    "wave-review-finding-v1": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW"
+          ]
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "suggested_fix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "waveId",
+        "severity",
+        "file",
+        "message"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

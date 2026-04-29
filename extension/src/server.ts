@@ -44,7 +44,7 @@ const SHELL_BASENAMES = new Set([
 
 function classifyContentType(basename: string | null): string {
   if (!basename) return 'unknown';
-  const name = require('path').basename(basename).toLowerCase();
+  const name = path.basename(basename).toLowerCase();
   if (SHELL_BASENAMES.has(name) || name.startsWith('bash') || name.startsWith('zsh') || name.startsWith('sh')) return 'shell';
   if (name.startsWith('python')) return 'python';
   if (name === 'node' || name === 'nodejs') return 'node';

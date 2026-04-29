@@ -30,6 +30,17 @@ The embedder wave introduces the Wave Army Protocol — a structured multi-agent
 
 **Pending (in-progress):** MCP tools (`claws_wave_create/status/complete/dispatch_subworker`), CLAUDE.md template embedding, session-start hook update, skill files, slash commands.
 
+### Added — W2/L15 Event Log Replay + L9 Observation
+
+- `extension/src/event-log.ts` — `EventLogReader` class: `scanFrom(cursor, topicPattern)` async generator reads segments from a byte-offset cursor position, filters records by topic pattern via `matchTopic()`, handles both manifest-based and directory-scan segment discovery.
+- `extension/src/server.ts` — `subscribe` handler now validates `fromCursor` format (`parseCursor` → null = reject with `invalid cursor format`); registers subscription in `subscriptionIndex` **before** replay starts (atomicity — no live events missed during replay); `setImmediate` dispatches `replayFromCursor` so the subscribe ACK is sent first. `replayFromCursor` sends `{push:'message', replayed:true}` frames then a `{push:'caught-up', subscriptionId, replayedCount, resumeCursor}` terminal signal.
+- `extension/src/protocol.ts` — `SubscribeResponse` interface adds optional `replayedCount?: number`.
+- `extension/src/claws-pty.ts` — `getForegroundProcess()` uses `pgrep -P <shellPid>` + `ps -p <pid> -o comm=` to detect the foreground process basename under the shell; powers L9 content-type observation.
+- `extension/src/peer-registry.ts` — `DisconnectedPeer` tombstone interface; `fingerprintPeer(peerName, role, nonce)` derives stable 12-hex sha256 fingerprint for `fp_`-prefixed stable peer IDs on reconnect.
+- `extension/src/terminal-manager.ts` — `ContentChangeCallback`; `startContentDetection` polls foreground process every 2 s and fires `onContentChange` on basename transitions; wired via `setContentChangeCallback`.
+- `extension/src/wave-registry.ts` — violation timer updates; sub-worker heartbeat tracking improvements.
+- `extension/test/claws-event-log-replay.test.js` — 13-assertion integration test: publishes 10 events, subscribes with `fromCursor`, verifies all 10 replayed frames carry `replayed:true`, caught-up frame fires with correct count, live events arrive without `replayed`, invalid cursor rejected (TDD: 6 failing → 13 passing).
+
 ### Fixed
 - `extension/test/event-schemas.test.js` — update `SCHEMA_BY_NAME` count from 19 to 20 (added `vehicle-state-v1`).
 - `extension/test/topic-registry.test.js` — update `TOPIC_REGISTRY` count from 19 to 22 (added 3 vehicle.* patterns).
