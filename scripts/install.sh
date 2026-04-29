@@ -1135,8 +1135,12 @@ CLAWSCMD
   fi
 
   # CLAUDE.md injection (project scope only — never inside $HOME)
+  # M-21: GIT_PULL_OK=0 means git pull failed in update.sh — skip re-injection to
+  # avoid overwriting the user's CLAUDE.md tool set with stale source.
   if [ "$TARGET" != "$HOME" ]; then
-    if [ ! -f "$INSTALL_DIR/scripts/inject-claude-md.js" ] && [ ! -f "$INSTALL_DIR/.claws-bin/inject-claude-md.js" ]; then
+    if [ "${GIT_PULL_OK:-1}" = "0" ]; then
+      note "CLAUDE.md injection skipped — git pull failed, stale source (M-21)"
+    elif [ ! -f "$INSTALL_DIR/scripts/inject-claude-md.js" ] && [ ! -f "$INSTALL_DIR/.claws-bin/inject-claude-md.js" ]; then
       warn "inject-claude-md.js not found — CLAUDE.md injection skipped. Clone may be incomplete."
     else
       node --no-deprecation "$INSTALL_DIR/scripts/inject-claude-md.js" "$TARGET" 2>&1 | sed 's/^/  /' || warn "CLAUDE.md injector failed — see $CLAWS_LOG for details"

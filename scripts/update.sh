@@ -55,6 +55,9 @@ if [ ! -d "$INSTALL_DIR/.git" ]; then
 fi
 
 header "Pulling latest Claws source"
+# M-21: track whether git pull succeeded so install.sh can skip stale-source
+# CLAUDE.md re-injection. GIT_PULL_OK=0 exported on failure → install.sh gates on it.
+GIT_PULL_OK=1
 _claws_prev_sha=$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo "unknown")
 if ( cd "$INSTALL_DIR" && git pull --ff-only --quiet origin main 2>/tmp/claws-pull-err.$$ ); then
   _claws_new_sha=$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -65,13 +68,16 @@ if ( cd "$INSTALL_DIR" && git pull --ff-only --quiet origin main 2>/tmp/claws-pu
   fi
   rm -f /tmp/claws-pull-err.$$
 else
+  GIT_PULL_OK=0
   printf "  ${C_YELLOW}!${C_RESET} git pull failed — continuing with existing tree\n"
   if [ -s /tmp/claws-pull-err.$$ ]; then
     sed 's/^/    /' /tmp/claws-pull-err.$$
   fi
   printf "  ${C_YELLOW}!${C_RESET} You will be installing from the LOCAL clone (last commit: $(cd "$INSTALL_DIR" && git log --oneline -1 2>/dev/null))\n"
+  printf "  ${C_YELLOW}!${C_RESET} CLAUDE.md re-injection skipped — stale source would overwrite tool set (M-21)\n"
   rm -f /tmp/claws-pull-err.$$
 fi
+export GIT_PULL_OK
 unset _claws_prev_sha _claws_new_sha
 
 # ─── Step 1: Sync marketplace-facing docs ──────────────────────────────────
