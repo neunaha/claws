@@ -147,12 +147,12 @@ function makeHookEntry(matcher, scriptName) {
       if (!cfg.hooks[event]) cfg.hooks[event] = [];
       const arr = cfg.hooks[event];
 
-      // M-14: exact-command equality + _source guard for dedup.
-      // Previously used command.includes(scriptName) which could match non-Claws
-      // hooks whose command happened to contain our script name as a substring.
-      // Now: match only on _source === 'claws' AND exact command string.
-      // Stale/old-format Claws entries (wrong command) get replaced in-place
-      // after detection via _source+matcher lookup.
+      // M-14: exact-command equality for dedup. The _source === 'claws' guard
+      // was already present before M-14 and prevented non-Claws hooks from
+      // matching (findIndex short-circuits on _source). M-14's actual improvement:
+      // replace substring command.includes(scriptName) with strict equality,
+      // making "already current" (no-op) vs "stale/old-format Claws entry"
+      // (upgrade in-place via staleIdx) unambiguous and cleaner.
       const exactIdx = arr.findIndex(e =>
         e._source === SOURCE_TAG &&
         e.matcher === entry.matcher &&
