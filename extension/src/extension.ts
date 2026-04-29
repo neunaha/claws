@@ -743,9 +743,20 @@ async function runRebuildPty(extensionPath: string): Promise<void> {
     ['--yes', '@electron/rebuild', '--version', electronVersion, '--only', 'node-pty', '--force'],
     { cwd: extensionPath, env: process.env },
   );
+
+  // M-41: 5-minute SIGKILL ceiling — prevents hung @electron/rebuild (slow
+  // Electron header download) from freezing VS Code indefinitely. Timer cleared
+  // on normal exit so it doesn't fire after a successful rebuild.
+  const killTimer = setTimeout(() => {
+    proc.kill('SIGKILL');
+    logger('✗ rebuild timed out after 5 minutes — killed');
+    vscode.window.showErrorMessage('Claws: node-pty rebuild timed out — see Claws Output log.');
+  }, 5 * 60 * 1000);
+
   proc.stdout?.on('data', (d: Buffer) => logger(`[rebuild] ${d.toString('utf8').trimEnd()}`));
   proc.stderr?.on('data', (d: Buffer) => logger(`[rebuild] ${d.toString('utf8').trimEnd()}`));
   proc.on('exit', (code: number | null) => {
+    clearTimeout(killTimer);
     if (code === 0) {
       logger('✓ rebuild complete — reload VS Code (Cmd+Shift+P → Developer: Reload Window)');
       vscode.window.showInformationMessage(
@@ -762,6 +773,7 @@ async function runRebuildPty(extensionPath: string): Promise<void> {
     }
   });
   proc.on('error', (err: Error) => {
+    clearTimeout(killTimer);
     logger(`✗ rebuild spawn failed: ${err.message}`);
   });
 }
