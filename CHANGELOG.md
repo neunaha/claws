@@ -40,6 +40,20 @@ Pre-fix symptoms: `claws_list` always showed `[unwrapped]` and `pid=-1` for wrap
 - `extension/src/server.ts` — degraded mode: if `eventLog.append` returns sequence -1 the sequence field is omitted from the push frame; on real I/O error the fanOut fires anyway (delivery preserved, persistence skipped)
 - `extension/test/task-event-persist.test.js` — new regression test: boots extension, registers orchestrator + worker, drives assign → update → complete, asserts all 3 entries appear in the .jsonl with monotonically-increasing sequences
 
+### L3 — Reverse channel hardening (landed)
+
+#### L3.1 — Monotonic `seq` stamp in `[CLAWS_CMD]` broadcast text
+- `extension/src/server.ts` — added `private broadcastSeq = 0` class field; broadcast handler increments it and rewrites text matching `[CLAWS_CMD ` to `[CLAWS_CMD seq=N ` before `writeInjected` and `pushFrame` calls; free-form broadcast text (no `[CLAWS_CMD` prefix) passes through unchanged; makes re-delivered commands idempotent — workers can track the highest seq seen
+- `extension/test/broadcast-seq.test.js` — 6 regression checks: seq=1/2/3 inserted correctly on three consecutive broadcasts; free-form text unchanged; seq counter only advances for `[CLAWS_CMD` text
+
+#### L3.2 — Worker auto-subscribe to `cmd.<peerId>.**` on hello
+- `extension/src/server.ts` — hello handler now auto-registers a `cmd.${peerId}.**` subscription on the peer's socket when `role=worker`; uses the existing subscription-index mechanism so non-Template-8 workers get the reverse channel at the transport layer without an explicit `subscribe` call
+- `extension/test/auto-subscribe-cmd.test.js` — 8 regression checks: worker receives `cmd.<peerId>.approve` push without explicit subscribe; deep wildcard `cmd.<peerId>.sub.nested` also delivered; observer role is NOT auto-subscribed
+
+#### L3.4 — Backpressure on `socket.write` in `pushFrame`
+- `extension/src/server.ts` — added `private readonly pausedPeers = new Set<string>()` and `private readonly droppedFrames = new Map<string, number>()`; `pushFrame` checks `socket.write()` return value — if `false`, marks peer as paused, logs `[claws/2] backpressure on push to <peerId>; pausing`, registers a one-shot `drain` listener; while paused, frames are silently dropped with a per-peer counter; drain clears the paused state and logs dropped count (warning if ≥ 100)
+- `extension/test/pushframe-backpressure.test.js` — 9 regression checks: normal push arrives before backpressure; publish after subscriber disconnect returns ok (no crash); new subscriber receives pushes normally after prior peer disconnect; no crash logs; graceful disconnection log
+
 ### L2 — Lifecycle REFLECT → PLAN cycle reset (landed)
 - `extension/src/lifecycle-store.ts` — `hasPlan()` now returns `false` when the current phase is `REFLECT`, closing the lifecycle gate after a completed cycle (was: always true once any plan was logged)
 - `extension/src/lifecycle-store.ts` — `plan()` resets the cycle when called from `REFLECT` phase, starting cycle N+1 with fresh `phases_completed=['PLAN']` and the new plan text; idempotency still applies within any active (non-REFLECT) cycle

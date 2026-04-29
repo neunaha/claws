@@ -337,28 +337,6 @@
     }
   },
   {
-    "name": "claws_drain_events",
-    "description": "Drain buffered push frames from the Claws message bus. On first call, auto-subscribes to all topics ('**') so subsequent frames are captured automatically. Use since_index to page through events; set wait_ms > 0 to block until new events arrive. Returns events, total_received (monotonic cursor), and dropped (count of events evicted from the ring before you could read them).",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "since_index": {
-          "type": "integer",
-          "description": "Return only events with absoluteIndex > since_index. Use 0 for all buffered events (default)."
-        },
-        "wait_ms": {
-          "type": "integer",
-          "description": "If no new events are available, block up to this many milliseconds before returning. 0 = return immediately (default)."
-        },
-        "max": {
-          "type": "integer",
-          "description": "Maximum number of events to return (default 100)."
-        }
-      },
-      "additionalProperties": false
-    }
-  },
-  {
     "name": "claws_lifecycle_plan",
     "description": "Log the PLAN phase — required before any claws_create call. The server-side lifecycle gate blocks terminal creation until this succeeds. Provide a 1–3 sentence summary of what you are about to do. Idempotent: safe to call twice.",
     "inputSchema": {
