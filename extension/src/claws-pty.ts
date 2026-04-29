@@ -170,6 +170,10 @@ export class ClawsPty implements vscode.Pseudoterminal {
     const shell = this.opts.shellPath || defaultShell();
     const args = this.opts.shellArgs ?? defaultShellArgs(shell);
     const cwd = this.opts.cwd || os.homedir();
+    // CLAWS_WRAPPED=1 is set ONLY when ptyProc is real, so the shell hook
+    // (scripts/shell-hook.sh) and any user-side check can distinguish a real
+    // wrapped pty from the pipe-mode degraded fallback. Set it here as the
+    // base env; we re-stamp it below once we know which path won.
     const env = sanitizeEnv(process.env, { ...(this.opts.env || {}), TERM: 'xterm-256color' });
     const cols = initialDimensions?.columns ?? 80;
     const rows = initialDimensions?.rows ?? 24;
@@ -177,7 +181,8 @@ export class ClawsPty implements vscode.Pseudoterminal {
     const nodePty = loadNodePty(this.opts.logger);
     if (nodePty) {
       try {
-        this.ptyProc = nodePty.spawn(shell, args, { cols, rows, cwd, env, name: 'xterm-256color' });
+        const ptyEnv = { ...env, CLAWS_WRAPPED: '1', CLAWS_TERMINAL_ID: this.opts.terminalId };
+        this.ptyProc = nodePty.spawn(shell, args, { cols, rows, cwd, env: ptyEnv, name: 'xterm-256color' });
         this.ptyProc.onData((data) => this.handleOutput(data));
         this.ptyProc.onExit(({ exitCode }) => this.handleExit(exitCode));
         this.opts.logger(`[claws-pty ${this.opts.terminalId}] node-pty spawned ${shell} pid=${this.ptyProc.pid} (real pty)`);
@@ -191,7 +196,9 @@ export class ClawsPty implements vscode.Pseudoterminal {
     // Pipe-mode fallback. Log loudly to the Output channel AND emit the
     // yellow banner into the terminal so the user sees it both ways.
     try {
-      this.childProc = spawn(shell, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+      // Mark pipe-mode explicitly so the shell hook can warn.
+      const pipeEnv = { ...env, CLAWS_PIPE_MODE: '1', CLAWS_TERMINAL_ID: this.opts.terminalId };
+      this.childProc = spawn(shell, args, { cwd, env: pipeEnv, stdio: ['pipe', 'pipe', 'pipe'] });
       this.childProc.stdout.on('data', (d: Buffer) => this.handleOutput(d.toString('utf8')));
       this.childProc.stderr.on('data', (d: Buffer) => this.handleOutput(d.toString('utf8')));
       this.childProc.on('exit', (code) => this.handleExit(code ?? 0));

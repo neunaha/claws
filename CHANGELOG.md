@@ -5,6 +5,21 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 0.7.5 — Bus hardening cycle (in progress)
+
+This release hardens the orchestrator↔worker communication bus surfaced by W1–W4 audits. The `.claws/events/default/*.jsonl` was empty on user systems because (a) the MCP server was dropping every push frame from the persistent socket, and (b) default workers never publish.
+
+### L-1 Display fixes (R1, R4, R5, R7) — landed
+- `claws-pty.ts` — inject `CLAWS_WRAPPED=1` (real pty) or `CLAWS_PIPE_MODE=1` (degraded) plus `CLAWS_TERMINAL_ID` so the shell hook reports truthful state
+- `protocol.ts` — `TerminalDescriptor` now exposes `ptyPid` (real shell pid) and `ptyMode` (`'pty'`/`'pipe'`/`'none'`)
+- `terminal-manager.ts` — `describe()` returns `pty.pid` and `pty.mode` from the live `ClawsPty` instance
+- `mcp_server.js` — `claws_list` formatter trusts the `wrapped` boolean (was incorrectly keying off `logPath` which is always null in the Pseudoterminal capture model). Pid column shows the real shell pid. Wrapped state labels: `WRAPPED`, `WRAPPED-DEGRADED-pipe-mode`, `WRAPPED-pending`, `unwrapped`
+
+Pre-fix symptoms: `claws_list` always showed `[unwrapped]` and `pid=-1` for wrapped terminals; shell-hook banner always said "unwrapped". All cosmetic-but-misleading; the underlying terminals were real ptys.
+
+### L0–L4 (in progress — see `.local/audits/bus-issues-master.md`)
+Fleet of layered fixes ordered root-up: L0 capture (push frames captured, `claws_drain_events` MCP tool), L1 production (`system.worker.spawned/completed`, lazy `.jsonl`, heartbeat, task event persistence, `[CLAWS_PUB]` line scanner), L2 lifecycle (REFLECT-reset cycle), L3 reverse-channel hardening (idempotent re-delivery, ACK protocol, backpressure), L4 bus correctness (sequence persistence, peer reconnect, replay).
+
 ## [0.7.4] - 2026-04-29 — Bulletproof regression fix release
 
 This release closes 50 findings surfaced by a 4-worker parallel audit of the v0.7.2 + v0.7.3 release cycle. After the user reported lifecycle breakage on `/claws-update`, we ran a full Plan→Implement→Review→Audit→Test→Fix→Repeat loop across 5 layers to deliver one bulletproof codebase that absorbs all in-flight unmerged work (γ.1 reverse channel, γ.2 event log core, MCP persistent socket fix) plus 50 regression fixes.

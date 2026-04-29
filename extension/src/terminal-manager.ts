@@ -93,6 +93,7 @@ export class TerminalManager {
         id: '',
         name: terminal.name,
         pid,
+        ptyPid: null,
         hasShellIntegration: !!terminal.shellIntegration,
         active: vscode.window.activeTerminal === terminal,
         logPath: null,
@@ -101,10 +102,16 @@ export class TerminalManager {
       };
     }
     const rec = this.records.get(existingId);
+    // R7: surface the real shell pid from our ClawsPty (ptyProc.pid or childProc.pid).
+    // VS Code's `terminal.processId` is null for Pseudoterminal-based terminals.
+    const ptyPid = rec?.pty?.pid ?? null;
+    const ptyMode = rec?.pty?.mode;
     return {
       id: existingId,
       name: terminal.name,
       pid,
+      ptyPid,
+      ptyMode,
       hasShellIntegration: !!terminal.shellIntegration,
       active: vscode.window.activeTerminal === terminal,
       logPath: rec?.logPath ?? null,

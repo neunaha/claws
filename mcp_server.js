@@ -487,9 +487,27 @@ async function handleTool(name, args) {
     const terms = resp.terminals || [];
     if (!terms.length) return { content: [{ type: 'text', text: '[no terminals open]' }] };
     const lines = terms.map(t => {
-      const wrap = t.logPath ? 'WRAPPED' : 'unwrapped';
+      // R4: trust the `wrapped` boolean. Old code keyed off `logPath` which is
+      // always null in the Pseudoterminal capture model — every wrapped
+      // terminal was misreported as unwrapped.
+      // Annotate pipe-mode degradation explicitly so the user sees it at a glance.
+      let wrap;
+      if (!t.wrapped) {
+        wrap = 'unwrapped';
+      } else if (t.ptyMode === 'pipe') {
+        wrap = 'WRAPPED-DEGRADED-pipe-mode';
+      } else if (t.ptyMode === 'pty') {
+        wrap = 'WRAPPED';
+      } else if (t.ptyMode === 'none') {
+        wrap = 'WRAPPED-pending'; // pty.open() not called yet (panel hidden?)
+      } else {
+        wrap = 'WRAPPED';
+      }
       const marker = t.active ? '*' : ' ';
-      return `${marker} ${t.id}  ${(t.name || '').padEnd(25)} pid=${t.pid}  [${wrap}]`;
+      // R7: Pseudoterminal terminals report pid=-1 from VS Code's API
+      // (VS Code didn't spawn the shell — we did). Prefer ptyPid.
+      const realPid = (typeof t.ptyPid === 'number' && t.ptyPid > 0) ? t.ptyPid : t.pid;
+      return `${marker} ${t.id}  ${(t.name || '').padEnd(25)} pid=${realPid}  [${wrap}]`;
     });
     return { content: [{ type: 'text', text: lines.join('\n') }] };
   }

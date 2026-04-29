@@ -277,6 +277,21 @@ export interface TerminalDescriptor {
   id: string;
   name: string;
   pid: number | null;
+  /**
+   * Real shell pid when the wrapped pty has spawned successfully. VS Code's
+   * `terminal.processId` returns null/-1 for Pseudoterminal-based terminals
+   * (because VS Code didn't spawn the process — we did), so we expose the
+   * underlying ptyProc/childProc pid here. Null when not wrapped or when
+   * pty.open() has not yet fired.
+   */
+  ptyPid?: number | null;
+  /**
+   * 'pty' = real pseudoterminal via node-pty (TUIs work)
+   * 'pipe' = child_process fallback when node-pty unavailable (TUIs broken)
+   * 'none' = pty.open() has not been called yet by VS Code
+   * undefined = unwrapped terminal (no pty at all)
+   */
+  ptyMode?: 'pty' | 'pipe' | 'none';
   hasShellIntegration: boolean;
   active: boolean;
   logPath: string | null;
