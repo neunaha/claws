@@ -34,12 +34,16 @@ const HELPERS_URL = pathToFileURL(path.resolve(__dirname, '_helpers', 'json-safe
 
 function hookCmd(scriptName) {
   const scriptPath = path.join(CLAWS_BIN, 'hooks', scriptName);
-  // Wrap in `sh -c` with a file-exists check (v0.7.3 hardening). Without
-  // this, Claude Code reports a "non-blocking status code" error on every
-  // tool call when the hook script's path is missing. The wrapper makes
-  // missing-path a silent no-op instead of a visible error. Path is passed
-  // as $0 to avoid shell-escape pitfalls with spaces or apostrophes.
-  return `sh -c '[ -f "$0" ] && exec node "$0" || exit 0' ${JSON.stringify(scriptPath)}`;
+  // Wrap in `sh -c` with a file-exists check. Missing-path logs a forensic
+  // entry to /tmp/claws-hook-misfire.log (timestamp + path) then exits 0 so
+  // Claude Code does not surface a "non-blocking status code" error. Path is
+  // passed as $0 to avoid shell-escape pitfalls with spaces or apostrophes.
+  return (
+    `sh -c '[ -f "$0" ] && exec node "$0" || ` +
+    `(printf "[claws-hook-misfire] %s missing path: %s\\n" ` +
+    `"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$0" >> /tmp/claws-hook-misfire.log; exit 0)' ` +
+    `${JSON.stringify(scriptPath)}`
+  );
 }
 
 function makeHookEntry(matcher, scriptName) {
