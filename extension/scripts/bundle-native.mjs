@@ -166,14 +166,19 @@ export function runElectronRebuild(electronVersion, targetArch, { spawnFn = spaw
       cwd: EXT_ROOT,
       stdio: ['ignore', 'inherit', 'inherit'],
       env: process.env,
+      timeout: 5 * 60 * 1000, // M-08: 5-minute ceiling — prevents indefinite hang on slow GitHub header fetch
     },
   );
   if (result.error) failFn(`spawn of @electron/rebuild failed: ${result.error.message}`, result.error);
-  // M-07: spawnSync sets status=null when the process is killed by a signal
-  // (Ctrl-C, OOM-killer, CI timeout). Neither the error nor status check catches
-  // this — detect it explicitly so a stale binary is never silently accepted.
+  // M-07 + M-08: spawnSync sets status=null when the process is killed by a
+  // signal. SIGTERM on timeout (M-08) gets a network-hint message; other signals
+  // get the re-run hint (M-07).
   if (result.status === null && !result.error) {
-    failFn(`@electron/rebuild process killed by signal (${result.signal || 'unknown'}) — re-run /claws-update`);
+    if (result.signal === 'SIGTERM') {
+      failFn('@electron/rebuild timed out after 5min — likely a slow Electron headers download. Check network / proxy settings.');
+    } else {
+      failFn(`@electron/rebuild process killed by signal (${result.signal || 'unknown'}) — re-run /claws-update`);
+    }
   }
   if (typeof result.status === 'number' && result.status !== 0) {
     failFn(`@electron/rebuild exited with status ${result.status}`);
