@@ -150,9 +150,10 @@ export function detectTargetArch({ platform = process.platform, arch = process.a
 }
 
 // ─── Step 2: @electron/rebuild ───────────────────────────────────────────────
-function runElectronRebuild(electronVersion, targetArch) {
+// Exported for testing (injectable spawnFn/failFn).
+export function runElectronRebuild(electronVersion, targetArch, { spawnFn = spawnSync, failFn = fail } = {}) {
   log(`running @electron/rebuild --version ${electronVersion} --arch ${targetArch} --only node-pty --force`);
-  const result = spawnSync(
+  const result = spawnFn(
     'npx',
     [
       '--yes', '@electron/rebuild',
@@ -167,9 +168,15 @@ function runElectronRebuild(electronVersion, targetArch) {
       env: process.env,
     },
   );
-  if (result.error) fail(`spawn of @electron/rebuild failed: ${result.error.message}`, result.error);
+  if (result.error) failFn(`spawn of @electron/rebuild failed: ${result.error.message}`, result.error);
+  // M-07: spawnSync sets status=null when the process is killed by a signal
+  // (Ctrl-C, OOM-killer, CI timeout). Neither the error nor status check catches
+  // this — detect it explicitly so a stale binary is never silently accepted.
+  if (result.status === null && !result.error) {
+    failFn(`@electron/rebuild process killed by signal (${result.signal || 'unknown'}) — re-run /claws-update`);
+  }
   if (typeof result.status === 'number' && result.status !== 0) {
-    fail(`@electron/rebuild exited with status ${result.status}`);
+    failFn(`@electron/rebuild exited with status ${result.status}`);
   }
   log('@electron/rebuild completed');
 }
