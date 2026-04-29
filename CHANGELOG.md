@@ -5,6 +5,20 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4-bulletproof-L3] - 2026-04-29 — Layer 3: hooks + settings.json hardening (M-03, M-04, M-12, M-13, M-14, M-15, M-16, M-24, M-38, M-39)
+
+### Fixed
+
+- **M-03/M-38** `scripts/inject-settings-hooks.js`: replaced `loadSettings()` try/catch-reset-to-`{}` + `fs.writeFileSync` with async `mergeIntoFile()` from `scripts/_helpers/json-safe.mjs`. On malformed JSON: backup created, original untouched, exits non-zero. Never silently wipes user's entire Claude Code config.
+- **M-39** `cli.js` MCP fallback: replaced `JSON.parse + writeFileSync` with inline ESM `mergeIntoFile()` call via `spawnSync --input-type=module`. Same atomic + JSONC-tolerant + abort-on-malformed guarantees.
+- **M-04** `scripts/inject-settings-hooks.js` `hookCmd()`: missing hook path now appends to `/tmp/claws-hook-misfire.log` with timestamp + path instead of silently exiting 0 with no trace.
+- **M-12** `scripts/inject-settings-hooks.js` `hookCmd()`: replaced `[ -f "$0" ] && exec node "$0" || (...)` with explicit `if [ -f "$0" ]; then exec node "$0"; else ...; fi` — `else` branch is reachable even if `exec` fails for unusual reasons.
+- **M-13** `scripts/hooks/{session-start,pre-tool-use,stop}-claws.js`: stdin 'data' and 'end' listeners now registered in a single try block; added 5-second `setTimeout(...).unref()` safety timer so hooks can never hang the parent process.
+- **M-14** `scripts/inject-settings-hooks.js` dedup: replaced `command.includes(scriptName)` with exact-command equality + `_source === 'claws'` guard — prevents overwriting non-Claws hooks whose command happens to contain a Claws script name as substring.
+- **M-15** `scripts/inject-settings-hooks.js` `hookCmd()`: when `CLAWS_BIN/hooks/` directory exists (canonical install), registers hooks as direct `node "<path>"` invocations (skips the `sh -c` wrapper) — reduces fork overhead on each hook invocation.
+- **M-16** `scripts/hooks/pre-tool-use-claws.js` STRICT deny: all `process.stdout.write` calls now end with `\n` so Claude Code's hook protocol parser flushes correctly.
+- **M-24** `scripts/hooks/{session-start,pre-tool-use,stop}-claws.js`: `process.on('uncaughtException')` and `process.on('unhandledRejection')` handlers gated on `!process.env.CLAWS_DEBUG` — when `CLAWS_DEBUG=1`, errors propagate visibly for debugging.
+
 ## [0.7.4-bulletproof-L2-fix] - 2026-04-29 — Layer 2 fix: code-review findings F1+F5 (error-path + env-var path passing)
 
 ### Fixed
