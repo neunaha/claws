@@ -855,12 +855,22 @@ else
     # and the CommonJS require() call at the top of each hook crashes.
     # Reported by user (Miles) on v0.7.0.
     if [ -d "$INSTALL_DIR/scripts/hooks" ]; then
-      rm -rf "$PROJECT_ROOT/.claws-bin/hooks" 2>/dev/null || true
-      mkdir -p "$PROJECT_ROOT/.claws-bin/hooks"
-      cp "$INSTALL_DIR/scripts/hooks"/*.js "$PROJECT_ROOT/.claws-bin/hooks/"
-      if [ -f "$INSTALL_DIR/scripts/hooks/package.json" ]; then
-        cp "$INSTALL_DIR/scripts/hooks/package.json" "$PROJECT_ROOT/.claws-bin/hooks/package.json"
-      else
+      # M-09: atomic rename pattern — copy to tmp dir first, then swap into place.
+      # Prevents kill-window leaving an empty hooks dir that breaks every Bash hook.
+      node --no-deprecation --input-type=module <<HOOKSATOMICEOF
+import { copyDirAtomic } from '${INSTALL_DIR}/scripts/_helpers/atomic-file.mjs';
+try {
+  await copyDirAtomic('${INSTALL_DIR}/scripts/hooks', '${PROJECT_ROOT}/.claws-bin/hooks');
+} catch (e) {
+  process.stderr.write('[M-09] atomic hooks copy failed: ' + e.message + '\\n');
+  process.exit(1);
+}
+HOOKSATOMICEOF
+      if [ $? -ne 0 ]; then
+        warn "hooks dir copy failed — .claws-bin/hooks may be incomplete"
+      fi
+      # package.json shim: write if not present after copy (older hooks dirs omit it).
+      if [ ! -f "$PROJECT_ROOT/.claws-bin/hooks/package.json" ]; then
         printf '{"type":"commonjs","private":true}\n' > "$PROJECT_ROOT/.claws-bin/hooks/package.json"
       fi
     fi
