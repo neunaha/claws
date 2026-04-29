@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **F3** `extension/test/update-step6-orphan.test.sh`: added test 5 — behavioral check that a Unix socket server has no active listener after SIGTERM+SIGKILL sequence (process is gone, no orphan socket-holder).
 - **F6** `extension/src/extension.ts` plutil candidate loop: added JSDoc noting 4 candidates × 3s timeout = 12s worst-case synchronous block; acceptable for explicit user-triggered rebuild command.
 - **F7** `extension/src/event-log.ts` `writeManifest()`: migrated from `writeFileSync` to `openSync+writeSync+fsyncSync+closeSync+renameSync` — mirrors M-29/M-43 fsync-before-rename pattern; manifest survives power-cut or SIGKILL after write.
+- **F5** `scripts/inject-settings-hooks.js`: added `withLock()` helper using `fs.openSync(lockPath, 'wx')` exclusive create with 3-retry/100ms backoff; all three `mergeIntoFile` call sites (REMOVE, UPDATE, add-mode) wrapped — prevents concurrent `install.sh`+`update.sh` invocations from tearing settings.json. Regression test: `inject-settings-exclusive-lock.test.js` (6 checks).
 
 ## [0.7.4-bulletproof-L4] - 2026-04-29 — Layer 4: update.sh + extension.ts hardening (M-10, M-11, M-18, M-19, M-20, M-21, M-41, M-42, M-43)
 

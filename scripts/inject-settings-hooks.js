@@ -32,6 +32,28 @@ const REMOVE  = process.argv.includes('--remove');
 const UPDATE  = process.argv.includes('--update');
 const SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 const SOURCE_TAG    = 'claws';
+// F5: advisory exclusive lock — prevents two concurrent inject-settings-hooks
+// invocations (e.g. install.sh + update.sh race) from producing a torn write.
+// 3 attempts × 100ms backoff; if still locked, throw so the caller sees the error.
+const LOCK_PATH = `${SETTINGS_PATH}.lock`;
+async function withLock(fn) {
+  let fd;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      fd = fs.openSync(LOCK_PATH, 'wx');
+      break;
+    } catch (e) {
+      if (e.code !== 'EEXIST' || attempt === 2) throw e;
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(LOCK_PATH); } catch { /* ignore */ }
+  }
+}
 
 const HELPERS_URL = pathToFileURL(path.resolve(__dirname, '_helpers', 'json-safe.mjs')).href;
 
@@ -123,7 +145,7 @@ function makeHookEntry(matcher, scriptName) {
 
   if (REMOVE) {
     let removed = 0;
-    const result = await mergeIntoFile(SETTINGS_PATH, (cfg) => {
+    const result = await withLock(() => mergeIntoFile(SETTINGS_PATH, (cfg) => {
       if (!cfg.hooks) return;
       for (const [event, arr] of Object.entries(cfg.hooks)) {
         if (!Array.isArray(arr)) continue;
@@ -131,7 +153,7 @@ function makeHookEntry(matcher, scriptName) {
         removed += arr.length - filtered.length;
         cfg.hooks[event] = filtered;
       }
-    });
+    }));
     if (!result.ok) {
       console.error('[claws] Failed to update settings.json:', result.error.message);
       if (result.error.backupSavedAt) {
@@ -149,7 +171,7 @@ function makeHookEntry(matcher, scriptName) {
   if (UPDATE) {
     let removed = 0;
     let changed = 0;
-    const result = await mergeIntoFile(SETTINGS_PATH, (cfg) => {
+    const result = await withLock(() => mergeIntoFile(SETTINGS_PATH, (cfg) => {
       if (!cfg.hooks) cfg.hooks = {};
       // Step 1: remove all existing Claws hooks
       for (const [event, arr] of Object.entries(cfg.hooks)) {
@@ -164,7 +186,7 @@ function makeHookEntry(matcher, scriptName) {
         cfg.hooks[event].push(entry);
         changed++;
       }
-    });
+    }));
     if (!result.ok) {
       console.error('[claws] Failed to update settings.json:', result.error.message);
       if (result.error.backupSavedAt) {
@@ -179,7 +201,7 @@ function makeHookEntry(matcher, scriptName) {
 
   // Add/update hooks
   let changed = 0;
-  const result = await mergeIntoFile(SETTINGS_PATH, (cfg) => {
+  const result = await withLock(() => mergeIntoFile(SETTINGS_PATH, (cfg) => {
     if (!cfg.hooks) cfg.hooks = {};
     for (const { event, scriptName, entry } of HOOKS_TO_ADD) {
       if (!cfg.hooks[event]) cfg.hooks[event] = [];
@@ -216,7 +238,7 @@ function makeHookEntry(matcher, scriptName) {
         }
       }
     }
-  });
+  }));
 
   if (!result.ok) {
     console.error('[claws] Failed to update settings.json:', result.error.message);
