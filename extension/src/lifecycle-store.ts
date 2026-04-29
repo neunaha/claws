@@ -113,7 +113,15 @@ export class LifecycleStore {
     const dir = path.dirname(this.statePath);
     fs.mkdirSync(dir, { recursive: true });
     const tmp = this.statePath + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2) + '\n', 'utf8');
+    // M-43: fsyncSync before renameSync mirrors the M-29 hooks-side fix — ensures
+    // lifecycle state survives power-cut or SIGKILL after write but before kernel flush.
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeSync(fd, JSON.stringify(this.state, null, 2) + '\n');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmp, this.statePath);
   }
 
