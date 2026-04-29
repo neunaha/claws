@@ -34,8 +34,9 @@ function cleanTmpDir(dir) {
 
 (async () => {
 
-  // 1. hookCmd produces explicit if-then-fi form
-  await check('hookCmd produces explicit if [ -f "$0" ]; then ... else ... fi form', () => {
+  // 1. hookCmd produces explicit if-then-fi form for non-canonical paths
+  //    (canonical paths use direct `node` — no wrapper needed; tested by M-15 tests)
+  await check('non-canonical hookCmd produces explicit if [ -f "$0" ]; then ... else ... fi form', () => {
     const tmp = makeTmpDir();
     try {
       const claudeDir = path.join(tmp, '.claude');
@@ -43,7 +44,11 @@ function cleanTmpDir(dir) {
       const settingsPath = path.join(claudeDir, 'settings.json');
       fs.writeFileSync(settingsPath, '{}', 'utf8');
 
-      const r = spawnSync(process.execPath, [INJECT_SETTINGS, CLAWS_BIN], {
+      // Use a non-canonical CLAWS_BIN (no hooks/ subdir) to get the wrapped form
+      const fakeBin = path.join(tmp, 'non-canonical-bin');
+      fs.mkdirSync(fakeBin, { recursive: true });
+
+      const r = spawnSync(process.execPath, [INJECT_SETTINGS, fakeBin], {
         encoding: 'utf8', timeout: 10000,
         env: { ...process.env, HOME: tmp },
       });
@@ -105,8 +110,8 @@ function cleanTmpDir(dir) {
     assert.strictEqual(r.status, 0, `Else branch must exit 0; got status ${r.status}`);
   });
 
-  // 4. All three hooks use the if-then-fi form
-  await check('all three registered hooks use if-then-fi form', () => {
+  // 4. All three non-canonical hooks use the if-then-fi form
+  await check('all three non-canonical hooks use if-then-fi form', () => {
     const tmp = makeTmpDir();
     try {
       const claudeDir = path.join(tmp, '.claude');
@@ -114,7 +119,11 @@ function cleanTmpDir(dir) {
       const settingsPath = path.join(claudeDir, 'settings.json');
       fs.writeFileSync(settingsPath, '{}', 'utf8');
 
-      const r = spawnSync(process.execPath, [INJECT_SETTINGS, CLAWS_BIN], {
+      // Non-canonical bin (no hooks/) → wrapped form for all three hooks
+      const fakeBin = path.join(tmp, 'non-canonical-bin');
+      fs.mkdirSync(fakeBin, { recursive: true });
+
+      const r = spawnSync(process.execPath, [INJECT_SETTINGS, fakeBin], {
         encoding: 'utf8', timeout: 10000,
         env: { ...process.env, HOME: tmp },
       });
@@ -126,7 +135,7 @@ function cleanTmpDir(dir) {
         const cmd = settings.hooks[event][0].hooks[0].command;
         assert.ok(
           cmd.includes('if [ -f "$0" ]') && cmd.includes('fi\''),
-          `${event} hook must use if-then-fi; got: ${cmd}`
+          `${event} non-canonical hook must use if-then-fi; got: ${cmd}`
         );
       }
     } finally {
