@@ -184,6 +184,20 @@ function cleanTmpDir(dir) {
     assert.strictEqual(r.data.url, 'http://example.com/path');
   });
 
+  // 13. parseJsonSafe: inline /* block comment */ is stripped (F3)
+  await check('parseJsonSafe: inline /* block comment */ stripped', () => {
+    const r = parseJsonSafe('{ "a": 1 /* inline */, "b": 2 }');
+    assert.strictEqual(r.ok, true, `expected ok:true but got: ${JSON.stringify(r.error)}`);
+    assert.deepStrictEqual(r.data, { a: 1, b: 2 });
+  });
+
+  // 14. parseJsonSafe: multi-line /* block comment */ is stripped (F3)
+  await check('parseJsonSafe: multiline /* block comment */ stripped', () => {
+    const r = parseJsonSafe('{\n  /* multi\n  line */\n  "x": 3\n}');
+    assert.strictEqual(r.ok, true, `expected ok:true but got: ${JSON.stringify(r.error)}`);
+    assert.deepStrictEqual(r.data, { x: 3 });
+  });
+
   // ─── results ─────────────────────────────────────────────────────────────────
 
   for (const a of assertions) {

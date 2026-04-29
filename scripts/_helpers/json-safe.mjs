@@ -13,8 +13,8 @@ export class JsonSafeError extends Error {
   }
 }
 
-// Strip JSONC extensions: // line comments and trailing commas before } or ].
-// Handles strings correctly — does not strip // inside quoted values.
+// Strip JSONC extensions: // line comments, /* block comments */, and trailing commas.
+// Handles strings correctly — comment sequences inside quoted values are preserved.
 function stripJsonc(input) {
   let result = '';
   let i = 0;
@@ -38,6 +38,18 @@ function stripJsonc(input) {
         if (sc === '"') { i++; break; }
         i++;
       }
+      continue;
+    }
+
+    if (ch === '/' && i + 1 < len && input[i + 1] === '*') {
+      // Block comment — skip everything until closing */, preserving newlines
+      // so that line/col error positions remain accurate.
+      i += 2;
+      while (i + 1 < len && !(input[i] === '*' && input[i + 1] === '/')) {
+        if (input[i] === '\n') result += '\n';
+        i++;
+      }
+      i += 2; // consume closing */
       continue;
     }
 
