@@ -373,6 +373,30 @@ export class ClawsServer {
     return count;
   }
 
+  /**
+   * Durably append a server-originated event to the event log, then fan it out
+   * to subscribers. Mirrors the publish handler's persist-then-fanout contract
+   * for events the server emits on its own behalf (task.*, system.malformed.*).
+   *
+   * Degraded mode (sequence === -1): skips sequence in the push frame.
+   * Real I/O error: falls back to fanOut without sequence so delivery still happens.
+   */
+  private async emitServerEvent(topic: string, payload: unknown): Promise<void> {
+    let sequence: number | undefined;
+    try {
+      const logResult = await this.eventLog.append({
+        topic,
+        from: 'server',
+        ts_server: new Date().toISOString(),
+        payload,
+      });
+      sequence = logResult.sequence >= 0 ? logResult.sequence : undefined;
+    } catch {
+      // Real I/O error — fall through with no sequence so fan-out still fires.
+    }
+    this.fanOut(topic, 'server', payload, false, sequence);
+  }
+
   private getConfig() {
     return this.opts.getConfig ? this.opts.getConfig() : defaultServerConfig;
   }
@@ -716,9 +740,9 @@ export class ClawsServer {
         const envelopeResult = EnvelopeV1.safeParse(r.payload);
         if (!envelopeResult.success) {
           this.opts.logger(`[claws/schema] malformed envelope from ${peerId} on ${r.topic}`);
-          this.fanOut('system.malformed.received', 'server', {
+          await this.emitServerEvent('system.malformed.received', {
             from: peerId, topic: r.topic, error: envelopeResult.error.issues,
-          }, false);
+          });
           if (strict) {
             return { ok: false, error: 'envelope:invalid', details: envelopeResult.error.issues };
           }
@@ -726,9 +750,9 @@ export class ClawsServer {
           const dataResult = dataSchema.safeParse(envelopeResult.data.data);
           if (!dataResult.success) {
             this.opts.logger(`[claws/schema] malformed data from ${peerId} on ${r.topic}`);
-            this.fanOut('system.malformed.received', 'server', {
+            await this.emitServerEvent('system.malformed.received', {
               from: peerId, topic: r.topic, error: dataResult.error.issues,
-            }, false);
+            });
             if (strict) {
               return { ok: false, error: 'payload:invalid', details: dataResult.error.issues };
             }
@@ -810,7 +834,7 @@ export class ClawsServer {
       const deliver = r.deliver ?? 'publish';
       // Publish task.assigned.<assignee> so the worker learns about the task
       if (deliver === 'publish' || deliver === 'both') {
-        this.fanOut(`task.assigned.${r.assignee}`, 'server', { ...task }, false);
+        await this.emitServerEvent(`task.assigned.${r.assignee}`, { ...task });
       }
       // Inject prompt into the worker's terminal if requested
       if (deliver === 'inject' || deliver === 'both') {
@@ -911,8 +935,9 @@ export class ClawsServer {
         return { ok: false, error: 'lifecycle:plan-empty', message: 'plan text must be non-empty' };
       }
       const existingState = this.lifecycleStore.snapshot();
+      const isResettingFromReflect = existingState !== null && existingState.phase === 'REFLECT';
       const state = this.lifecycleStore.plan(r.plan);
-      const idempotent = existingState !== null;
+      const idempotent = existingState !== null && !isResettingFromReflect;
       return { ok: true, state, idempotent };
     }
 

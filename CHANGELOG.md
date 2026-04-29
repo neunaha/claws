@@ -34,6 +34,12 @@ Pre-fix symptoms: `claws_list` always showed `[unwrapped]` and `pid=-1` for wrap
 - `extension/src/event-log.ts` — `tryRecoverFromManifest` handles missing segment files gracefully — if the file doesn't exist (lazy segment never written), it marks `fdDeferred = true` rather than falling back to a full scan
 - `extension/src/event-log.ts` — `rotate` clears `fdDeferred` before `openFreshSegment` so rotation always starts with a clean deferred state
 
+### L2 — Lifecycle REFLECT → PLAN cycle reset (landed)
+- `extension/src/lifecycle-store.ts` — `hasPlan()` now returns `false` when the current phase is `REFLECT`, closing the lifecycle gate after a completed cycle (was: always true once any plan was logged)
+- `extension/src/lifecycle-store.ts` — `plan()` resets the cycle when called from `REFLECT` phase, starting cycle N+1 with fresh `phases_completed=['PLAN']` and the new plan text; idempotency still applies within any active (non-REFLECT) cycle
+- `extension/src/server.ts` — `lifecycle.plan` handler sets `idempotent:false` when the previous phase was `REFLECT` (a cycle reset is not an idempotent no-op); `idempotent:true` only for mid-cycle duplicate calls
+- `extension/test/lifecycle-reset.test.js` — 8 regression checks covering: gate-closes-at-REFLECT, plan-resets-cycle, phases_completed-reset, hasPlan-reopens, SPAWN-advances-after-reset, mid-cycle-idempotency-preserved, reflect-field-cleared
+
 ### L1.3–L4 (in progress — see `.local/audits/bus-issues-master.md`)
 Fleet of layered fixes ordered root-up: L0 capture (push frames captured, `claws_drain_events` MCP tool), L1 production (`system.worker.spawned/completed`, lazy `.jsonl`, heartbeat, task event persistence, `[CLAWS_PUB]` line scanner), L2 lifecycle (REFLECT-reset cycle), L3 reverse-channel hardening (idempotent re-delivery, ACK protocol, backpressure), L4 bus correctness (sequence persistence, peer reconnect, replay).
 
