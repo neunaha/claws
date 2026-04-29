@@ -207,7 +207,13 @@ function _pconnHandleClose() {
 function _pconnConnect(sockPath) {
   return new Promise((resolve, reject) => {
     const sock = net.createConnection(sockPath);
+    // M-50: 5s connect timeout — prevents _pconnConnect from hanging forever
+    // when the extension socket exists but VS Code is reloading (ECONNREFUSED
+    // can take arbitrarily long on some platforms without a ceiling).
+    sock.setTimeout(5000);
+    sock.on('timeout', () => sock.destroy(new Error('persistent socket connect timed out')));
     sock.on('connect', () => {
+      sock.setTimeout(0); // clear connect-phase timeout once connected
       _pconn.socket = sock;
       _pconn.sockPath = sockPath;
       _pconn.connected = true;
