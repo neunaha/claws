@@ -351,17 +351,18 @@ check "MCP server handshake"
 MCP_PATH="$INSTALL_DIR/mcp_server.js"
 [ -f "$PROJECT_ROOT/.claws-bin/mcp_server.js" ] && MCP_PATH="$PROJECT_ROOT/.claws-bin/mcp_server.js"
 if command -v node &>/dev/null && [ -f "$MCP_PATH" ]; then
+  # M-44: mcp_server.js uses newline-delimited JSON, not Content-Length framing.
+  # Full protocolVersion + clientInfo required per MCP 2024-11-05 spec.
   HANDSHAKE=$(node --no-deprecation -e '
 const { spawn } = require("child_process");
 const mcp = spawn("node", [process.argv[1]], { stdio: ["pipe", "pipe", "ignore"] });
-const req = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-const msg = `Content-Length: ${Buffer.byteLength(req)}\r\n\r\n${req}`;
+const req = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "claws-fix", version: "1" } } });
 let buf = "";
-const done = (c, o) => { try { mcp.kill(); } catch {}; process.stdout.write(o); process.exit(c); };
+const done = (c, o) => { try { mcp.kill(); } catch {} process.stdout.write(o); process.exit(c); };
 const timer = setTimeout(() => done(1, "TIMEOUT"), 4000);
 mcp.stdout.on("data", d => { buf += d.toString("utf8"); if (buf.includes("claws")) { clearTimeout(timer); done(0, buf.slice(0, 200)); } });
 mcp.on("error", e => { clearTimeout(timer); done(1, "SPAWN_ERROR: " + e.message); });
-mcp.stdin.write(msg);
+mcp.stdin.write(req + "\n");
 ' "$MCP_PATH" 2>&1 || echo "FAILED")
   if echo "$HANDSHAKE" | grep -q "claws"; then
     ok "MCP server responds (initialize OK)"
