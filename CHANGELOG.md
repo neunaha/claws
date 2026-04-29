@@ -50,6 +50,9 @@ Pre-fix symptoms: `claws_list` always showed `[unwrapped]` and `pid=-1` for wrap
 - `extension/src/server.ts` — hello handler now auto-registers a `cmd.${peerId}.**` subscription on the peer's socket when `role=worker`; uses the existing subscription-index mechanism so non-Template-8 workers get the reverse channel at the transport layer without an explicit `subscribe` call
 - `extension/test/auto-subscribe-cmd.test.js` — 8 regression checks: worker receives `cmd.<peerId>.approve` push without explicit subscribe; deep wildcard `cmd.<peerId>.sub.nested` also delivered; observer role is NOT auto-subscribed
 
+#### L3.1 test fix — `reverse-channel.test.js` updated for seq= prefix
+- `extension/test/reverse-channel.test.js` — two legacy assertions compared injected/pushed text against the original `CMD_TEXT` literal; after L3.1 the server rewrites `[CLAWS_CMD ` to `[CLAWS_CMD seq=N `; switched both assertions to regex `CMD_TEXT_RE = /^\[CLAWS_CMD seq=\d+ r=r1\] approve_request/` — no behavior change, test now correctly validates the seq-stamped output
+
 #### L3.4 — Backpressure on `socket.write` in `pushFrame`
 - `extension/src/server.ts` — added `private readonly pausedPeers = new Set<string>()` and `private readonly droppedFrames = new Map<string, number>()`; `pushFrame` checks `socket.write()` return value — if `false`, marks peer as paused, logs `[claws/2] backpressure on push to <peerId>; pausing`, registers a one-shot `drain` listener; while paused, frames are silently dropped with a per-peer counter; drain clears the paused state and logs dropped count (warning if ≥ 100)
 - `extension/test/pushframe-backpressure.test.js` — 9 regression checks: normal push arrives before backpressure; publish after subscriber disconnect returns ok (no crash); new subscriber receives pushes normally after prior peer disconnect; no crash logs; graceful disconnection log

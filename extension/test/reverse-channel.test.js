@@ -156,6 +156,9 @@ async function hello(peer, id, role, name, terminalId) {
 }
 
 const CMD_TEXT = '[CLAWS_CMD r=r1] approve_request: {"approved":true}';
+// After L3.1 the server injects seq=N after [CLAWS_CMD, so injected/pushed text is
+// "[CLAWS_CMD seq=<N> r=r1] approve_request: ..."
+const CMD_TEXT_RE = /^\[CLAWS_CMD seq=\d+ r=r1\] approve_request/;
 
 (async () => {
   const ready = await waitFor(() => fs.existsSync(sockPath), 3000);
@@ -241,7 +244,7 @@ const CMD_TEXT = '[CLAWS_CMD r=r1] approve_request: {"approved":true}';
     if (!p) throw new Error('worker did not receive system.broadcast push frame');
     if (p.push !== 'message') throw new Error(`wrong push type: ${p.push}`);
     if (p.rid != null) throw new Error('push frame must not have rid');
-    if (!p.payload || p.payload.text !== CMD_TEXT) {
+    if (!p.payload || !CMD_TEXT_RE.test(p.payload.text)) {
       throw new Error(`push payload text mismatch: ${JSON.stringify(p.payload)}`);
     }
   });
@@ -250,9 +253,9 @@ const CMD_TEXT = '[CLAWS_CMD r=r1] approve_request: {"approved":true}';
   await waitFor(() => injectedCalls.length > injCountBefore, 500);
   check('writeInjected called with exact [CLAWS_CMD] text', () => {
     if (!capturedPty) throw new Error('PTY was not captured from createTerminal — test infrastructure issue');
-    const call = injectedCalls.slice(injCountBefore).find((c) => c.text === CMD_TEXT);
+    const call = injectedCalls.slice(injCountBefore).find((c) => CMD_TEXT_RE.test(c.text));
     if (!call) throw new Error(`writeInjected not called with expected text. Calls: ${JSON.stringify(injectedCalls)}`);
-    if (call.text !== CMD_TEXT) throw new Error(`text mismatch: ${call.text}`);
+    if (!CMD_TEXT_RE.test(call.text)) throw new Error(`text mismatch: ${call.text}`);
   });
 
   // ── 5. Worker without terminalId -> push frame delivered, no PTY call ─────
