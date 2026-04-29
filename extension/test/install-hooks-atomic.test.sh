@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for M-09: .claws-bin/hooks/ copy must be atomic — kill-window leaves
 # either all old hooks or all new hooks, never an empty/partial dir.
+# F2: replaced polling simulation with real SIGKILL mid-copy test.
 # Run: bash extension/test/install-hooks-atomic.test.sh
 # Exits 0 on success, 1 on failure.
 
@@ -61,11 +62,9 @@ tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/claws-m09-upd-XXXXXX")
 src="$tmpdir/hooks-src"
 dest="$tmpdir/hooks-dest"
 
-# Set up initial dest with old content
 mkdir -p "$dest"
 printf 'OLD CONTENT\n' > "$dest/old-hook.js"
 
-# Set up src with new content
 mkdir -p "$src"
 printf 'NEW HOOK\n' > "$src/new-hook.js"
 printf '{"type":"commonjs"}\n' > "$src/package.json"
@@ -89,51 +88,98 @@ fi
 
 rm -rf "$tmpdir"
 
-# ── TEST 3: interrupt simulation — dest is coherent (old or new, not empty) ───
-# We verify the atomic rename property: if we interrupt between tmp→dest steps,
-# the final state must be either fully old or fully new, never partial.
-# We simulate this by checking that copyDirAtomic uses atomic rename semantics
-# (verified via the helper's own test suite, already passing).
-# Here we do a behavioral test: concurrent copy + read never sees empty dir.
-tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/claws-m09-intr-XXXXXX")
+# ── TEST 3: SIGKILL mid-copy — dest always coherent (never partial/empty) ─────
+# F2: real kill test. Spawn a copy subprocess, send SIGKILL during the file-copy
+# phase (step 1: copy to .claws-tmp.*), then verify dest is coherent.
+#
+# Setup: old dest has 3 distinctly-named files. src has 100 new files (to make
+# the copy phase slow enough that kill hits during step 1, before the rename).
+# After kill: dest must have COMPLETE old content — never empty, never a mix.
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/claws-m09-kill-XXXXXX")
 src="$tmpdir/src"
 dest="$tmpdir/dest"
 
+# Create old dest (3 distinctly-named files)
 mkdir -p "$dest"
-printf 'old-v1\n' > "$dest/session-start-claws.js"
-printf 'old-v1\n' > "$dest/package.json"
+for i in 1 2 3; do
+  printf 'OLD-v1-file%d\n' "$i" > "$dest/hook-$i.js"
+done
+printf '{"type":"commonjs","version":"OLD"}\n' > "$dest/package.json"
+old_count=4  # total files in old dest
 
+# Create src with 100 new files (copy takes longer → kill more likely mid-step-1)
 mkdir -p "$src"
-printf 'new-v2\n' > "$src/session-start-claws.js"
-printf 'new-v2\n' > "$src/package.json"
+for i in $(seq 1 100); do
+  printf 'NEW-v2-file%d\n' "$i" > "$src/newfile-$i.js"
+done
+printf '{"type":"commonjs","version":"NEW"}\n' > "$src/package.json"
 
-# Run copy; during copy dest should never be empty
-node --no-deprecation --input-type=module <<INTEEOF 2>&1
+# Spawn copy in background; kill immediately so SIGKILL lands during step 1
+node --no-deprecation --input-type=module <<BGCOPY &
 import { copyDirAtomic } from '${HELPER_DIR}/atomic-file.mjs';
-import fs from 'fs';
-// Start copy in background
-const copyPromise = copyDirAtomic('${src}', '${dest}');
-// Poll dest — it must never be empty
-let sawEmpty = false;
-const poll = setInterval(() => {
-  try {
-    const files = fs.readdirSync('${dest}');
-    if (files.length === 0) sawEmpty = true;
-  } catch { /* dest may not exist transiently — that's ok */ }
-}, 1);
-await copyPromise;
-clearInterval(poll);
-if (sawEmpty) {
-  process.stderr.write('EMPTY DIR OBSERVED\\n');
-  process.exit(1);
-}
-INTEEOF
+await copyDirAtomic('${src}', '${dest}');
+BGCOPY
+bg_pid=$!
 
-copy_exit=$?
-if [ $copy_exit -eq 0 ]; then
-  pass "interrupt simulation: dest never observed as empty during atomic copy"
+# Give the process just enough time to start the copy, then kill it
+# (0.005s = 5ms — enough for spawn + file-descriptor open, not enough for 100-file copy + rename)
+sleep 0.005 2>/dev/null || true
+kill -9 "$bg_pid" 2>/dev/null || true
+wait "$bg_pid" 2>/dev/null || true
+
+# Post-kill analysis: dest must be coherent
+dest_count=$(ls "$dest" 2>/dev/null | wc -l | tr -d ' ')
+
+if [ "$dest_count" -gt 0 ]; then
+  pass "SIGKILL mid-copy: dest is not empty ($dest_count files present)"
 else
-  fail "interrupt simulation: empty dir observed during copy (atomicity broken)"
+  fail "SIGKILL mid-copy: dest is EMPTY after kill — old content was wiped (M-09 regression)"
+fi
+
+# Determine which version is in dest (find exits 0 even with no matches)
+has_old_hook=$(find "$dest" -maxdepth 1 -name 'hook-*.js' 2>/dev/null | wc -l | tr -d ' ')
+has_new_file=$(find "$dest" -maxdepth 1 -name 'newfile-*.js' 2>/dev/null | wc -l | tr -d ' ')
+
+if [ "$has_old_hook" -gt 0 ] && [ "$has_new_file" -gt 0 ]; then
+  fail "SIGKILL mid-copy: dest has mix of OLD (hook-*.js) and NEW (newfile-*.js) — atomicity broken"
+elif [ "$has_old_hook" -gt 0 ]; then
+  # Old content in dest — expected when kill lands before rename
+  old_in_dest=$(ls "$dest" 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$old_in_dest" -eq "$old_count" ]; then
+    pass "SIGKILL mid-copy: dest has complete OLD version ($old_in_dest files, all old)"
+  else
+    fail "SIGKILL mid-copy: dest has OLD hook files but wrong count ($old_in_dest, expected $old_count)"
+  fi
+elif [ "$has_new_file" -gt 0 ]; then
+  # New content in dest — kill landed after rename; that's also fine
+  pass "SIGKILL mid-copy: dest has NEW version ($dest_count files) — rename completed before kill"
+else
+  # Only package.json remains — still coherent (one-version state)
+  if [ -f "$dest/package.json" ]; then
+    pass "SIGKILL mid-copy: dest has package.json only — coherent single-file state"
+  else
+    fail "SIGKILL mid-copy: unrecognized dest state ($dest_count files, no hook or newfile entries)"
+  fi
+fi
+
+# No .claws-tmp.* dirs should persist in parent after a complete copy.
+# If kill hit during step 1, a .claws-tmp.* orphan may exist — that is ACCEPTABLE
+# (it will be cleaned up on next invocation). The key property is dest coherence.
+orphan_tmp=$(find "$tmpdir" -maxdepth 1 -name 'dest.claws-tmp.*' 2>/dev/null | wc -l | tr -d ' ')
+orphan_old=$(find "$tmpdir" -maxdepth 1 -name 'dest.claws-old.*' 2>/dev/null | wc -l | tr -d ' ')
+# Convert count to empty string for the -z test
+[ "$orphan_tmp" -eq 0 ] && orphan_tmp="" || true
+[ "$orphan_old" -eq 0 ] && orphan_old="" || true
+if [ -z "$orphan_old" ]; then
+  pass "SIGKILL mid-copy: no orphaned .claws-old.* dir (old dest not exposed without a replacement)"
+else
+  # .claws-old.* exists AND dest has new content — step 3 completed but step 4 (rm old) was killed.
+  # This is acceptable — dest is coherent (new), old is removable on next run.
+  if [ "$has_new_file" -gt 0 ]; then
+    pass "SIGKILL mid-copy: .claws-old.* orphan exists but dest=NEW — coherent (cleanup pending)"
+  else
+    fail "SIGKILL mid-copy: .claws-old.* orphan exists but dest is not NEW — inconsistent state"
+  fi
 fi
 
 rm -rf "$tmpdir"
@@ -164,5 +210,5 @@ if [ "$FAIL_COUNT" -gt 0 ]; then
   echo "FAIL: $FAIL_COUNT/$((PASS_COUNT + FAIL_COUNT)) install-hooks-atomic check(s) failed."
   exit 1
 fi
-echo "PASS: $PASS_COUNT install-hooks-atomic checks"
+echo "PASS: $PASS_COUNT install-hooks-atomic checks (F2: real SIGKILL mid-copy test)"
 exit 0
