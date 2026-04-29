@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Register Claws lifecycle hooks into ~/.claude/settings.json.
+// M-03/M-38: uses json-safe.mjs mergeIntoFile — atomic write, JSONC-tolerant,
+// abort-on-malformed (NEVER silently reset to {}).
+//
 // Usage: node inject-settings-hooks.js [claws-bin-dir] [--dry-run] [--remove]
 //
 // Adds three hooks (all tagged _source:"claws" for clean uninstall):
@@ -10,18 +13,13 @@
 //
 // Idempotent: running twice produces the same result.
 // --remove: strips all _source:"claws" hooks without touching others.
-//
-// claws-bin-dir defaults to <install-dir>/scripts so hooks resolve to
-// <install-dir>/scripts/hooks/ — the committed source-of-truth. one registration
-// serves every project, /claws-update from any project applies to all, project
-// deletion never orphans the registration.
 
 'use strict';
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
+const { pathToFileURL } = require('url');
 
-// Default: resolve from this script's location (scripts/ → ../.claws-bin)
 const DEFAULT_CLAWS_BIN = __dirname;
 const CLAWS_BIN = (process.argv[2] && !process.argv[2].startsWith('--'))
   ? process.argv[2]
@@ -29,37 +27,83 @@ const CLAWS_BIN = (process.argv[2] && !process.argv[2].startsWith('--'))
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const REMOVE  = process.argv.includes('--remove');
+// M-18: atomic remove+add in one read-modify-write cycle — eliminates the
+// kill-window where settings.json has zero Claws hooks between --remove and re-add.
+const UPDATE  = process.argv.includes('--update');
 const SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 const SOURCE_TAG    = 'claws';
-
-function loadSettings() {
+// F5: advisory exclusive lock — prevents concurrent inject-settings-hooks
+// invocations (e.g. install.sh + update.sh race) from producing a torn write.
+// 15 attempts × 100ms backoff = 1.5s max wait; handles bursts of concurrent writers.
+const LOCK_PATH = `${SETTINGS_PATH}.lock`;
+async function withLock(fn) {
+  let fd;
+  for (let attempt = 0; attempt < 15; attempt++) {
+    try {
+      fd = fs.openSync(LOCK_PATH, 'wx');
+      break;
+    } catch (e) {
+      if (e.code === 'ENOENT') {
+        // Parent directory doesn't exist yet — create it (fresh install).
+        fs.mkdirSync(path.dirname(LOCK_PATH), { recursive: true });
+        try { fd = fs.openSync(LOCK_PATH, 'wx'); break; } catch (e2) {
+          if (e2.code !== 'EEXIST') throw e2; // unexpected error
+          // else: another process grabbed it after mkdir — fall through to sleep
+        }
+      } else if (e.code !== 'EEXIST') {
+        throw e; // unexpected error (not a lock contention)
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+  if (fd === undefined) {
+    throw new Error(`settings.json lock busy after ${15 * 100}ms — another process may be stuck`);
+  }
   try {
-    return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
-  } catch {
-    return {};
+    return await fn();
+  } finally {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(LOCK_PATH); } catch { /* ignore */ }
   }
 }
 
-function saveSettings(data) {
-  if (DRY_RUN) {
-    console.log('[dry-run] would write to:', SETTINGS_PATH);
-    console.log(JSON.stringify(data, null, 2));
-    return;
+const HELPERS_URL = pathToFileURL(path.resolve(__dirname, '_helpers', 'json-safe.mjs')).href;
+
+// M-15 + F1: canonical install = CLAWS_BIN/hooks/ directory exists AND the
+// specific script file is present. Both checks are required: if only the dir
+// is present but the script is missing (empty hooks/ dir, custom CLAWS_BIN,
+// or post-install deletion), a bare `node` invocation exits non-zero with
+// MODULE_NOT_FOUND — breaking the SAFETY CONTRACT (hooks must never exit
+// non-zero except intentional deny). Fall through to wrapped form instead.
+function isCanonicalInstall(scriptName) {
+  try {
+    const hooksDir = path.join(CLAWS_BIN, 'hooks');
+    return fs.statSync(hooksDir).isDirectory() &&
+           fs.existsSync(path.join(hooksDir, scriptName));
+  } catch {
+    return false;
   }
-  fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(data, null, 2) + '\n');
 }
 
 function hookCmd(scriptName) {
   const scriptPath = path.join(CLAWS_BIN, 'hooks', scriptName);
-  // Wrap in `sh -c` with a file-exists check (v0.7.3 hardening). Without
-  // this, Claude Code reports a "non-blocking status code" error on every
-  // tool call when the hook script's path is missing (install dir moved,
-  // sandbox path leaked into settings.json, etc.). The wrapper makes
-  // missing-path a silent no-op instead of a visible error. The path is
-  // passed as $0 to avoid shell-escape pitfalls with paths containing
-  // spaces or apostrophes.
-  return `sh -c '[ -f "$0" ] && exec node "$0" || exit 0' ${JSON.stringify(scriptPath)}`;
+  if (isCanonicalInstall(scriptName)) {
+    // Direct node invocation: hooks/ dir and script both confirmed present.
+    // Skips the sh -c wrapper to reduce fork overhead per hook invocation.
+    return `node ${JSON.stringify(scriptPath)}`;
+  }
+  // Non-canonical or partially-installed: wrap with file-exists guard + misfire logging.
+  // Missing path: writes forensic entry to /tmp/claws-hook-misfire.log (2>/dev/null
+  // suppresses errors when /tmp is unwritable) AND echoes to stderr so the event is
+  // always visible even on read-only filesystems. exit 0 preserves the SAFETY CONTRACT.
+  // Path is passed as $0 to avoid shell-escape pitfalls.
+  return (
+    `sh -c 'if [ -f "$0" ]; then exec node "$0"; ` +
+    `else msg="[claws-hook-misfire] $(date -u +%Y-%m-%dT%H:%M:%SZ) missing path: $0"; ` +
+    `printf "%s\\n" "$msg" >> /tmp/claws-hook-misfire.log 2>/dev/null; ` +
+    `printf "%s\\n" "$msg" >&2; ` +
+    `exit 0; fi' ${JSON.stringify(scriptPath)}`
+  );
 }
 
 function makeHookEntry(matcher, scriptName) {
@@ -70,59 +114,159 @@ function makeHookEntry(matcher, scriptName) {
   };
 }
 
-const settings = loadSettings();
-if (!settings.hooks) settings.hooks = {};
+(async () => {
+  const { mergeIntoFile, parseJsonSafe } = await import(HELPERS_URL);
 
-if (REMOVE) {
-  // Strip all _source:"claws" entries from all hook arrays
-  let removed = 0;
-  for (const [event, arr] of Object.entries(settings.hooks)) {
-    if (!Array.isArray(arr)) continue;
-    const filtered = arr.filter(e => e._source !== SOURCE_TAG);
-    removed += arr.length - filtered.length;
-    settings.hooks[event] = filtered;
+  const HOOKS_TO_ADD = [
+    { event: 'SessionStart', scriptName: 'session-start-claws.js', entry: makeHookEntry('*', 'session-start-claws.js') },
+    { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('*', 'pre-tool-use-claws.js') },
+    { event: 'Stop',         scriptName: 'stop-claws.js',          entry: makeHookEntry('*', 'stop-claws.js') },
+  ];
+
+  if (DRY_RUN) {
+    let raw = '{}';
+    try { raw = fs.readFileSync(SETTINGS_PATH, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    const parsed = parseJsonSafe(raw, { allowJsonc: true });
+    if (!parsed.ok) {
+      console.error('[claws] settings.json is malformed — dry-run aborted (file unchanged).');
+      console.error('  Error:', parsed.error.message);
+      process.exit(1);
+    }
+    const cfg = parsed.data;
+    if (!cfg.hooks) cfg.hooks = {};
+    for (const { event, scriptName, entry } of HOOKS_TO_ADD) {
+      if (!cfg.hooks[event]) cfg.hooks[event] = [];
+      const arr = cfg.hooks[event];
+      // Dry-run: use same exact-match dedup as live path (M-14)
+      const exactDryIdx = arr.findIndex(e =>
+        e._source === SOURCE_TAG && e.matcher === entry.matcher &&
+        e.hooks && e.hooks[0] && e.hooks[0].command === entry.hooks[0].command
+      );
+      if (exactDryIdx === -1) {
+        const staleDryIdx = arr.findIndex(e =>
+          e._source === SOURCE_TAG && e.matcher === entry.matcher && e.hooks && e.hooks[0]
+        );
+        if (staleDryIdx !== -1) arr[staleDryIdx] = entry;
+        else arr.push(entry);
+      }
+    }
+    console.log('[dry-run] would write to:', SETTINGS_PATH);
+    console.log(JSON.stringify(cfg, null, 2));
+    return;
   }
-  saveSettings(settings);
-  console.log(`Removed ${removed} Claws hook(s) from ${SETTINGS_PATH}`);
-  process.exit(0);
-}
 
-// Define the three hooks to inject (PostToolUse removed in v0.6.5 — gate moved server-side)
-const HOOKS_TO_ADD = [
-  { event: 'SessionStart', scriptName: 'session-start-claws.js', entry: makeHookEntry('*', 'session-start-claws.js') },
-  { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('*', 'pre-tool-use-claws.js') },
-  { event: 'Stop',         scriptName: 'stop-claws.js',          entry: makeHookEntry('*', 'stop-claws.js') },
-];
-
-let changed = 0;
-for (const { event, scriptName, entry } of HOOKS_TO_ADD) {
-  if (!settings.hooks[event]) settings.hooks[event] = [];
-  const arr = settings.hooks[event];
-
-  // Find any existing Claws entry for this script. Match by scriptName
-  // substring so we can detect old-format entries (plain `node "<path>"`)
-  // and replace them in place with the new wrapped form, avoiding
-  // duplicate accumulation on repeated runs across versions.
-  const existingIdx = arr.findIndex(e =>
-    e._source === SOURCE_TAG &&
-    e.matcher === entry.matcher &&
-    e.hooks && e.hooks[0] &&
-    e.hooks[0].command && e.hooks[0].command.includes(scriptName)
-  );
-
-  if (existingIdx === -1) {
-    arr.push(entry);
-    changed++;
-  } else if (arr[existingIdx].hooks[0].command !== entry.hooks[0].command) {
-    // Old-format or stale-path entry — upgrade it in place
-    arr[existingIdx] = entry;
-    changed++;
+  if (REMOVE) {
+    let removed = 0;
+    const result = await withLock(() => mergeIntoFile(SETTINGS_PATH, (cfg) => {
+      if (!cfg.hooks) return;
+      for (const [event, arr] of Object.entries(cfg.hooks)) {
+        if (!Array.isArray(arr)) continue;
+        const filtered = arr.filter(e => e._source !== SOURCE_TAG);
+        removed += arr.length - filtered.length;
+        cfg.hooks[event] = filtered;
+      }
+    }));
+    if (!result.ok) {
+      console.error('[claws] Failed to update settings.json:', result.error.message);
+      if (result.error.backupSavedAt) {
+        console.error('  Original backed up to:', result.error.backupSavedAt);
+        console.error('  Aborting — your settings.json is unchanged.');
+      }
+      process.exit(1);
+    }
+    console.log(`Removed ${removed} Claws hook(s) from ${SETTINGS_PATH}`);
+    return;
   }
-}
 
-if (changed > 0) {
-  saveSettings(settings);
-  console.log(`Added ${changed} Claws hook(s) to ${SETTINGS_PATH}`);
-} else {
-  console.log('Claws hooks already present in settings.json');
-}
+  // M-18: --update does remove-then-add atomically in one mergeIntoFile call.
+  // No kill-window where settings.json has zero Claws hooks.
+  if (UPDATE) {
+    let removed = 0;
+    let changed = 0;
+    const result = await withLock(() => mergeIntoFile(SETTINGS_PATH, (cfg) => {
+      if (!cfg.hooks) cfg.hooks = {};
+      // Step 1: remove all existing Claws hooks
+      for (const [event, arr] of Object.entries(cfg.hooks)) {
+        if (!Array.isArray(arr)) continue;
+        const filtered = arr.filter(e => e._source !== SOURCE_TAG);
+        removed += arr.length - filtered.length;
+        cfg.hooks[event] = filtered;
+      }
+      // Step 2: add current Claws hooks
+      for (const { event, entry } of HOOKS_TO_ADD) {
+        if (!cfg.hooks[event]) cfg.hooks[event] = [];
+        cfg.hooks[event].push(entry);
+        changed++;
+      }
+    }));
+    if (!result.ok) {
+      console.error('[claws] Failed to update settings.json:', result.error.message);
+      if (result.error.backupSavedAt) {
+        console.error('  Original backed up to:', result.error.backupSavedAt);
+        console.error('  Aborting — your settings.json is unchanged.');
+      }
+      process.exit(1);
+    }
+    console.log(`Updated Claws hooks in ${SETTINGS_PATH} (removed ${removed}, added ${changed})`);
+    return;
+  }
+
+  // Add/update hooks
+  let changed = 0;
+  const result = await withLock(() => mergeIntoFile(SETTINGS_PATH, (cfg) => {
+    if (!cfg.hooks) cfg.hooks = {};
+    for (const { event, scriptName, entry } of HOOKS_TO_ADD) {
+      if (!cfg.hooks[event]) cfg.hooks[event] = [];
+      const arr = cfg.hooks[event];
+
+      // M-14: exact-command equality for dedup. The _source === 'claws' guard
+      // was already present before M-14 and prevented non-Claws hooks from
+      // matching (findIndex short-circuits on _source). M-14's actual improvement:
+      // replace substring command.includes(scriptName) with strict equality,
+      // making "already current" (no-op) vs "stale/old-format Claws entry"
+      // (upgrade in-place via staleIdx) unambiguous and cleaner.
+      const exactIdx = arr.findIndex(e =>
+        e._source === SOURCE_TAG &&
+        e.matcher === entry.matcher &&
+        e.hooks && e.hooks[0] &&
+        e.hooks[0].command === entry.hooks[0].command
+      );
+
+      if (exactIdx !== -1) {
+        // Already current — no-op
+      } else {
+        // Check for a stale Claws entry to upgrade (different command, same source+matcher)
+        const staleIdx = arr.findIndex(e =>
+          e._source === SOURCE_TAG &&
+          e.matcher === entry.matcher &&
+          e.hooks && e.hooks[0]
+        );
+        if (staleIdx !== -1) {
+          arr[staleIdx] = entry;
+          changed++;
+        } else {
+          arr.push(entry);
+          changed++;
+        }
+      }
+    }
+  }));
+
+  if (!result.ok) {
+    console.error('[claws] Failed to update settings.json:', result.error.message);
+    if (result.error.backupSavedAt) {
+      console.error('  Original backed up to:', result.error.backupSavedAt);
+      console.error('  Aborting — your settings.json is unchanged.');
+    }
+    process.exit(1);
+  }
+
+  if (changed > 0) {
+    console.log(`Added ${changed} Claws hook(s) to ${SETTINGS_PATH}`);
+  } else {
+    console.log('Claws hooks already present in settings.json');
+  }
+})().catch(e => {
+  console.error('[claws] inject-settings-hooks unexpected error:', e.message);
+  process.exit(1);
+});

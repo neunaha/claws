@@ -5,6 +5,223 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-04-29 — Bulletproof regression fix release
+
+This release closes 50 findings surfaced by a 4-worker parallel audit of the v0.7.2 + v0.7.3 release cycle. After the user reported lifecycle breakage on `/claws-update`, we ran a full Plan→Implement→Review→Audit→Test→Fix→Repeat loop across 5 layers to deliver one bulletproof codebase that absorbs all in-flight unmerged work (γ.1 reverse channel, γ.2 event log core, MCP persistent socket fix) plus 50 regression fixes.
+
+### CRITICAL — confirmed data-loss prevention
+- **M-01** `install.sh` awk strip — anchored to Claws-marked block + timestamped dotfile backup before any modification
+- **M-02** `.mcp.json` silent reset — JSONC-tolerant safe-merge with abort-on-error; never wipes other MCP servers
+- **M-03** `~/.claude/settings.json` silent reset — JSONC-tolerant safe-merge; never wipes user's Claude Code config
+- **M-38** `inject-settings-hooks.js` non-atomic write — atomic write via L0 helpers
+- **M-39** `cli.js` MCP fallback non-atomic write — atomic write via L0 helpers
+
+### HIGH — silent lifecycle breaks
+- **M-04** Hook silent skip → forensic log (`/tmp/claws-hook-misfire.log` + stderr)
+- **M-05** Rosetta arch silent miscompile → auto-correct to arm64 (not x64)
+- **M-06** Stale-extension cleanup race → gate on `[ -d "$kept_dir" ]` before iterating
+- **M-07** `spawnSync` null-status (signal-killed rebuild) → explicit `result.status === null` detection + helpful error
+- **M-08** No rebuild timeout → 5-minute ceiling + SIGTERM detection
+- **M-09** Hooks dir wipe-then-copy non-atomic → atomic `copyDirAtomic` via L0 helper
+- **M-10** Health check 2s timeout → 8s + 3-attempt exponential backoff (8s/12s/16s)
+- **M-11** `mcp_server.js` orphan → SIGKILL escalation 500ms after SIGTERM + socket-unlink verify
+- **M-31** `fix.sh` `@electron/rebuild` no timeout → mirrored from M-08 (recovery path hardening)
+- **M-36** `rebuild-node-pty.sh` no timeout + no TERM_PROGRAM detection → mirrored trifecta
+- **M-44** `fix.sh` stale Content-Length framing → newline-delimited frames (MCP check was always false-failing)
+- **M-45** `fix.sh` `.mcp.json` repair silent-reset-to-`{}` → safe-merge + atomic write + env-var path (recovery path)
+
+### MEDIUM/LOW (M-12 to M-50 not listed above)
+50 total findings — see `.local/audits/regression-master-issues.md` for the complete catalog.
+
+### Foundation utilities (Layer 0)
+- `scripts/_helpers/json-safe.mjs` — JSONC parse + safe-merge + abort-on-error; used across install/update/fix/inject paths
+- `scripts/_helpers/atomic-file.mjs` — rename-pattern atomic file/dir ops with fsync; used for all config writes
+
+### Test coverage
+- 224 baseline → 501 PASS (+277 regression checks across ~40 new test files)
+- Every M-XX finding has a regression test that exercises its failure mode
+
+### Includes (rolled forward from open PRs)
+- γ.1 reverse channel (was PR #27)
+- γ.2 event log core (was PR #28)
+- MCP persistent socket fix (was PR #29)
+
+---
+
+## [0.7.4-bulletproof-L4-fix] - 2026-04-29 — Layer 4 fix: code-review findings + audit items (F1–F7, M-44–M-50)
+
+### Fixed
+
+- **F1** `scripts/update.sh` M-10 retry loop: added `_claws_attempt` counter; emits `note "MCP handshake timeout — retry N of 3 (Nms)..."` between attempts so the operator knows progress during the silent ~38s retry window.
+- **F4** `extension/src/extension.ts` M-41 `runRebuildPty()`: killTimer now sends SIGTERM first, then SIGKILL after 5s grace, matching the recipe pattern from M-11. Previously sent SIGKILL directly. Regression test: `extension-rebuild-pty-timeout.test.js` updated (SIGTERM-before-SIGKILL check added).
+- **F2** `scripts/install.sh`: `inject-global-claude-md.js` now gated on `GIT_PULL_OK` — mirrors the project-level CLAUDE.md gate; avoids rewriting machine-wide policy from stale source when git pull failed. Emits skip note on GIT_PULL_OK=0.
+- **F3** `extension/test/update-step6-orphan.test.sh`: added test 5 — behavioral check that a Unix socket server has no active listener after SIGTERM+SIGKILL sequence (process is gone, no orphan socket-holder).
+- **F6** `extension/src/extension.ts` plutil candidate loop: added JSDoc noting 4 candidates × 3s timeout = 12s worst-case synchronous block; acceptable for explicit user-triggered rebuild command.
+- **F7** `extension/src/event-log.ts` `writeManifest()`: migrated from `writeFileSync` to `openSync+writeSync+fsyncSync+closeSync+renameSync` — mirrors M-29/M-43 fsync-before-rename pattern; manifest survives power-cut or SIGKILL after write.
+- **F5** `scripts/inject-settings-hooks.js`: added `withLock()` helper using `fs.openSync(lockPath, 'wx')` exclusive create with 15-attempt/100ms backoff; all three `mergeIntoFile` call sites (REMOVE, UPDATE, add-mode) wrapped — prevents concurrent `install.sh`+`update.sh` invocations from tearing settings.json. Fixed: removed stale `|| attempt === 2` early-throw that caused EEXIST on retry 2 to propagate (leftover from old 3-attempt loop). Regression test: `inject-settings-exclusive-lock.test.js` (6 checks).
+- **M-44** `scripts/fix.sh` MCP handshake: replaced Content-Length framing (stale LSP protocol) with `mcp.stdin.write(req + '\n')` — matches mcp_server.js's newline-delimited JSON protocol. Added full `protocolVersion`+`clientInfo` to initialize params. Regression test: `fix-mcp-handshake.test.sh` (5 checks).
+- **M-50** `mcp_server.js` `_pconnConnect()`: added `sock.setTimeout(5000)` + `on('timeout', destroy)` — prevents the persistent socket connect phase from hanging forever when VS Code is reloading and the socket is transiently unreachable. `setTimeout(0)` clears the timer once the connection succeeds. Regression test: `mcp-pconn-timeout.test.js` (5 checks).
+- **M-49** `scripts/install.sh` `EXPECTED_MIN_VERSION`: bumped from `0.5.7` → `0.7.4` — was stale, causing stale-clone warnings to fire against fully-up-to-date clones at v0.7.4.
+- **M-47** `scripts/update.sh` `.mcp.json` sanity check: path now passed via `CLAWS_MCP_CHECK` env var instead of string-interpolation into `node -e` — handles project roots with apostrophes/backslashes without JS syntax errors (mirrors M-20 socket-probe fix). Regression test: `update-mcp-path-quoting.test.sh` (5 checks).
+- **M-45+M-46** `scripts/fix.sh` + `scripts/_helpers/fix-repair.js` (new): `.mcp.json` and `.vscode/extensions.json` repair now use `fix-repair.js` which calls `mergeIntoFile` from `json-safe.mjs` — atomic write, abort-on-malformed (never silently resets to `{}`), JSONC-tolerant, path via `CLAWS_REPAIR_TARGET` env var (no injection). Regression test: `fix-mcp-repair.test.sh` (10 checks).
+
+## [0.7.4-bulletproof-L4] - 2026-04-29 — Layer 4: update.sh + extension.ts hardening (M-10, M-11, M-18, M-19, M-20, M-21, M-41, M-42, M-43)
+
+### Fixed
+
+- **M-10** `scripts/update.sh` Step 6 health check: bumped timeout from 2000ms to 8s; added 3-attempt retry loop with exponential timeout series (8s, 12s, 16s) so loaded machines don't see false-positive YELLOW on slow startup. YELLOW only declared after all three attempts fail.
+- **M-11** `scripts/update.sh` Step 6 health check: SIGKILL escalation 500ms after SIGTERM — mcp_server.js child is force-killed if SIGTERM is not handled quickly, preventing orphaned socket fd holding the project socket open. mcp_server.js path passed via `CLAWS_MCP_PATH` env var (no embedded path injection). Regression test: `update-step6-orphan.test.sh` (4 checks, includes behavioral SIGTERM-ignore mock).
+- **M-19** `scripts/update.sh`: `CLAWS_LOG` now defined and exported before `install.sh` runs, so Step 6 warning "see install log: $CLAWS_LOG" references the actual log path written by install.sh. install.sh inherits via `${CLAWS_LOG:-...}`. Regression test: `update-claws-log.test.sh` (6 checks).
+- **M-20** `scripts/update.sh` socket probe: project root path passed via `CLAWS_PROBE_PATH` env var instead of string-interpolation into `node -e` — handles project paths containing apostrophes/backslashes without JS syntax errors. Regression test: `update-probe-path-quoting.test.sh` (5 checks, includes behavioral apostrophe + backslash path tests).
+- **M-21** `scripts/update.sh` + `scripts/install.sh`: `GIT_PULL_OK` flag exported on git pull failure; `install.sh` skips `inject-claude-md.js` when `GIT_PULL_OK=0` — avoids rewriting CLAUDE.md tool-set from stale source. Regression test: `update-git-pull-fail.test.sh` (8 checks, behavioral GIT_PULL_OK=0 and GIT_PULL_OK=1 paths).
+- **M-18** `scripts/inject-settings-hooks.js` + `scripts/install.sh`: added `--update` mode that removes old Claws hooks and adds new ones in a single atomic `mergeIntoFile` call. `install.sh` now calls `inject-settings-hooks.js --update` instead of two-pass `--remove` + add, eliminating the kill-window where settings.json has zero Claws hooks. Regression test: `update-atomic-hooks.test.sh` (7 checks, behavioral update preserves non-Claws hooks).
+- **M-41** `extension/src/extension.ts` `runRebuildPty()`: added 5-minute SIGKILL timer (`setTimeout → proc.kill('SIGKILL')`) to prevent hung `@electron/rebuild` invocations from freezing VS Code indefinitely. Timer cleared on normal exit. Regression test: `extension-rebuild-pty-timeout.test.js` (6 checks).
+- **M-42** `extension/src/extension.ts` `execFileSync('plutil', ...)`: added `{ timeout: 3000 }` to prevent synchronous Electron-version detection from blocking the VS Code extension host on network-mounted `/Applications`. Regression test: `extension-plutil-timeout.test.js` (5 checks).
+- **M-43** `extension/src/lifecycle-store.ts` `flushToDisk()`: migrated from `writeFileSync` to `openSync+writeSync+fsyncSync+closeSync+renameSync` pattern — mirrors the M-29 hooks-side fix for parity; ensures lifecycle state survives power-cut or SIGKILL after write but before kernel flush. Regression test: `lifecycle-store-fsync.test.js` (7 checks, behavioral compile+run verification).
+
+## [0.7.4-bulletproof-L3-fix] - 2026-04-29 — Layer 3 fix: code-review findings F1+F2+F3
+
+### Fixed
+
+- **F1** `scripts/inject-settings-hooks.js` `isCanonicalInstall()`: now checks both `CLAWS_BIN/hooks/` directory presence AND individual script file existence before emitting bare `node "<path>"`. Previously, a hooks/ dir with missing scripts would produce a `node` invocation that exits non-zero (MODULE_NOT_FOUND), breaking the SAFETY CONTRACT. Falls through to the wrapped `sh -c` misfire-log form instead. [L3.11]
+- **F2** `scripts/inject-settings-hooks.js` M-14 comment: corrected to accurately state that `_source === 'claws'` already prevented non-Claws hooks from being matched before M-14; M-14's actual improvement is replacing substring `command.includes(scriptName)` with exact-command equality, making the "already current" vs "stale, upgrade in-place" distinction unambiguous. [L3.12]
+- **F3** `scripts/inject-settings-hooks.js` `hookCmd()` non-canonical form: misfire message now also written to stderr (`>&2`) alongside `/tmp/claws-hook-misfire.log` (with `2>/dev/null`). When `/tmp` is unwritable, the message still reaches stderr for forensics while `exit 0` preserves the SAFETY CONTRACT. [L3.13]
+
+## [0.7.4-bulletproof-L3] - 2026-04-29 — Layer 3: hooks + settings.json hardening (M-03, M-04, M-12, M-13, M-14, M-15, M-16, M-24, M-38, M-39)
+
+### Fixed
+
+- **M-03/M-38** `scripts/inject-settings-hooks.js`: replaced `loadSettings()` try/catch-reset-to-`{}` + `fs.writeFileSync` with async `mergeIntoFile()` from `scripts/_helpers/json-safe.mjs`. On malformed JSON: backup created, original untouched, exits non-zero. Never silently wipes user's entire Claude Code config.
+- **M-39** `cli.js` MCP fallback: replaced `JSON.parse + writeFileSync` with inline ESM `mergeIntoFile()` call via `spawnSync --input-type=module`. Same atomic + JSONC-tolerant + abort-on-malformed guarantees.
+- **M-04** `scripts/inject-settings-hooks.js` `hookCmd()`: missing hook path now appends to `/tmp/claws-hook-misfire.log` with timestamp + path instead of silently exiting 0 with no trace. [L3.2]
+- **M-12** `scripts/inject-settings-hooks.js` `hookCmd()`: replaced `[ -f "$0" ] && exec node "$0" || (...)` with explicit `if [ -f "$0" ]; then exec node "$0"; else ...; fi` — `else` branch is reachable even if `exec` fails for unusual reasons (applies to non-canonical paths; canonical paths use direct node per M-15). [L3.3]
+- **M-13** `scripts/hooks/{session-start,pre-tool-use,stop}-claws.js`: stdin 'data' and 'end' listeners now registered in a single try block; added 5-second `setTimeout(...).unref()` safety timer so hooks can never hang the parent process. [L3.4]
+- **M-14** `scripts/inject-settings-hooks.js` dedup: replaced `command.includes(scriptName)` with exact-command equality + `_source === 'claws'` guard — prevents overwriting non-Claws hooks whose command happens to contain a Claws script name as substring. [L3.5]
+- **M-15** `scripts/inject-settings-hooks.js` `hookCmd()`: when `CLAWS_BIN/hooks/` directory exists (canonical install), registers hooks as direct `node "<path>"` invocations (skips the `sh -c` wrapper) — reduces fork overhead on each hook invocation. [L3.6]
+- **M-16** `scripts/hooks/pre-tool-use-claws.js` STRICT deny: all `process.stdout.write` calls now end with `\n` so Claude Code's hook protocol parser flushes correctly. [L3.7]
+- **M-24** `scripts/hooks/{session-start,pre-tool-use,stop}-claws.js`: `process.on('uncaughtException')` and `process.on('unhandledRejection')` handlers gated on `!process.env.CLAWS_DEBUG` — when `CLAWS_DEBUG=1`, errors propagate visibly for debugging. [L3.8]
+
+## [0.7.4-bulletproof-L2-fix] - 2026-04-29 — Layer 2 fix: code-review findings F1+F5 (error-path + env-var path passing)
+
+### Fixed
+
+- **F1** `scripts/install.sh` M-09 + M-02 heredoc blocks: wrapped each `node --input-type=module` heredoc with `set +e` / capture `_exit=$?` / `set -e` so the `die`/`warn` call fires before the shell aborts. Under `set -eo pipefail`, `if [ $? -ne 0 ]` after a heredoc is dead code — the shell terminates at the heredoc line when node exits non-zero.
+- **F5** `scripts/install.sh` M-02 block: switched from shell-expanded string literals (`'${PROJECT_MCP}'`) to `process.env.X` for all user-controlled paths. Also changed static `import ... from '...'` to `await import(process.env.INSTALL_DIR + '...')` to avoid JS SyntaxError when any path component contains a single-quote or backslash.
+- **F5 test** `extension/test/install-mcp-merge.test.sh`: added apostrophe path test (creates a project dir named `user's-project`, runs M-02 merge via env vars, asserts claws entry written).
+- **F1 test** `extension/test/install-error-path.test.sh` (9 checks): static checks that `_hooks_exit` and `_mcp_exit` capture patterns are present; behavioral harness proving the message fires before set-e exit.
+- **F2** `extension/test/install-hooks-atomic.test.sh`: replaced polling simulation (1ms interval checks) with a real SIGKILL mid-copy test. Spawns `copyDirAtomic` in a subprocess, sends SIGKILL after 5ms (during the 100-file step-1 copy phase), then asserts dest has either complete OLD content or complete NEW content — never an empty dir or a partial mix.
+- **F3** `scripts/inject-claude-md.js`, `scripts/inject-global-claude-md.js`, `scripts/hooks/lifecycle-state.js`, `extension/src/uninstall-cleanup.ts`: replaced `writeFileSync(tmp)` with `openSync(tmp, 'w') → writeSync → fsyncSync → closeSync` in all four inline `writeAtomic` helpers. Adds durability for power-cut scenarios where the OS page cache hasn't been flushed — mirrors the `fd.sync()` call that `scripts/_helpers/atomic-file.mjs` (L0) already does in its async variant.
+- **F4** `scripts/install.sh inject_hook`: fixed orphaned-marker edge case. Previous awk `skip { skip=0; next }` stripped the marker AND whatever line followed it, even if the user had manually removed the source line. New pattern: `skip && /source.*shell-hook\.sh/ { skip=0; next }; skip { skip=0; print }` — only strips the following line when it IS the Claws source line; preserves it otherwise. Added F4 orphaned-marker test to `install-awk-anchor.test.sh` (+4 checks, +1 static → 20 total).
+- **F6** `CHANGELOG.md`: added missing `[2c99bda]` commit hash to M-28 entry.
+- **M-40** `extension/scripts/bundle-native.mjs`: replaced `resetNativeDest()` (wipe-then-copy) with `setupStagingDir()` + atomic rename pattern in `copyRuntimeSlice()`. Files now copy into `NATIVE_DEST.claws-new`, then `rename(NATIVE_DEST → .claws-old)` + `rename(staging → NATIVE_DEST)` + cleanup. Kill during file copy leaves old NATIVE_DEST intact; kill after rename leaves new NATIVE_DEST intact — never an empty dir. `extension/test/bundle-native-copy-atomic.test.js` (10 checks): static pattern verification + behavioral atomic-rename simulation + kill-before-rename invariant.
+
+## [0.7.4-bulletproof-L2] - 2026-04-29 — Layer 2: install.sh data-loss + atomicity fixes (M-01, M-02, M-09, M-17, M-27–M-30)
+
+### Fixed
+
+- **M-01** `scripts/install.sh inject_hook`: removed generic `/source .../shell-hook\.sh/` awk regex that stripped non-Claws tool hooks (oh-my-zsh, asdf, custom dotfiles). awk now strips ONLY lines inside a `# CLAWS terminal hook` marked block. Added timestamped dotfile backup (`$rcfile.claws-bak.<ISO-ts>`) before any modification. [ac1661a]
+- **M-02** `scripts/install.sh` `.mcp.json` merge: replaced `try{}catch{}` reset-to-`{}` pattern with `mergeIntoFile()` from `scripts/_helpers/json-safe.mjs`. On parse failure: backup created, original untouched, install.sh exits non-zero with actionable message. Never silently wipes other MCP servers. [cbb447e]
+- **M-09** `scripts/install.sh` `.claws-bin/hooks/` copy: replaced `rm -rf + cp` with atomic rename pattern via `copyDirAtomic()` from `scripts/_helpers/atomic-file.mjs`. Kill-window now leaves either full old hooks or full new hooks — never an empty dir. [df0b224]
+- **M-17** `scripts/install.sh inject_hook`: fixed awk empty-file edge case. [aa488da] When `.zshrc` contains ONLY the Claws block, awk output is empty; the old `[ -s "$tmp" ]` guard prevented promotion, leaving original intact and causing duplicate blocks on next install. Now always promotes awk output when awk succeeds.
+- **M-27** `scripts/inject-claude-md.js`: replaced `fs.writeFileSync` with atomic write pattern (tmp + rename) — prevents partial project `CLAUDE.md` on kill mid-write. [2c99bda]
+- **M-28** `scripts/inject-global-claude-md.js`: same atomic write for `~/.claude/CLAUDE.md` — machine-wide config corruption on power-cut prevented. [2c99bda]
+- **M-29** `scripts/hooks/lifecycle-state.js writeState()`: replaced `fs.writeFileSync` with atomic tmp+rename pattern — mirrors `extension/src/lifecycle-store.ts` which was already atomic. Prevents partial lifecycle-state.json on hook kill. [9696ecb]
+- **M-30** `extension/src/uninstall-cleanup.ts`: replaced both `writeFileSync` calls (`.mcp.json` edit-json + CLAUDE.md edit-markdown) with inline atomic write pattern — partially-uninstalled state no longer possible on kill mid-write.
+
+## [0.7.4-bulletproof-L1-fix] - 2026-04-29 — Layer 1 fix: code-review + similar-bug findings (F1+F2, F3+F4, M-31–M-37)
+
+### Changed
+
+- **F1** `bundle-native.mjs detectElectronVersion()` darwin sort: removed redundant `(tp === 'vscode' && c.key === 'vscode')` sub-expression — semantically identical to `c.key === tp` when `tp==='vscode'`. Now matches the simpler Linux branch form.
+- **F2** `install.sh` ABI detection darwin block: replaced `eval "set -- $_claws_darwin_apps"` with bash array (`declare`-compatible `case` + `for` loop) — eliminates eval footgun that would become shell injection if `$_tp` were ever interpolated into the string literal.
+- **F3** `extension/test/update-socket-probe.test.js`: replaced regular-file fixture with a real Unix domain socket (server binds, stays open but never responds, probe times out). Faithfully replicates an unresponsive Claws server; satisfies `[ -S ]` check. Server closed in `finally` block post-assertion.
+- **F4** `bundle-native.mjs detectElectronVersion()`: added `cursorChannel` (`$CURSOR_CHANNEL`) secondary signal — when `TERM_PROGRAM=vscode` but `CURSOR_CHANNEL` is set (Cursor-specific env), promotes Cursor candidates over VS Code. Covers old Cursor builds that pre-date `TERM_PROGRAM=cursor`. Injected as parameter for testability; test 9 added.
+- **M-31** `scripts/fix.sh` `@electron/rebuild` block: wrapped with `timeout 300` / `gtimeout 300` (5-minute ceiling). Exit code 124 → user-actionable "slow Electron headers download" message. Prevents indefinite hang on captive portals.
+- **M-36** `scripts/rebuild-node-pty.sh` rebuild step: same timeout pattern as M-31. Exits 1 on timeout with network/proxy hint.
+- **M-32** `scripts/fix.sh` ABI detection: TERM_PROGRAM-aware darwin loop (bash array, same F2 pattern); CURSOR_CHANNEL secondary signal for old Cursor builds.
+- **M-33** `scripts/fix.sh` ABI detection: Linux Cursor (`/usr/share/cursor/electron`, `/opt/cursor/electron`) + Windsurf paths added; TERM_PROGRAM-ordered.
+- **M-36 (editor detect)** `scripts/rebuild-node-pty.sh` detection: TERM_PROGRAM-aware darwin ordering + CURSOR_CHANNEL + Linux Cursor/Windsurf paths.
+- **M-34** `scripts/install.sh` arch verify: when bash runs under Rosetta 2 (`uname -m=x86_64` on Apple Silicon), `sysctl.proc_translated` is checked and the expected arch is promoted to `arm64`. Prevents false "pty.node arch mismatch" warning after M-05 build.
+- **M-35** `scripts/update.sh` Step 6 ABI check: TERM_PROGRAM-aware darwin ordering for editor detection (cursor/windsurf/default). CURSOR_CHANNEL secondary signal included.
+- **M-37** `claws-sdk.js ClawsSDK.connect()`: `sock.setTimeout(5000)` — when the socket file exists but the server doesn't respond within 5s, `sock.destroy(err)` fires with a `/claws-fix` hint. `sock.setTimeout(0)` on connect prevents false fires during normal use.
+- **M-37** `claws-sdk.js ClawsSDK._send()`: per-request `timeoutMs` (default 10s) via `setTimeout`/`clearTimeout` — rejects and cleans up the `_pending` Map entry if no response arrives. Prevents unbounded Map growth when the extension is reloading.
+
+## [0.7.4-bulletproof-L1] - 2026-04-29 — Layer 1: ABI/native-bundle fixes (M-05, M-06, M-07, M-08, M-22, M-23, M-25, M-26)
+
+### Fixed
+
+- **M-05** `bundle-native.mjs detectTargetArch()`: Rosetta 2 detection now returns `'arm64'` instead of warning-only. Prevents x64 pty.node being shipped for arm64 VS Code/Cursor.
+- **M-07** `bundle-native.mjs runElectronRebuild()`: explicit `result.status === null` check catches signal-killed rebuilds that previously silently passed. `spawnFn`/`failFn` injectable for testability.
+- **M-08** `bundle-native.mjs runElectronRebuild()`: 5-minute `spawnSync` timeout (`timeout: 5*60*1000`) prevents indefinite hang on slow Electron headers fetch; SIGTERM → network/proxy hint message.
+- **M-22** Editor detection prefers `$TERM_PROGRAM` env (vscode|cursor|windsurf) so the current-shell's editor wins over hardcoded path order. Applied in both `bundle-native.mjs` and `install.sh` ABI drift block.
+- **M-23** When Electron version detection returns empty, emits explicit warning recommending `CLAWS_ELECTRON_VERSION` env override.
+- **M-25** Linux Cursor/Windsurf install paths added to ABI detection candidates (`/usr/share/cursor/electron`, `/opt/cursor/electron`, `/usr/share/windsurf/electron`, `/opt/windsurf/electron`).
+- **M-26** `update.sh` socket probe is now health-check only — never deletes socket on failed probe (races with VS Code hot-reload); defers destructive cleanup to user-explicit `/claws-fix` with actionable hint.
+- **M-06** `install.sh` stale-extension cleanup loop gated on `[ -d "$kept_dir" ]`; skips with warning if just-installed directory has not yet extracted (VS Code async VSIX extraction), preventing total extension loss race.
+
+## [0.7.4-bulletproof] - 2026-04-29 — Layer 0: shared helpers (M-02, M-03, M-01, M-09 foundation)
+
+### Added
+
+- `scripts/_helpers/json-safe.mjs` — JSONC-tolerant parse + `mergeIntoFile` that aborts on parse error (never silently resets to `{}`). Supports `//` line comments, `/* block comments */`, and trailing commas. Foundation for M-02 (`.mcp.json` wipe) and M-03 (`settings.json` wipe) fixes.
+- `scripts/_helpers/atomic-file.mjs` — rename-pattern atomic write/dir-copy + `backupFile`. Foundation for M-01 (dotfile backup) and M-09 (hooks copy atomicity) fixes. Per-call nonce on tmp filenames ensures correctness under concurrent invocations. `@throws {Error}` documented for ENOENT on `backupFile` (F5).
+- `json-safe.mjs` review fixes: `/* block comments */` stripped (F3), pid+nonce tmp suffix (F1), fsync before rename (F2).
+- `atomic-file.test.js` test 3 strengthened: asserts all 10 concurrent writes succeed with `Promise.allSettled` + exact content match (F4).
+
+## [0.7.4] - 2026-04-28 — Phase γ (reverse channel + event log) + MCP socket fix
+
+This release integrates Phase γ (γ.1 reverse channel + γ.2 persistent event log)
+and fixes a high-severity architectural bug in `mcp_server.js` that made all
+stateful claws/2 MCP flows fail silently.
+
+### Fixed (CRITICAL — issue 09)
+
+- **`mcp_server.js` now maintains a single persistent socket** for stateful
+  claws/2 commands (`claws_hello`, `claws_subscribe`, `claws_publish`,
+  `claws_broadcast`, `claws_peers`). Previously each MCP tool call opened a
+  fresh socket, sent one frame, and destroyed it. The claws/2 protocol binds
+  peer state to a single connection; hello on socket A registered a peer and
+  closed; publish on socket B had no peer and returned "call hello first".
+  Stateless claws/1 commands (`list`, `create`, `send`, `close`, `readLog`,
+  `poll`, `exec`, `lifecycle.*`) continue to use per-call sockets.
+  Fix: module-level `_pconn` object with `_pconnEnsure()` / `_pconnWrite()` /
+  `clawsRpcStateful()`. Auto-reconnects on socket close; re-issues hello if a
+  prior identity was cached.
+
+### Added (Phase γ.1 — reverse channel, integrated from branch)
+
+- **`[CLAWS_CMD]` reverse channel**: orchestrator can broadcast a command token
+  into every worker's terminal via `{ inject: true }` on `claws_broadcast`.
+  Extension writes the text directly into the pty using `writeInjected()` with
+  bracketed paste. Worker skill (`/claws-streaming-worker`) scans its log for
+  the `[CLAWS_CMD]` prefix and routes to a named handler. Slash command
+  `/claws-broadcast` exposes the pattern. Integration test: `reverse-channel.test.js`
+  (12 checks). Commits: `80893ab`, `36bfece`, `d9c883a`, `4c434f9`.
+
+### Added (Phase γ.2 — persistent event log, integrated from branch)
+
+- **Append-only event log** (`EventLogWriter` in `extension/src/event-log.ts`).
+  Every `publish` call is durably written to `.claws/events/default/*.jsonl`
+  before fan-out. Segment rotation on size (10 MB) and age (1 hour). Atomic
+  manifest updates (`manifest.json`) for crash recovery. Sequence counter
+  monotonically increasing across segment boundaries. 15-check test suite:
+  `event-log.test.js`. Commits: `37acac1`, `0150572`, `f16f399`.
+
+### Tests
+
+- New: `extension/test/mcp-publish-flow.test.js` — spawns `mcp_server.js` as
+  a child process, calls `claws_hello` + `claws_publish` via MCP JSON-RPC,
+  asserts ok:true and event record on disk. Guards issue 09 regression.
+  Added `test:mcp-publish-flow` script and wired into `npm test`.
+- Suite total: 224 checks across 21 suites (was 219 across 20).
+
+### Version markers
+
+- `extension/package.json` → 0.7.4
+- `package.json` (root CLI) → 0.7.4
+- `mcp_server.js` serverInfo → 0.7.4
+- `claws-sdk.js` VERSION → 0.7.4
+
 ## [0.7.3] - 2026-04-28 — Bulletproof `/claws-update`
 
 User-reported breakage on a real upgrade: `/claws-update` ran cleanly but

@@ -62,6 +62,50 @@ node ./.claws-bin/claws-sdk.js publish complete --result ok --summary "<outcome>
 - `event.kind=BLOCKED` → read `summary`, decide to unblock via `claws_send` or skip
 - `complete.result=failed` or `complete.result=timeout` → proceed to RECOVER phase
 
+## Orchestrator → Worker (reverse channel)
+
+When a worker publishes `event.kind=BLOCKED` or `event.kind=REQUEST`, the push frame
+carries a `request_id`. Use that value to compose a `[CLAWS_CMD]` reply and inject it
+into the worker's pty:
+
+**Step 1 — extract request_id from the push frame**
+```javascript
+// Push frame received on worker.** subscription:
+// { push:'message', topic:'worker.<peerId>.event',
+//   payload:{ kind:'BLOCKED', summary:'...', request_id:'req-abc' } }
+const requestId = pushFrame.payload.request_id;
+```
+
+**Step 2 — broadcast the command with inject=true**
+```javascript
+claws_broadcast(
+  text=`[CLAWS_CMD r=${requestId}] approve_request: {"approved":true}`,
+  targetRole="worker",
+  inject=true
+)
+```
+
+The `r` value correlates the command: workers ignore `[CLAWS_CMD]` lines whose
+`r` does not match a `request_id` they published, making fan-out safe when multiple
+workers are running concurrently.
+
+**Five standard actions**
+
+| Action | Effect |
+|---|---|
+| `approve_request` | Unblock the worker; it continues on the approved path |
+| `reject_request` | Deny the request; worker falls back or stops |
+| `abort` | Worker stops immediately, publishes `complete --result failed` |
+| `pause` | Worker suspends at next safe checkpoint |
+| `resume` | Worker continues from paused state |
+
+Workers launched with Template 8 already contain `RECEIVING ORCHESTRATOR COMMANDS`
+instructions. Workers with custom missions need equivalent instructions in their
+prompt to process `[CLAWS_CMD]` lines.
+
+For single-worker targeting (safer than fan-out), use `task.assign deliver=inject`
+with the specific `assignee` peerId instead of `claws_broadcast`.
+
 ## Cleanup
 
 Always call `claws_close` on the terminal after harvesting results.
@@ -70,6 +114,7 @@ The `CLAWS_PEER_ID` registration expires automatically when the socket disconnec
 ## See also
 
 - `/claws-worker` — legacy fire-and-forget (no streaming events)
+- `/claws-broadcast` — reverse channel command dispatch reference (actions, BNF, unicast vs fan-out)
 - `/prompt-templates` → Template 8 for the full mission prompt boilerplate
 - `/claws-orchestration-engine` → Phase 4 OBSERVE for the event-driven observation pattern
-- `docs/event-protocol.md` → full schema reference
+- `docs/event-protocol.md §5` → command channel spec and wire format

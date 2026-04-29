@@ -33,6 +33,12 @@ fi
 header() { printf "\n${C_BOLD}═════ %s ═════${C_RESET}\n" "$*"; }
 note()   { printf "  ${C_DIM}%s${C_RESET}\n" "$*"; }
 
+# M-19: Anchor CLAWS_LOG BEFORE install.sh runs so Step 6's warning
+# "see install log: $CLAWS_LOG" references the real log written by install.sh.
+# install.sh uses ${CLAWS_LOG:-...} so it inherits this value when exported.
+CLAWS_LOG="${CLAWS_LOG:-/tmp/claws-install-$(date +%Y%m%d-%H%M%S)-$$.log}"
+export CLAWS_LOG
+
 # ─── Step 0: Ensure Claws source + pull latest ─────────────────────────────
 # Runs whether update.sh was invoked via curl URL or from the local clone —
 # this is the one action that can't be delegated to install.sh because
@@ -49,6 +55,9 @@ if [ ! -d "$INSTALL_DIR/.git" ]; then
 fi
 
 header "Pulling latest Claws source"
+# M-21: track whether git pull succeeded so install.sh can skip stale-source
+# CLAUDE.md re-injection. GIT_PULL_OK=0 exported on failure → install.sh gates on it.
+GIT_PULL_OK=1
 _claws_prev_sha=$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo "unknown")
 if ( cd "$INSTALL_DIR" && git pull --ff-only --quiet origin main 2>/tmp/claws-pull-err.$$ ); then
   _claws_new_sha=$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -59,13 +68,16 @@ if ( cd "$INSTALL_DIR" && git pull --ff-only --quiet origin main 2>/tmp/claws-pu
   fi
   rm -f /tmp/claws-pull-err.$$
 else
+  GIT_PULL_OK=0
   printf "  ${C_YELLOW}!${C_RESET} git pull failed — continuing with existing tree\n"
   if [ -s /tmp/claws-pull-err.$$ ]; then
     sed 's/^/    /' /tmp/claws-pull-err.$$
   fi
   printf "  ${C_YELLOW}!${C_RESET} You will be installing from the LOCAL clone (last commit: $(cd "$INSTALL_DIR" && git log --oneline -1 2>/dev/null))\n"
+  printf "  ${C_YELLOW}!${C_RESET} CLAUDE.md re-injection skipped — stale source would overwrite tool set (M-21)\n"
   rm -f /tmp/claws-pull-err.$$
 fi
+export GIT_PULL_OK
 unset _claws_prev_sha _claws_new_sha
 
 # ─── Step 1: Sync marketplace-facing docs ──────────────────────────────────
@@ -97,18 +109,20 @@ fi
 # config keys, notifying of breaking changes) go here. On first run each
 # migration can write a marker file so it never runs twice.
 #
-# Safe socket cleanup (v0.7.3). The previous version used `find -mtime +1
-# -delete`, which deleted the LIVE socket if VS Code had been open for >24h
-# — the running extension still held the socket fd, but the path was gone,
-# so any new MCP child got ENOENT and the user's MCP appeared "broken".
-# Now we probe the socket; only delete if it's actually unresponsive.
+# M-26: Socket probe is health-check only. The previous version deleted the
+# socket when the probe failed, which races with VS Code's extension hot-reload
+# after a VSIX install — the extension may be momentarily unreachable while
+# reactivating, so a failed probe does NOT mean the socket is stale.
+# Destructive cleanup is deferred to /claws-fix (user-explicit step).
 if [ -S "$PROJECT_ROOT/.claws/claws.sock" ]; then
   _claws_sock="$PROJECT_ROOT/.claws/claws.sock"
   _claws_alive=0
   if command -v node >/dev/null 2>&1; then
-    if node --no-deprecation -e "
+    # M-20: pass path via env var — handles project roots with apostrophes/backslashes
+    # without causing JS syntax errors from string interpolation in -e argument.
+    if CLAWS_PROBE_PATH="$_claws_sock" node --no-deprecation -e "
       const net = require('net');
-      const s = net.createConnection('$_claws_sock');
+      const s = net.createConnection(process.env.CLAWS_PROBE_PATH);
       const t = setTimeout(() => { try { s.destroy(); } catch {} process.exit(1); }, 800);
       s.on('connect', () => { s.write('{\"id\":1,\"cmd\":\"list\"}\n'); });
       s.on('data', () => { clearTimeout(t); try { s.destroy(); } catch {} process.exit(0); });
@@ -118,10 +132,11 @@ if [ -S "$PROJECT_ROOT/.claws/claws.sock" ]; then
     fi
   fi
   if [ "$_claws_alive" = "1" ]; then
-    note "claws.sock is live (extension responding) — leaving in place"
+    note "claws.sock is live (extension responding)"
   else
-    rm -f "$_claws_sock" 2>/dev/null || true
-    note "claws.sock was unresponsive — removed; reload VS Code to recreate"
+    note "claws.sock probe returned no response (extension may be reloading after VSIX install)"
+    note "If 'claws_*' tools fail in your next Claude Code session, run /claws-fix to repair"
+    # Do NOT delete the socket here — defer to user-explicit /claws-fix (M-26)
   fi
   unset _claws_sock _claws_alive
 fi
@@ -148,10 +163,21 @@ if [ -f "$INSTALL_DIR/extension/native/.metadata.json" ]; then
   _claws_built_for=$(node -e "try{console.log(require('$INSTALL_DIR/extension/native/.metadata.json').electronVersion||'')}catch(e){}" 2>/dev/null || echo "")
   _claws_using=""
   if [ "$(uname)" = "Darwin" ]; then
-    for _claws_app in "/Applications/Visual Studio Code.app" "/Applications/Cursor.app" "/Applications/Windsurf.app"; do
+    # M-35: prefer the editor that launched this shell ($TERM_PROGRAM) so the
+    # user's daily-driver Electron version is checked first, not first-found.
+    _claws_u_tp="${TERM_PROGRAM:-}"
+    [ "$_claws_u_tp" = "vscode" ] && [ -n "${CURSOR_CHANNEL:-}" ] && _claws_u_tp="cursor"
+    _claws_u_tp=$(echo "$_claws_u_tp" | tr '[:upper:]' '[:lower:]')
+    case "$_claws_u_tp" in
+      cursor)   _claws_update_apps=('/Applications/Cursor.app' '/Applications/Visual Studio Code.app' '/Applications/Windsurf.app') ;;
+      windsurf) _claws_update_apps=('/Applications/Windsurf.app' '/Applications/Visual Studio Code.app' '/Applications/Cursor.app') ;;
+      *)        _claws_update_apps=('/Applications/Visual Studio Code.app' '/Applications/Cursor.app' '/Applications/Windsurf.app') ;;
+    esac
+    for _claws_app in "${_claws_update_apps[@]}"; do
       _claws_plist="$_claws_app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
       [ -f "$_claws_plist" ] && _claws_using=$(plutil -extract CFBundleVersion raw "$_claws_plist" 2>/dev/null || true) && break
     done
+    unset _claws_u_tp _claws_update_apps
   fi
   if [ -n "$_claws_using" ] && [ -n "$_claws_built_for" ] && [ "$_claws_using" != "$_claws_built_for" ]; then
     _claws_health_ok=0
@@ -164,8 +190,10 @@ if [ -f "$INSTALL_DIR/extension/native/.metadata.json" ]; then
 fi
 
 # Project .mcp.json sanity
+# M-47: path passed via env var — handles project roots with apostrophes/backslashes
+# without causing JS syntax errors from string interpolation in -e argument.
 if [ -f "$PROJECT_ROOT/.mcp.json" ]; then
-  if node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
+  if CLAWS_MCP_CHECK="$PROJECT_ROOT/.mcp.json" node -e "JSON.parse(require('fs').readFileSync(process.env.CLAWS_MCP_CHECK,'utf8'))" 2>/dev/null; then
     note "project .mcp.json is valid JSON"
   else
     _claws_health_ok=0
@@ -175,21 +203,38 @@ if [ -f "$PROJECT_ROOT/.mcp.json" ]; then
 fi
 
 # .claws-bin/mcp_server.js exists and starts
+# M-10: up to 3 attempts with exponential timeouts (8s, 12s, 16s); only YELLOW after all exhausted.
 if [ -f "$PROJECT_ROOT/.claws-bin/mcp_server.js" ]; then
-  if node --no-deprecation -e "
-    const { spawn } = require('child_process');
-    const p = spawn('node', ['$PROJECT_ROOT/.claws-bin/mcp_server.js'], { stdio: ['pipe','pipe','ignore'] });
-    let out='';
-    p.stdout.on('data', d => out += d);
-    p.stdin.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'health',version:'1'}}}) + '\n');
-    setTimeout(() => { p.kill(); process.exit(out.includes('claws') ? 0 : 1); }, 2000);
-  " 2>/dev/null; then
+  _claws_mcp_ok=0
+  _claws_attempt=0
+  for _claws_mcp_ms in 8000 12000 16000; do
+    [ "$_claws_mcp_ok" = "1" ] && break
+    _claws_attempt=$(( _claws_attempt + 1 ))
+    [ "$_claws_attempt" -gt 1 ] && note "MCP handshake timeout — retry $_claws_attempt of 3 (${_claws_mcp_ms}ms)..."
+    if CLAWS_MCP_PATH="$PROJECT_ROOT/.claws-bin/mcp_server.js" node --no-deprecation -e "
+      const { spawn } = require('child_process');
+      const p = spawn('node', [process.env.CLAWS_MCP_PATH], { stdio: ['pipe','pipe','ignore'] });
+      let out='';
+      p.stdout.on('data', d => { out += d; });
+      p.stdin.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'health',version:'1'}}}) + '\n');
+      setTimeout(() => {
+        p.kill('SIGTERM');
+        setTimeout(() => { try { p.kill('SIGKILL'); } catch {} }, 500);
+        setTimeout(() => { process.exit(out.includes('claws') ? 0 : 1); }, 600);
+      }, $_claws_mcp_ms);
+    " 2>/dev/null; then
+      _claws_mcp_ok=1
+    fi
+  done
+  unset _claws_mcp_ms _claws_attempt
+  if [ "$_claws_mcp_ok" = "1" ]; then
     note "MCP server handshake OK"
   else
     _claws_health_ok=0
     _claws_health_warns+=("MCP server failed to respond to initialize — see install log: $CLAWS_LOG")
     _claws_health_warns+=("  fix: bash $INSTALL_DIR/scripts/fix.sh")
   fi
+  unset _claws_mcp_ok
 fi
 
 # ─── Done ──────────────────────────────────────────────────────────────────

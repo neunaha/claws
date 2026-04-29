@@ -713,6 +713,11 @@ async function runRebuildPty(extensionPath: string): Promise<void> {
   // Detect Electron version so @electron/rebuild can target the right ABI.
   // On macOS we read it from the app bundle's Info.plist. On other platforms
   // we fall back to a default — user can override via env var.
+  //
+  // F6/M-42: 4 candidates × 3s timeout = 12s worst-case synchronous block on
+  // a network-mounted /Applications (NFS/SMB hung filesystem). Acceptable for
+  // an explicit user-triggered command (Claws: Rebuild Native PTY); all 4 are
+  // attempted in order and the loop breaks on the first hit.
   let electronVersion = process.env.CLAWS_ELECTRON_VERSION || '';
   if (!electronVersion && process.platform === 'darwin') {
     const plistPaths = [
@@ -726,7 +731,9 @@ async function runRebuildPty(extensionPath: string): Promise<void> {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { execFileSync } = require('child_process') as typeof import('child_process');
-        const v = execFileSync('plutil', ['-extract', 'CFBundleVersion', 'raw', p], { encoding: 'utf8' }).trim();
+        // M-42: 3s timeout prevents sync call from blocking extension host on
+        // network-mounted /Applications (enterprise NFS/SMB with hung filesystem).
+        const v = execFileSync('plutil', ['-extract', 'CFBundleVersion', 'raw', p], { encoding: 'utf8', timeout: 3000 }).trim();
         if (v) { electronVersion = v; logger(`detected Electron ${v} from ${p}`); break; }
       } catch { /* try next */ }
     }
@@ -743,9 +750,22 @@ async function runRebuildPty(extensionPath: string): Promise<void> {
     ['--yes', '@electron/rebuild', '--version', electronVersion, '--only', 'node-pty', '--force'],
     { cwd: extensionPath, env: process.env },
   );
+
+  // M-41: 5-minute ceiling — SIGTERM first, SIGKILL after 5s grace. Prevents
+  // hung @electron/rebuild from freezing VS Code indefinitely. Timer cleared
+  // on normal exit so it doesn't fire after a successful rebuild.
+  // F4: SIGTERM gives the process a chance to clean up before escalating.
+  const killTimer = setTimeout(() => {
+    proc.kill('SIGTERM');
+    logger('✗ rebuild timed out after 5 minutes — sending SIGTERM, SIGKILL in 5s if still running');
+    setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already exited */ } }, 5000);
+    vscode.window.showErrorMessage('Claws: node-pty rebuild timed out — see Claws Output log.');
+  }, 5 * 60 * 1000);
+
   proc.stdout?.on('data', (d: Buffer) => logger(`[rebuild] ${d.toString('utf8').trimEnd()}`));
   proc.stderr?.on('data', (d: Buffer) => logger(`[rebuild] ${d.toString('utf8').trimEnd()}`));
   proc.on('exit', (code: number | null) => {
+    clearTimeout(killTimer);
     if (code === 0) {
       logger('✓ rebuild complete — reload VS Code (Cmd+Shift+P → Developer: Reload Window)');
       vscode.window.showInformationMessage(
@@ -762,6 +782,7 @@ async function runRebuildPty(extensionPath: string): Promise<void> {
     }
   });
   proc.on('error', (err: Error) => {
+    clearTimeout(killTimer);
     logger(`✗ rebuild spawn failed: ${err.message}`);
   });
 }

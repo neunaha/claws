@@ -99,24 +99,35 @@ function install() {
   if (claudeMcpResult.status === 0) {
     console.log('  ✓ MCP server registered via claude mcp add');
   } else {
-    // Fall back to settings.json
+    // Fall back to settings.json — use json-safe mergeIntoFile (M-39: atomic + JSONC-tolerant,
+    // never silently reset settings.json to {} on parse error).
     const settingsPath = path.join(HOME, '.claude', 'settings.json');
-    try {
-      fs.mkdirSync(path.join(HOME, '.claude'), { recursive: true });
-      let cfg = {};
-      if (fs.existsSync(settingsPath)) {
-        cfg = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const helperMjs = path.resolve(INSTALL_DIR, 'scripts', '_helpers', 'json-safe.mjs');
+    const helperUrl = `file://${helperMjs.replace(/\\/g, '/')}`;
+    const inlineScript =
+      `import{mergeIntoFile}from${JSON.stringify(helperUrl)};` +
+      `const r=await mergeIntoFile(process.env.CLAWS_SP,(cfg)=>{` +
+      `if(!cfg.mcpServers)cfg.mcpServers={};` +
+      `cfg.mcpServers.claws={command:'node',args:[process.env.CLAWS_MP],env:{CLAWS_SOCKET:'.claws/claws.sock'}};` +
+      `});` +
+      `if(!r.ok){process.stderr.write(r.error.message+'\\n');process.exit(1);}`;
+    const mergeResult = spawnSync(
+      process.execPath,
+      ['--input-type=module'],
+      {
+        input: inlineScript,
+        encoding: 'utf8',
+        timeout: 10000,
+        env: { ...process.env, CLAWS_SP: settingsPath, CLAWS_MP: mcpPath },
       }
-      if (!cfg.mcpServers) cfg.mcpServers = {};
-      cfg.mcpServers.claws = {
-        command: 'node',
-        args: [mcpPath],
-        env: { CLAWS_SOCKET: '.claws/claws.sock' },
-      };
-      fs.writeFileSync(settingsPath, JSON.stringify(cfg, null, 2));
+    );
+    if (mergeResult.status === 0) {
       console.log('  ✓ MCP server registered in ~/.claude/settings.json');
-    } catch (e) {
+    } else {
       console.log('  ! Could not register MCP — add manually');
+      if (mergeResult.stderr && mergeResult.stderr.trim()) {
+        console.log('  !', mergeResult.stderr.trim());
+      }
     }
   }
 

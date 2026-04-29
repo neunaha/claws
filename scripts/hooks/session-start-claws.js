@@ -7,13 +7,22 @@
 // trying to eliminate. v0.7.3 hardening.
 'use strict';
 
-// Catch any uncaught throw / rejection BEFORE any require runs.
-process.on('uncaughtException', () => { try { process.exit(0); } catch {} });
-process.on('unhandledRejection', () => { try { process.exit(0); } catch {} });
+// M-24: gate error handlers on CLAWS_DEBUG — when CLAWS_DEBUG=1, errors
+// propagate visibly for debugging instead of being silently swallowed.
+if (!process.env.CLAWS_DEBUG) {
+  process.on('uncaughtException', () => { try { process.exit(0); } catch {} });
+  process.on('unhandledRejection', () => { try { process.exit(0); } catch {} });
+}
+
+// M-13: 5-second self-kill safety timer — hook can never hang the parent process.
+// .unref() so the timer doesn't prevent normal early exit.
+setTimeout(() => { process.exit(0); }, 5000).unref();
 
 let input = '';
-try { process.stdin.on('data', d => { input += d; }); } catch {}
+// M-13: single try block wrapping both 'data' and 'end' listeners — if either
+// registration throws (pathological stdin state), both fail together cleanly.
 try {
+  process.stdin.on('data', d => { input += d; });
   process.stdin.on('end', () => {
     try {
       const fs   = require('fs');

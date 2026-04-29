@@ -372,24 +372,51 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
     _claws_last_elec=$(node -e "try{console.log(require('$INSTALL_DIR/extension/native/.metadata.json').electronVersion||'')}catch(e){}" 2>/dev/null || echo "")
     _claws_curr_elec=""
     if [ "$PLATFORM" = "Darwin" ]; then
-      for _claws_app in \
-        "/Applications/Visual Studio Code.app" \
-        "/Applications/Visual Studio Code - Insiders.app" \
-        "/Applications/Cursor.app" \
-        "/Applications/Windsurf.app"; do
+      # M-22: build candidate list with TERM_PROGRAM-matching editor first so the
+      # user's daily-driver wins the ABI check instead of the hardcoded VS Code path.
+      _tp="${TERM_PROGRAM:-}"
+      # F2: use bash array — avoids eval footgun while keeping TERM_PROGRAM ordering.
+      case "$_tp" in
+        cursor)   _claws_darwin_apps=('/Applications/Cursor.app' '/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Windsurf.app') ;;
+        windsurf) _claws_darwin_apps=('/Applications/Windsurf.app' '/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Cursor.app') ;;
+        *)        _claws_darwin_apps=('/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Cursor.app' '/Applications/Windsurf.app') ;;
+      esac
+      for _claws_app in "${_claws_darwin_apps[@]}"; do
         _claws_plist="$_claws_app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
         if [ -f "$_claws_plist" ]; then
           _claws_curr_elec=$(plutil -extract CFBundleVersion raw "$_claws_plist" 2>/dev/null || true)
           [ -n "$_claws_curr_elec" ] && break
         fi
       done
+      unset _tp _claws_darwin_apps
     elif [ "$PLATFORM" = "Linux" ]; then
-      for _claws_ep in /usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron; do
+      # M-22: prefer TERM_PROGRAM editor on Linux too.
+      # M-25: add Cursor + Windsurf Linux paths.
+      _tp="${TERM_PROGRAM:-}"
+      case "$_tp" in
+        cursor)
+          _claws_linux_eps="/usr/share/cursor/electron /opt/cursor/electron /snap/cursor/current/usr/share/cursor/electron /usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron /usr/share/windsurf/electron /opt/windsurf/electron"
+          ;;
+        windsurf)
+          _claws_linux_eps="/usr/share/windsurf/electron /opt/windsurf/electron /usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron /usr/share/cursor/electron /opt/cursor/electron"
+          ;;
+        *)
+          _claws_linux_eps="/usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron /usr/share/cursor/electron /opt/cursor/electron /snap/cursor/current/usr/share/cursor/electron /usr/share/windsurf/electron /opt/windsurf/electron"
+          ;;
+      esac
+      for _claws_ep in $_claws_linux_eps; do
         if [ -x "$_claws_ep" ]; then
           _claws_curr_elec=$("$_claws_ep" --version 2>/dev/null | sed 's/^v//' | head -1)
           [ -n "$_claws_curr_elec" ] && break
         fi
       done
+      unset _tp _claws_linux_eps
+    fi
+    # M-23: warn when detection returns empty — don't silently skip drift check.
+    if [ -z "$_claws_curr_elec" ] && [ -n "$_claws_last_elec" ]; then
+      warn "Could not detect the current VS Code/Cursor/Windsurf Electron version."
+      warn "Set CLAWS_ELECTRON_VERSION=<version> to specify it explicitly."
+      warn "(run: plutil -extract CFBundleVersion raw '/Applications/Cursor.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist')"
     fi
     if [ -n "$_claws_curr_elec" ] && [ -n "$_claws_last_elec" ] && [ "$_claws_curr_elec" != "$_claws_last_elec" ]; then
       info "Electron version changed since last build ($_claws_last_elec → $_claws_curr_elec) — forcing pty.node rebuild"
@@ -465,14 +492,22 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
   NATIVE_PTY_ELECTRON=$(node -e "try{console.log(require('$INSTALL_DIR/extension/native/.metadata.json').electronVersion||'?')}catch(e){console.log('?')}" 2>/dev/null || echo '?')
   ok "native node-pty ready (${NATIVE_PTY_SIZE} bytes, Electron $NATIVE_PTY_ELECTRON) — VSIX will ship this binary"
   if command -v file &>/dev/null; then
+    # M-34: when bash runs under Rosetta 2 (x64 shell on Apple Silicon), uname -m returns
+    # x86_64 but bundle-native.mjs (M-05) builds for arm64. Detect Rosetta via sysctl so
+    # the expected arch is arm64, not x86_64 — prevents a spurious arch mismatch warning.
     # Linux x86_64 false-positive: `uname -m` returns `x86_64` (underscore),
     # but `file(1)` describes ELF binaries as `x86-64` (hyphen). Match both
     # spellings so legitimate x86_64 bundles don't trigger the warning.
     # Audit 1 finding H-1.
-    _claws_arch_alt="$(uname -m | sed 's/_/-/g')"
-    file "$NATIVE_PTY_BIN" 2>/dev/null | grep -qiE "$(uname -m)|${_claws_arch_alt}" \
-      || warn "pty.node architecture may not match current machine ($(uname -m)) — check bundle-native.mjs output in $CLAWS_LOG"
-    unset _claws_arch_alt
+    _claws_expected_arch="$(uname -m)"
+    if [ "$_claws_expected_arch" = "x86_64" ] && [ "$(uname -s)" = "Darwin" ]; then
+      _claws_rosetta=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo "0")
+      [ "$_claws_rosetta" = "1" ] && _claws_expected_arch="arm64"
+    fi
+    _claws_arch_alt="$(echo "$_claws_expected_arch" | sed 's/_/-/g')"
+    file "$NATIVE_PTY_BIN" 2>/dev/null | grep -qiE "$_claws_expected_arch|$_claws_arch_alt" \
+      || warn "pty.node architecture may not match current machine ($(uname -m) → expected $_claws_expected_arch) — check bundle-native.mjs output in $CLAWS_LOG"
+    unset _claws_arch_alt _claws_rosetta _claws_expected_arch
   fi
 
   # R3.7: Check if other installed editors use a different Electron version.
@@ -512,7 +547,7 @@ fi
 # read from the clone at runtime. If the clone is behind EXPECTED_MIN_VERSION,
 # the working tree is stale and the installer aborts — that was the v0.5.1 bug
 # where users saw "v0.4.0 — installed" because their ~/.claws-src/ was stale.
-EXPECTED_MIN_VERSION="0.5.7"
+EXPECTED_MIN_VERSION="0.7.4"
 EXT_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.0.0')}" 2>/dev/null || echo "0.0.0")
 
 # Flag stale clones loudly so users don't silently run on an old version.
@@ -663,14 +698,23 @@ _install_via_vsix() {
         # different CLI, old <publisher>.<name>-X.Y.Z dirs can linger and
         # confuse VS Code's extension picker. Keep only the just-installed
         # version (matches EXT_VERSION).
+        # M-06: gate cleanup on kept_dir existing first. VS Code extracts VSIX
+        # asynchronously — if kept_dir hasn't appeared yet, the safety guard
+        # ([ "$stale" = "$kept_dir" ]) never matches and the loop would delete
+        # every installed version. Skip and warn instead of destroying all installs.
         local kept_dir="$ext_dir/neunaha.claws-$EXT_VERSION"
-        for stale in "$ext_dir"/neunaha.claws-*; do
-          [ -d "$stale" ] || continue
-          [ "$stale" = "$kept_dir" ] && continue
-          if rm -rf "$stale" 2>/dev/null || sudo rm -rf "$stale" 2>/dev/null; then
-            info "  removed stale install $(basename "$stale")"
-          fi
-        done
+        if [ -d "$kept_dir" ]; then
+          for stale in "$ext_dir"/neunaha.claws-*; do
+            [ -d "$stale" ] || continue
+            [ "$stale" = "$kept_dir" ] && continue
+            if rm -rf "$stale" 2>/dev/null || sudo rm -rf "$stale" 2>/dev/null; then
+              info "  removed stale install $(basename "$stale")"
+            fi
+          done
+        else
+          warn "  kept_dir not yet present ($kept_dir) — skipping stale cleanup to avoid removing all versions"
+          warn "  (VS Code may still be extracting the VSIX — stale dirs will be cleaned on next install)"
+        fi
       else
         ok "Claws extension installed in $label (via VSIX — extensions dir not found for verification)"
       fi
@@ -811,12 +855,27 @@ else
     # and the CommonJS require() call at the top of each hook crashes.
     # Reported by user (Miles) on v0.7.0.
     if [ -d "$INSTALL_DIR/scripts/hooks" ]; then
-      rm -rf "$PROJECT_ROOT/.claws-bin/hooks" 2>/dev/null || true
-      mkdir -p "$PROJECT_ROOT/.claws-bin/hooks"
-      cp "$INSTALL_DIR/scripts/hooks"/*.js "$PROJECT_ROOT/.claws-bin/hooks/"
-      if [ -f "$INSTALL_DIR/scripts/hooks/package.json" ]; then
-        cp "$INSTALL_DIR/scripts/hooks/package.json" "$PROJECT_ROOT/.claws-bin/hooks/package.json"
-      else
+      # M-09: atomic rename pattern — copy to tmp dir first, then swap into place.
+      # Prevents kill-window leaving an empty hooks dir that breaks every Bash hook.
+      # F1: set +e around heredoc so $? is readable (under set -eo pipefail the script
+      # would abort at the heredoc before reaching any if [ $? ] check).
+      set +e
+      node --no-deprecation --input-type=module <<HOOKSATOMICEOF
+import { copyDirAtomic } from '${INSTALL_DIR}/scripts/_helpers/atomic-file.mjs';
+try {
+  await copyDirAtomic('${INSTALL_DIR}/scripts/hooks', '${PROJECT_ROOT}/.claws-bin/hooks');
+} catch (e) {
+  process.stderr.write('[M-09] atomic hooks copy failed: ' + e.message + '\\n');
+  process.exit(1);
+}
+HOOKSATOMICEOF
+      _hooks_exit=$?
+      set -e
+      if [ "$_hooks_exit" -ne 0 ]; then
+        warn "hooks dir copy failed — .claws-bin/hooks may be incomplete"
+      fi
+      # package.json shim: write if not present after copy (older hooks dirs omit it).
+      if [ ! -f "$PROJECT_ROOT/.claws-bin/hooks/package.json" ]; then
         printf '{"type":"commonjs","private":true}\n' > "$PROJECT_ROOT/.claws-bin/hooks/package.json"
       fi
     fi
@@ -919,17 +978,38 @@ CLAWSBIN
     # Write or merge .mcp.json with absolute args path so Claude Code can start
     # the server regardless of its cwd. __dirname walk-up in mcp_server.js
     # handles socket discovery once the server is running — no CLAWS_SOCKET needed.
+    #
+    # M-02: use json-safe.mjs mergeIntoFile — JSONC-tolerant, never resets cfg to {}
+    # on parse error (which would silently wipe the user's other MCP servers).
+    # F5: PROJECT_MCP and PROJECT_ROOT passed as env vars (not string-literal-embedded in JS)
+    #     to avoid JS SyntaxError when paths contain single-quotes or backslashes.
     PROJECT_MCP="$PROJECT_ROOT/.mcp.json"
-    node --no-deprecation -e "
-const fs = require('fs');
-const p = process.argv[1];
-const projectRoot = process.argv[2];
-let cfg = {};
-try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
-cfg.mcpServers = cfg.mcpServers || {};
-cfg.mcpServers.claws = { command: process.argv[3] || 'node', args: [projectRoot + '/.claws-bin/mcp_server.js'] };
-fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-" "$PROJECT_MCP" "$PROJECT_ROOT"
+    # F1: set +e around heredoc so _mcp_exit is readable before set -e is restored.
+    set +e
+    PROJECT_MCP="$PROJECT_MCP" PROJECT_ROOT="$PROJECT_ROOT" INSTALL_DIR="$INSTALL_DIR" \
+    node --no-deprecation --input-type=module <<MCPMERGEEOF
+const { mergeIntoFile } = await import(process.env.INSTALL_DIR + '/scripts/_helpers/json-safe.mjs');
+const mcpPath = process.env.PROJECT_MCP;
+const projectRoot = process.env.PROJECT_ROOT;
+const result = await mergeIntoFile(mcpPath, cfg => {
+  if (!cfg.mcpServers) cfg.mcpServers = {};
+  cfg.mcpServers.claws = { command: 'node', args: [projectRoot + '/.claws-bin/mcp_server.js'] };
+});
+if (!result.ok) {
+  const e = result.error;
+  process.stderr.write('[M-02] .mcp.json merge failed: ' + e.message + '\\n');
+  if (e.backupSavedAt) {
+    process.stderr.write('[M-02] Malformed original backed up to: ' + e.backupSavedAt + '\\n');
+    process.stderr.write('[M-02] Fix the JSON then re-run /claws-update\\n');
+  }
+  process.exit(1);
+}
+MCPMERGEEOF
+    _mcp_exit=$?
+    set -e
+    if [ "$_mcp_exit" -ne 0 ]; then
+      die ".mcp.json merge failed — original preserved. Fix $PROJECT_MCP then re-run /claws-update"
+    fi
     ok "wrote $PROJECT_MCP"
     if ! node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
       bad ".mcp.json written to $PROJECT_ROOT but is not valid JSON — MCP server will fail to load"
@@ -1055,14 +1135,22 @@ CLAWSCMD
   fi
 
   # CLAUDE.md injection (project scope only — never inside $HOME)
+  # M-21: GIT_PULL_OK=0 means git pull failed in update.sh — skip re-injection to
+  # avoid overwriting the user's CLAUDE.md tool set with stale source.
   if [ "$TARGET" != "$HOME" ]; then
-    if [ ! -f "$INSTALL_DIR/scripts/inject-claude-md.js" ] && [ ! -f "$INSTALL_DIR/.claws-bin/inject-claude-md.js" ]; then
+    if [ "${GIT_PULL_OK:-1}" = "0" ]; then
+      note "CLAUDE.md injection skipped — git pull failed, stale source (M-21)"
+    elif [ ! -f "$INSTALL_DIR/scripts/inject-claude-md.js" ] && [ ! -f "$INSTALL_DIR/.claws-bin/inject-claude-md.js" ]; then
       warn "inject-claude-md.js not found — CLAUDE.md injection skipped. Clone may be incomplete."
     else
       node --no-deprecation "$INSTALL_DIR/scripts/inject-claude-md.js" "$TARGET" 2>&1 | sed 's/^/  /' || warn "CLAUDE.md injector failed — see $CLAWS_LOG for details"
     fi
     # Global ~/.claude/CLAUDE.md injection (machine-wide Claws policy)
-    if [ -f "$INSTALL_DIR/scripts/inject-global-claude-md.js" ]; then
+    # F2/M-21: same GIT_PULL_OK gate as project CLAUDE.md — avoids rewriting
+    # the machine-wide policy from stale source when git pull failed.
+    if [ "${GIT_PULL_OK:-1}" = "0" ]; then
+      note "global CLAUDE.md injection skipped — git pull failed, stale source (F2/M-21)"
+    elif [ -f "$INSTALL_DIR/scripts/inject-global-claude-md.js" ]; then
       node --no-deprecation "$INSTALL_DIR/scripts/inject-global-claude-md.js" 2>&1 | sed 's/^/  /' || warn "global CLAUDE.md injector failed"
     fi
     # Hook registration in ~/.claude/settings.json (SessionStart / PreToolUse / Stop).
@@ -1074,8 +1162,9 @@ CLAWSCMD
     if [ -f "$INSTALL_DIR/scripts/inject-settings-hooks.js" ]; then
       if [ "${CLAWS_NO_GLOBAL_HOOKS:-0}" != "1" ]; then
         echo "Updating Claws hooks..."
-        node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/scripts" --remove 2>&1 | sed 's/^/  /' || warn "settings hooks removal failed"
-        node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/scripts" 2>&1 | sed 's/^/  /' || warn "settings hooks injector failed"
+        # M-18: use --update (atomic remove+add in one read-modify-write) instead of
+        # two-pass --remove + add, which has a kill-window with zero Claws hooks.
+        node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/scripts" --update 2>&1 | sed 's/^/  /' || warn "settings hooks update failed"
       else
         echo "  CLAWS_NO_GLOBAL_HOOKS=1 — skipping ~/.claude/settings.json registration"
       fi
@@ -1120,19 +1209,43 @@ inject_hook() {
     had_stale=1
   fi
 
+  # M-01: create a timestamped backup of the dotfile BEFORE any modification.
+  # Allows the user to restore if something goes wrong. Only created when the
+  # file already has content — no backup for a freshly touch'd empty file.
+  local tmp="$rcfile.claws-tmp.$$"
+  if [ -s "$rcfile" ]; then
+    local _bak_ts
+    _bak_ts=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%Y%m%dT%H%M%SZ)
+    cp "$rcfile" "${rcfile}.claws-bak.${_bak_ts}" 2>/dev/null || true
+  fi
+
   # Portable cleanup via awk (works on BSD awk and GNU awk identically).
   # Replaces the GNU-only `sed '/pat/,+1d'` form, which silently failed on
   # macOS ≤ Monterey and left orphaned `source ".../shell-hook.sh"` lines.
   #
-  # 1. Strip every `# CLAWS terminal hook` line + the immediately following line.
-  # 2. Strip any standalone orphaned `source .../shell-hook.sh` line.
-  local tmp="$rcfile.claws-tmp.$$"
+  # M-01: strips ONLY lines inside a Claws-marked block:
+  #   1. Strip every `# CLAWS terminal hook` marker line.
+  #   2. Strip the immediately following line IF it is the Claws source line.
+  # The previous generic `/source .../shell-hook\.sh/` regex is removed because
+  # it matched non-Claws tools (oh-my-zsh, asdf, custom dotfiles) causing data loss.
+  #
+  # F4: orphaned-marker edge case — if a user manually deleted the source line but
+  # left the marker, the old `skip { skip=0; next }` would silently strip whatever
+  # user content happened to follow the marker. Fix: only skip the following line if
+  # it matches the Claws source pattern; otherwise keep it (skip=0; print).
+  #
+  # M-17: always promote awk output when awk succeeds, even if output is empty.
+  # When the file contains ONLY the Claws block, awk produces no output (empty tmp).
+  # The old `[ -s "$tmp" -o ! -s "$rcfile" ]` guard prevented promotion in that case
+  # (rcfile had content → `! -s` false; tmp empty → `-s` false → guard fails), so the
+  # original was left intact and a new block was appended on the next install, creating
+  # duplicate hooks. Fix: mv unconditionally when awk exits 0.
   if awk '
     /# CLAWS terminal hook/ { skip = 1; next }
-    skip { skip = 0; next }
-    /^[[:space:]]*source[[:space:]].*\/shell-hook\.sh/ { next }
+    skip && /source.*shell-hook\.sh/ { skip = 0; next }
+    skip { skip = 0; print }
     { print }
-  ' "$rcfile" > "$tmp" 2>/dev/null && [ -s "$tmp" -o ! -s "$rcfile" ]; then
+  ' "$rcfile" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$rcfile" 2>/dev/null || rm -f "$tmp"
   else
     rm -f "$tmp" 2>/dev/null || true

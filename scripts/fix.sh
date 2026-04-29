@@ -94,15 +94,40 @@ NPTY_BIN="$INSTALL_DIR/extension/node_modules/node-pty/build/Release/pty.node"
 ELECTRON_ABI_FILE="$INSTALL_DIR/extension/dist/.electron-abi"
 ELECTRON_VERSION=""
 if [ "$(uname)" = "Darwin" ]; then
-  for app in \
-    "/Applications/Visual Studio Code.app" \
-    "/Applications/Visual Studio Code - Insiders.app" \
-    "/Applications/Cursor.app" \
-    "/Applications/Windsurf.app"; do
-    plist="$app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
+  # M-32: prefer $TERM_PROGRAM-matching editor; M-33-compat: CURSOR_CHANNEL overrides vscode.
+  _fix_tp="${TERM_PROGRAM:-}"
+  [ "$_fix_tp" = "vscode" ] && [ -n "${CURSOR_CHANNEL:-}" ] && _fix_tp="cursor"
+  _fix_tp=$(echo "$_fix_tp" | tr '[:upper:]' '[:lower:]')
+  case "$_fix_tp" in
+    cursor)   _fix_darwin_apps=('/Applications/Cursor.app' '/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Windsurf.app') ;;
+    windsurf) _fix_darwin_apps=('/Applications/Windsurf.app' '/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Cursor.app') ;;
+    *)        _fix_darwin_apps=('/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Cursor.app' '/Applications/Windsurf.app') ;;
+  esac
+  for _fix_app in "${_fix_darwin_apps[@]}"; do
+    plist="$_fix_app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
     if [ -f "$plist" ]; then
       v=$(plutil -extract CFBundleVersion raw "$plist" 2>/dev/null || true)
       [ -n "$v" ] && ELECTRON_VERSION="$v" && break
+    fi
+  done
+elif [ "$(uname)" = "Linux" ]; then
+  # M-33: Linux Cursor/Windsurf paths + TERM_PROGRAM ordering.
+  _fix_tp="${TERM_PROGRAM:-}"
+  [ "$_fix_tp" = "vscode" ] && [ -n "${CURSOR_CHANNEL:-}" ] && _fix_tp="cursor"
+  _fix_tp=$(echo "$_fix_tp" | tr '[:upper:]' '[:lower:]')
+  _fix_linux_vscode=('/usr/share/code/electron' '/usr/lib/code/electron' '/opt/visual-studio-code/electron' '/snap/code/current/electron')
+  _fix_linux_cursor=('/usr/share/cursor/electron' '/opt/cursor/electron' '/snap/cursor/current/usr/share/cursor/electron')
+  _fix_linux_windsurf=('/usr/share/windsurf/electron' '/opt/windsurf/electron')
+  _fix_linux_candidates=()
+  case "$_fix_tp" in
+    cursor)   _fix_linux_candidates=("${_fix_linux_cursor[@]}" "${_fix_linux_vscode[@]}" "${_fix_linux_windsurf[@]}") ;;
+    windsurf) _fix_linux_candidates=("${_fix_linux_windsurf[@]}" "${_fix_linux_vscode[@]}" "${_fix_linux_cursor[@]}") ;;
+    *)        _fix_linux_candidates=("${_fix_linux_vscode[@]}" "${_fix_linux_cursor[@]}" "${_fix_linux_windsurf[@]}") ;;
+  esac
+  for _fix_ep in "${_fix_linux_candidates[@]}"; do
+    if [ -x "$_fix_ep" ]; then
+      v=$("$_fix_ep" --version 2>/dev/null | sed 's/^v//' || true)
+      if echo "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then ELECTRON_VERSION="$v" && break; fi
     fi
   done
 fi
@@ -120,7 +145,21 @@ elif [ -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
   if [ "$(uname)" = "Darwin" ] && ! xcode-select -p &>/dev/null; then
     fail "Xcode Command Line Tools required — run: xcode-select --install"
     ISSUES=$((ISSUES+1))
-  elif ( cd "$INSTALL_DIR/extension" && npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --only=node-pty --force >/dev/null 2>&1 ) && [ -f "$NPTY_BIN" ]; then
+  else
+    # M-31: 5-minute timeout ceiling — prevents indefinite hang on slow Electron header fetch.
+    _fix_timeout_cmd=""
+    if command -v timeout >/dev/null 2>&1; then _fix_timeout_cmd="timeout 300"
+    elif command -v gtimeout >/dev/null 2>&1; then _fix_timeout_cmd="gtimeout 300"
+    fi
+    if ( cd "$INSTALL_DIR/extension" && $_fix_timeout_cmd npx --yes @electron/rebuild --version="$ELECTRON_VERSION" --only=node-pty --force >/dev/null 2>&1 ); then
+      _fix_rebuild_rc=0
+    else
+      _fix_rebuild_rc=$?
+    fi
+    if [ "$_fix_rebuild_rc" = "124" ]; then
+      fail "@electron/rebuild timed out after 5 min — likely a slow Electron headers download. Check network / proxy settings."
+      ISSUES=$((ISSUES+1))
+    elif [ "$_fix_rebuild_rc" = "0" ] && [ -f "$NPTY_BIN" ]; then
     echo "$ELECTRON_VERSION" > "$ELECTRON_ABI_FILE" 2>/dev/null || true
     ok "node-pty rebuilt for Electron $ELECTRON_VERSION in source clone"
 
@@ -168,9 +207,10 @@ elif [ -d "$INSTALL_DIR/extension/node_modules/node-pty" ]; then
     fi
     fix "reload VS Code now: Cmd+Shift+P → Developer: Reload Window"
     FIXED=$((FIXED+1))
-  else
-    fail "@electron/rebuild failed — wrapped terminals will use pipe-mode"
-    ISSUES=$((ISSUES+1))
+    else
+      fail "@electron/rebuild failed — wrapped terminals will use pipe-mode"
+      ISSUES=$((ISSUES+1))
+    fi
   fi
 else
   info "node-pty not installed — extension bundle may be missing too (see check 2)"
@@ -270,17 +310,15 @@ else
   mkdir -p "$PROJECT_ROOT/.claws-bin"
   cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js"
   chmod +x "$PROJECT_ROOT/.claws-bin/mcp_server.js"
-  node --no-deprecation -e "
-const fs = require('fs');
-const p = '$PROJECT_MCP';
-let cfg = {};
-try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
-if (!cfg.mcpServers) cfg.mcpServers = {};
-cfg.mcpServers.claws = { command: 'node', args: ['./.claws-bin/mcp_server.js'], env: { CLAWS_SOCKET: '.claws/claws.sock' } };
-fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-"
-  ok "wrote $PROJECT_MCP"
-  FIXED=$((FIXED+1))
+  # M-45: use fix-repair.js (json-safe.mjs: abort-on-malformed + atomic write).
+  # Path passed via env var — no string-interpolation into JS source (M-20).
+  if CLAWS_REPAIR_TARGET="$PROJECT_MCP" node --no-deprecation "$INSTALL_DIR/scripts/_helpers/fix-repair.js" mcp 2>&1 | sed 's/^/  /'; then
+    ok "wrote $PROJECT_MCP"
+    FIXED=$((FIXED+1))
+  else
+    fail "could not write $PROJECT_MCP — malformed JSON? Check backup above."
+    ISSUES=$((ISSUES+1))
+  fi
 fi
 
 # ─── 4b. Project .vscode/extensions.json recommends claws ─────────────────
@@ -291,19 +329,15 @@ if [ -f "$VSCODE_EXT_JSON" ] && grep -q "neunaha.claws" "$VSCODE_EXT_JSON" 2>/de
 else
   fix "adding neunaha.claws to workspace recommendations"
   mkdir -p "$PROJECT_ROOT/.vscode"
-  node --no-deprecation -e "
-const fs = require('fs');
-const p = process.argv[1];
-let cfg = {};
-try {
-  const raw = fs.readFileSync(p, 'utf8');
-  const stripped = raw.replace(/\/\/.*\$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-  cfg = JSON.parse(stripped);
-} catch {}
-if (!Array.isArray(cfg.recommendations)) cfg.recommendations = [];
-if (!cfg.recommendations.includes('neunaha.claws')) cfg.recommendations.push('neunaha.claws');
-fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-" "$VSCODE_EXT_JSON" 2>/dev/null && ok "wrote $VSCODE_EXT_JSON" && FIXED=$((FIXED+1)) || fail "could not write $VSCODE_EXT_JSON"
+  # M-46: use fix-repair.js (json-safe.mjs: abort-on-malformed + atomic write + JSONC-tolerant).
+  # Path passed via env var — no string-interpolation into JS source (M-20).
+  if CLAWS_REPAIR_TARGET="$VSCODE_EXT_JSON" node --no-deprecation "$INSTALL_DIR/scripts/_helpers/fix-repair.js" extensions 2>&1 | sed 's/^/  /'; then
+    ok "wrote $VSCODE_EXT_JSON"
+    FIXED=$((FIXED+1))
+  else
+    fail "could not write $VSCODE_EXT_JSON — malformed JSON? Check backup above."
+    ISSUES=$((ISSUES+1))
+  fi
 fi
 
 # ─── 5. MCP server handshake ───────────────────────────────────────────────
@@ -311,17 +345,18 @@ check "MCP server handshake"
 MCP_PATH="$INSTALL_DIR/mcp_server.js"
 [ -f "$PROJECT_ROOT/.claws-bin/mcp_server.js" ] && MCP_PATH="$PROJECT_ROOT/.claws-bin/mcp_server.js"
 if command -v node &>/dev/null && [ -f "$MCP_PATH" ]; then
+  # M-44: mcp_server.js uses newline-delimited JSON, not Content-Length framing.
+  # Full protocolVersion + clientInfo required per MCP 2024-11-05 spec.
   HANDSHAKE=$(node --no-deprecation -e '
 const { spawn } = require("child_process");
 const mcp = spawn("node", [process.argv[1]], { stdio: ["pipe", "pipe", "ignore"] });
-const req = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-const msg = `Content-Length: ${Buffer.byteLength(req)}\r\n\r\n${req}`;
+const req = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "claws-fix", version: "1" } } });
 let buf = "";
-const done = (c, o) => { try { mcp.kill(); } catch {}; process.stdout.write(o); process.exit(c); };
+const done = (c, o) => { try { mcp.kill(); } catch {} process.stdout.write(o); process.exit(c); };
 const timer = setTimeout(() => done(1, "TIMEOUT"), 4000);
 mcp.stdout.on("data", d => { buf += d.toString("utf8"); if (buf.includes("claws")) { clearTimeout(timer); done(0, buf.slice(0, 200)); } });
 mcp.on("error", e => { clearTimeout(timer); done(1, "SPAWN_ERROR: " + e.message); });
-mcp.stdin.write(msg);
+mcp.stdin.write(req + "\n");
 ' "$MCP_PATH" 2>&1 || echo "FAILED")
   if echo "$HANDSHAKE" | grep -q "claws"; then
     ok "MCP server responds (initialize OK)"

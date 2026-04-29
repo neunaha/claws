@@ -6,12 +6,20 @@
 // after partial install) must not surface as "hook error" in Claude Code.
 'use strict';
 
-process.on('uncaughtException', () => { try { process.exit(0); } catch {} });
-process.on('unhandledRejection', () => { try { process.exit(0); } catch {} });
+// M-24: gate error handlers on CLAWS_DEBUG — when CLAWS_DEBUG=1, errors
+// propagate visibly for debugging instead of being silently swallowed.
+if (!process.env.CLAWS_DEBUG) {
+  process.on('uncaughtException', () => { try { process.exit(0); } catch {} });
+  process.on('unhandledRejection', () => { try { process.exit(0); } catch {} });
+}
+
+// M-13: 5-second self-kill safety timer — hook can never hang the parent process.
+setTimeout(() => { process.exit(0); }, 5000).unref();
 
 let input = '';
-try { process.stdin.on('data', d => { input += d; }); } catch {}
+// M-13: single try block for both 'data' and 'end' — fail together or not at all.
 try {
+  process.stdin.on('data', d => { input += d; });
   process.stdin.on('end', () => {
     try {
       const fs   = require('fs');

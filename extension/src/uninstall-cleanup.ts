@@ -9,6 +9,27 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 
+// M-30: atomic write helper (tmp + renameSync) — prevents partial file on kill mid-write.
+// Inline implementation (no cross-package import needed) — mirrors atomic-file.mjs.
+// F3: open+writeSync+fsyncSync+close before rename for durability on power-cut.
+let _atomicNonce = 0;
+function writeAtomic(filePath: string, content: string): void {
+  const tmp = `${filePath}.claws-tmp.${process.pid}-${++_atomicNonce}`;
+  let _fd: number | null = null;
+  try {
+    _fd = fs.openSync(tmp, 'w', 0o644);
+    fs.writeSync(_fd, content);
+    fs.fsyncSync(_fd);
+    fs.closeSync(_fd);
+    _fd = null;
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    if (_fd !== null) { try { fs.closeSync(_fd); } catch { /* ignore */ } }
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
 export interface CleanupAction {
   action: 'rmdir' | 'rm' | 'edit-json' | 'edit-markdown';
   path: string;
@@ -190,7 +211,7 @@ export function executeCleanup(
             parsed.recommendations = recs.filter((r) => r !== 'neunaha.claws');
           }
         }
-        fs.writeFileSync(action.path, JSON.stringify(parsed, null, 2) + '\n', 'utf8');
+        writeAtomic(action.path, JSON.stringify(parsed, null, 2) + '\n');
         logger(`[cleanup]   ✓ edit-json ${action.path} (${action.note})`);
       } else if (action.action === 'edit-markdown') {
         const raw = fs.readFileSync(action.path, 'utf8');
@@ -198,7 +219,7 @@ export function executeCleanup(
           /<!-- CLAWS:BEGIN -->[\s\S]*?<!-- CLAWS:END -->\n?/g,
           '',
         );
-        fs.writeFileSync(action.path, stripped, 'utf8');
+        writeAtomic(action.path, stripped);
         logger(`[cleanup]   ✓ edit-markdown ${action.path} (${action.note})`);
       }
       removed += 1;

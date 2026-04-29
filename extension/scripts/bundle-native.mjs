@@ -21,7 +21,7 @@
 // bundle for their local dev loop.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, statSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync, renameSync, chmodSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -52,24 +52,48 @@ function fail(msg, err) {
 }
 
 // ─── Step 1: detect Electron version ─────────────────────────────────────────
-function detectElectronVersion() {
+// Exported for testing (injectable platform/execFn/existsFn/termProgram).
+export function detectElectronVersion({
+  platform = process.platform,
+  execFn = execFileSync,
+  existsFn = existsSync,
+  termProgram = process.env.TERM_PROGRAM,
+  // F4: secondary editor signals for old Cursor builds that still report TERM_PROGRAM=vscode.
+  // $CURSOR_TRACE_ID and $CURSOR_CHANNEL are Cursor-specific env vars; if either is set,
+  // the shell is almost certainly running inside Cursor regardless of TERM_PROGRAM.
+  vscodeInjection = process.env.VSCODE_INJECTION,
+  cursorChannel = process.env.CURSOR_CHANNEL,
+} = {}) {
   const envOverride = process.env.CLAWS_ELECTRON_VERSION;
   if (envOverride) {
     log(`using CLAWS_ELECTRON_VERSION=${envOverride} (env override)`);
     return { version: envOverride, source: 'env' };
   }
 
-  if (process.platform === 'darwin') {
-    const candidates = [
-      '/Applications/Visual Studio Code.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist',
-      '/Applications/Visual Studio Code - Insiders.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist',
-      '/Applications/Cursor.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist',
-      '/Applications/Windsurf.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist',
+  if (platform === 'darwin') {
+    // M-22: prefer the editor that launched this shell session ($TERM_PROGRAM)
+    // so the user's daily-driver Electron version wins, not the first-found app.
+    const allCandidates = [
+      { key: 'vscode',         plist: '/Applications/Visual Studio Code.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist' },
+      { key: 'vscode-insiders', plist: '/Applications/Visual Studio Code - Insiders.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist' },
+      { key: 'cursor',         plist: '/Applications/Cursor.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist' },
+      { key: 'windsurf',       plist: '/Applications/Windsurf.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist' },
     ];
-    for (const plist of candidates) {
-      if (!existsSync(plist)) continue;
+    // F4: if CURSOR_CHANNEL/VSCODE_INJECTION signals Cursor, promote 'cursor' even
+    // when TERM_PROGRAM still says 'vscode' (old Cursor builds pre-TERM_PROGRAM=cursor).
+    let tp = (termProgram || '').toLowerCase();
+    if (tp === 'vscode' && (cursorChannel || (vscodeInjection && cursorChannel !== undefined))) {
+      // Only override when CURSOR_CHANNEL is explicitly set (Cursor-specific env).
+      if (cursorChannel) { tp = 'cursor'; }
+    }
+    const sorted = [
+      ...allCandidates.filter(c => tp && c.key === tp),
+      ...allCandidates.filter(c => !(tp && c.key === tp)),
+    ];
+    for (const { plist } of sorted) {
+      if (!existsFn(plist)) continue;
       try {
-        const v = execFileSync('plutil', ['-extract', 'CFBundleVersion', 'raw', plist], {
+        const v = execFn('plutil', ['-extract', 'CFBundleVersion', 'raw', plist], {
           encoding: 'utf8',
         }).trim();
         if (v) {
@@ -82,19 +106,31 @@ function detectElectronVersion() {
     }
   }
 
-  if (process.platform === 'linux') {
-    // VS Code on Linux bundles its own electron binary. Try known install paths.
-    const electronCandidates = [
-      '/usr/share/code/electron',
-      '/usr/lib/code/electron',
-      '/opt/visual-studio-code/electron',
-      '/snap/code/current/electron',
-      '/snap/code/current/usr/share/code/electron',
+  if (platform === 'linux') {
+    // M-25: VS Code + Cursor + Windsurf Linux install paths.
+    const allLinuxCandidates = [
+      { key: 'vscode',    ep: '/usr/share/code/electron' },
+      { key: 'vscode',    ep: '/usr/lib/code/electron' },
+      { key: 'vscode',    ep: '/opt/visual-studio-code/electron' },
+      { key: 'vscode',    ep: '/snap/code/current/electron' },
+      { key: 'vscode',    ep: '/snap/code/current/usr/share/code/electron' },
+      { key: 'cursor',    ep: '/usr/share/cursor/electron' },
+      { key: 'cursor',    ep: '/opt/cursor/electron' },
+      { key: 'cursor',    ep: '/snap/cursor/current/usr/share/cursor/electron' },
+      { key: 'windsurf',  ep: '/usr/share/windsurf/electron' },
+      { key: 'windsurf',  ep: '/opt/windsurf/electron' },
     ];
-    for (const ep of electronCandidates) {
-      if (!existsSync(ep)) continue;
+    // M-22/F4: prefer TERM_PROGRAM-matching editor on Linux too; CURSOR_CHANNEL overrides vscode.
+    let linuxTp = (termProgram || '').toLowerCase();
+    if (linuxTp === 'vscode' && cursorChannel) { linuxTp = 'cursor'; }
+    const sorted = [
+      ...allLinuxCandidates.filter(c => linuxTp && c.key === linuxTp),
+      ...allLinuxCandidates.filter(c => !(linuxTp && c.key === linuxTp)),
+    ];
+    for (const { ep } of sorted) {
+      if (!existsFn(ep)) continue;
       try {
-        const v = execFileSync(ep, ['--version'], { encoding: 'utf8' }).trim().replace(/^v/, '');
+        const v = execFn(ep, ['--version'], { encoding: 'utf8' }).trim().replace(/^v/, '');
         if (v && /^\d+\.\d+\.\d+$/.test(v)) {
           log(`detected Electron ${v} from ${ep}`);
           return { version: v, source: ep };
@@ -105,22 +141,28 @@ function detectElectronVersion() {
     }
     // Fallback: ask the `electron` CLI if it's on PATH (unlikely but possible)
     try {
-      const v = execFileSync('electron', ['--version'], { encoding: 'utf8' }).trim().replace(/^v/, '');
+      const v = execFn('electron', ['--version'], { encoding: 'utf8' }).trim().replace(/^v/, '');
       if (v && /^\d+\.\d+\.\d+$/.test(v)) {
         log(`detected Electron ${v} from electron CLI`);
         return { version: v, source: 'electron-cli' };
       }
     } catch { /* not available */ }
-    log(`WARNING: could not detect VS Code Electron version on Linux.`);
-    log(`Set CLAWS_ELECTRON_VERSION=<version> to override. Falling back to ${FALLBACK_ELECTRON}.`);
   }
 
+  // M-23: explicit warning when no editor was found — don't silently fall back.
+  if (platform === 'darwin' || platform === 'linux') {
+    process.stderr.write(
+      '[bundle-native] WARNING: could not detect VS Code/Cursor/Windsurf Electron version.\n' +
+      '[bundle-native] Set CLAWS_ELECTRON_VERSION=<version> to specify your editor\'s Electron version explicitly.\n',
+    );
+  }
   log(`no Electron install found; falling back to ${FALLBACK_ELECTRON}`);
   return { version: FALLBACK_ELECTRON, source: 'fallback' };
 }
 
 // ─── Detect target architecture ──────────────────────────────────────────────
-function detectTargetArch() {
+// Exported for testing (injectable platform/arch/execFn).
+export function detectTargetArch({ platform = process.platform, arch = process.arch, execFn = execFileSync } = {}) {
   // Honour explicit override first.
   const envArch = process.env.CLAWS_ELECTRON_ARCH;
   if (envArch) {
@@ -128,29 +170,31 @@ function detectTargetArch() {
     return envArch;
   }
 
-  const machineArch = process.arch; // 'arm64' or 'x64'
-
-  // Rosetta 2 detection: node reports 'x64' even on arm64 when running under
-  // Rosetta. Check the actual CPU via sysctl.
-  if (process.platform === 'darwin' && machineArch === 'x64') {
+  // Rosetta 2 fix (M-05): when Node.js runs under Rosetta (x64 emulation on an
+  // arm64 Mac), process.arch reports 'x64'. Building pty.node for x64 produces a
+  // binary that native arm64 VS Code/Cursor cannot dlopen — extension falls into
+  // pipe-mode silently. Detect via sysctl.proc_translated and return 'arm64' so
+  // @electron/rebuild targets the host CPU, not the emulated one.
+  if (platform === 'darwin' && arch === 'x64') {
     try {
-      const rosetta = execFileSync('sysctl', ['-n', 'sysctl.proc_translated'], { encoding: 'utf8' }).trim();
+      const rosetta = execFn('sysctl', ['-n', 'sysctl.proc_translated'], { encoding: 'utf8' }).trim();
       if (rosetta === '1') {
-        log('WARNING: Node.js is running under Rosetta 2 (x64 emulation on arm64 Mac)');
-        log('The pty.node binary will be built for x64. If your VS Code is native arm64,');
-        log('it will run in pipe-mode. Use CLAWS_ELECTRON_ARCH=arm64 to build for arm64.');
+        log('Rosetta detected — overriding x64 to arm64 for native VS Code/Cursor compatibility');
+        log('(Node.js is running under Rosetta 2 on an arm64 Mac — rebuilding for arm64)');
+        return 'arm64';
       }
     } catch { /* sysctl not available — not on macOS or too old */ }
   }
 
-  log(`target arch: ${machineArch}`);
-  return machineArch;
+  log(`target arch: ${arch}`);
+  return arch;
 }
 
 // ─── Step 2: @electron/rebuild ───────────────────────────────────────────────
-function runElectronRebuild(electronVersion, targetArch) {
+// Exported for testing (injectable spawnFn/failFn).
+export function runElectronRebuild(electronVersion, targetArch, { spawnFn = spawnSync, failFn = fail } = {}) {
   log(`running @electron/rebuild --version ${electronVersion} --arch ${targetArch} --only node-pty --force`);
-  const result = spawnSync(
+  const result = spawnFn(
     'npx',
     [
       '--yes', '@electron/rebuild',
@@ -163,11 +207,22 @@ function runElectronRebuild(electronVersion, targetArch) {
       cwd: EXT_ROOT,
       stdio: ['ignore', 'inherit', 'inherit'],
       env: process.env,
+      timeout: 5 * 60 * 1000, // M-08: 5-minute ceiling — prevents indefinite hang on slow GitHub header fetch
     },
   );
-  if (result.error) fail(`spawn of @electron/rebuild failed: ${result.error.message}`, result.error);
+  if (result.error) failFn(`spawn of @electron/rebuild failed: ${result.error.message}`, result.error);
+  // M-07 + M-08: spawnSync sets status=null when the process is killed by a
+  // signal. SIGTERM on timeout (M-08) gets a network-hint message; other signals
+  // get the re-run hint (M-07).
+  if (result.status === null && !result.error) {
+    if (result.signal === 'SIGTERM') {
+      failFn('@electron/rebuild timed out after 5min — likely a slow Electron headers download. Check network / proxy settings.');
+    } else {
+      failFn(`@electron/rebuild process killed by signal (${result.signal || 'unknown'}) — re-run /claws-update`);
+    }
+  }
   if (typeof result.status === 'number' && result.status !== 0) {
-    fail(`@electron/rebuild exited with status ${result.status}`);
+    failFn(`@electron/rebuild exited with status ${result.status}`);
   }
   log('@electron/rebuild completed');
 }
@@ -190,15 +245,21 @@ function verifyBinary() {
 }
 
 // ─── Step 4: copy runtime-only slice of node-pty ─────────────────────────────
-function resetNativeDest() {
-  if (existsSync(NATIVE_DEST)) {
+// M-40: atomic copy via staging dir — prevents kill-window leaving an empty
+// NATIVE_DEST that silently degrades the extension to pipe-mode on next load.
+// Pattern: copy into NATIVE_DEST.claws-new, then rename aside + rename into place.
+function setupStagingDir() {
+  const staging = NATIVE_DEST + '.claws-new';
+  // Clean any stale staging dir from a previous interrupted run.
+  if (existsSync(staging)) {
     try {
-      rmSync(NATIVE_DEST, { recursive: true, force: true });
+      rmSync(staging, { recursive: true, force: true });
     } catch (err) {
-      fail(`failed to remove stale ${NATIVE_DEST}`, err);
+      fail(`failed to remove stale staging dir ${staging}`, err);
     }
   }
-  mkdirSync(NATIVE_DEST, { recursive: true });
+  mkdirSync(staging, { recursive: true });
+  return staging;
 }
 
 function copyFileSafe(src, dest) {
@@ -227,7 +288,7 @@ function copyLibTree(srcLib, destLib, totals) {
 }
 
 function copyRuntimeSlice() {
-  resetNativeDest();
+  const staging = setupStagingDir();
 
   const totals = { files: 0, bytes: 0 };
 
@@ -235,23 +296,23 @@ function copyRuntimeSlice() {
   if (!existsSync(join(NODE_PTY_SRC, 'package.json'))) {
     fail(`node-pty package.json not found at ${NODE_PTY_SRC}`);
   }
-  copyFileSafe(join(NODE_PTY_SRC, 'package.json'), join(NATIVE_DEST, 'package.json'));
+  copyFileSafe(join(NODE_PTY_SRC, 'package.json'), join(staging, 'package.json'));
   totals.files += 1;
-  totals.bytes += statSync(join(NATIVE_DEST, 'package.json')).size;
+  totals.bytes += statSync(join(staging, 'package.json')).size;
 
   // 2. lib/** (runtime JS, minus tests and *.d.ts)
-  copyLibTree(join(NODE_PTY_SRC, 'lib'), join(NATIVE_DEST, 'lib'), totals);
+  copyLibTree(join(NODE_PTY_SRC, 'lib'), join(staging, 'lib'), totals);
 
   // 3. build/Release/pty.node (native binary) and spawn-helper (Unix helper)
   const ptyNode = join(NODE_PTY_SRC, 'build', 'Release', 'pty.node');
   if (!existsSync(ptyNode)) fail(`pty.node missing at ${ptyNode}`);
-  copyFileSafe(ptyNode, join(NATIVE_DEST, 'build', 'Release', 'pty.node'));
+  copyFileSafe(ptyNode, join(staging, 'build', 'Release', 'pty.node'));
   totals.files += 1;
-  totals.bytes += statSync(join(NATIVE_DEST, 'build', 'Release', 'pty.node')).size;
+  totals.bytes += statSync(join(staging, 'build', 'Release', 'pty.node')).size;
 
   const spawnHelper = join(NODE_PTY_SRC, 'build', 'Release', 'spawn-helper');
   if (existsSync(spawnHelper)) {
-    const dest = join(NATIVE_DEST, 'build', 'Release', 'spawn-helper');
+    const dest = join(staging, 'build', 'Release', 'spawn-helper');
     copyFileSafe(spawnHelper, dest);
     try { chmodSync(dest, 0o755); } catch { /* best-effort */ }
     totals.files += 1;
@@ -262,10 +323,22 @@ function copyRuntimeSlice() {
   for (const optional of ['LICENSE', 'README.md']) {
     const src = join(NODE_PTY_SRC, optional);
     if (existsSync(src)) {
-      copyFileSafe(src, join(NATIVE_DEST, optional));
+      copyFileSafe(src, join(staging, optional));
       totals.files += 1;
-      totals.bytes += statSync(join(NATIVE_DEST, optional)).size;
+      totals.bytes += statSync(join(staging, optional)).size;
     }
+  }
+
+  // M-40: atomic swap — staging → NATIVE_DEST via rename(2).
+  // Kill before this point leaves NATIVE_DEST intact (old version).
+  // Kill after renameSync(staging, NATIVE_DEST) leaves NATIVE_DEST correct (new version).
+  const oldDest = NATIVE_DEST + '.claws-old';
+  if (existsSync(NATIVE_DEST)) {
+    renameSync(NATIVE_DEST, oldDest);
+  }
+  renameSync(staging, NATIVE_DEST);
+  if (existsSync(oldDest)) {
+    try { rmSync(oldDest, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
 
   return totals;
@@ -349,4 +422,7 @@ function main() {
   log('[bundle-native] done.');
 }
 
-main();
+// Only run main when executed directly (not when imported by tests).
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main();
+}
