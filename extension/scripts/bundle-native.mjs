@@ -75,10 +75,10 @@ export function detectElectronVersion({
       { key: 'windsurf',       plist: '/Applications/Windsurf.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist' },
     ];
     const tp = (termProgram || '').toLowerCase();
-    // Move the TERM_PROGRAM-matching editor to the front of the list.
+    // F1: simplified — (tp === 'vscode' && c.key === 'vscode') is identical to c.key === tp when tp='vscode'.
     const sorted = [
-      ...allCandidates.filter(c => tp && (c.key === tp || (tp === 'vscode' && c.key === 'vscode'))),
-      ...allCandidates.filter(c => !(tp && (c.key === tp || (tp === 'vscode' && c.key === 'vscode')))),
+      ...allCandidates.filter(c => tp && c.key === tp),
+      ...allCandidates.filter(c => !(tp && c.key === tp)),
     ];
     for (const { plist } of sorted) {
       if (!existsFn(plist)) continue;

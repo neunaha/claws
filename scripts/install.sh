@@ -375,19 +375,13 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
       # M-22: build candidate list with TERM_PROGRAM-matching editor first so the
       # user's daily-driver wins the ABI check instead of the hardcoded VS Code path.
       _tp="${TERM_PROGRAM:-}"
+      # F2: use bash array — avoids eval footgun while keeping TERM_PROGRAM ordering.
       case "$_tp" in
-        cursor)
-          _claws_darwin_apps='"/Applications/Cursor.app" "/Applications/Visual Studio Code.app" "/Applications/Visual Studio Code - Insiders.app" "/Applications/Windsurf.app"'
-          ;;
-        windsurf)
-          _claws_darwin_apps='"/Applications/Windsurf.app" "/Applications/Visual Studio Code.app" "/Applications/Visual Studio Code - Insiders.app" "/Applications/Cursor.app"'
-          ;;
-        *)
-          _claws_darwin_apps='"/Applications/Visual Studio Code.app" "/Applications/Visual Studio Code - Insiders.app" "/Applications/Cursor.app" "/Applications/Windsurf.app"'
-          ;;
+        cursor)   _claws_darwin_apps=('/Applications/Cursor.app' '/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Windsurf.app') ;;
+        windsurf) _claws_darwin_apps=('/Applications/Windsurf.app' '/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Cursor.app') ;;
+        *)        _claws_darwin_apps=('/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Cursor.app' '/Applications/Windsurf.app') ;;
       esac
-      eval "set -- $_claws_darwin_apps"
-      for _claws_app in "$@"; do
+      for _claws_app in "${_claws_darwin_apps[@]}"; do
         _claws_plist="$_claws_app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
         if [ -f "$_claws_plist" ]; then
           _claws_curr_elec=$(plutil -extract CFBundleVersion raw "$_claws_plist" 2>/dev/null || true)
