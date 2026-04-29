@@ -5,6 +5,15 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4-bulletproof-L2-fix] - 2026-04-29 — Layer 2 fix: code-review findings F1+F5 (error-path + env-var path passing)
+
+### Fixed
+
+- **F1** `scripts/install.sh` M-09 + M-02 heredoc blocks: wrapped each `node --input-type=module` heredoc with `set +e` / capture `_exit=$?` / `set -e` so the `die`/`warn` call fires before the shell aborts. Under `set -eo pipefail`, `if [ $? -ne 0 ]` after a heredoc is dead code — the shell terminates at the heredoc line when node exits non-zero.
+- **F5** `scripts/install.sh` M-02 block: switched from shell-expanded string literals (`'${PROJECT_MCP}'`) to `process.env.X` for all user-controlled paths. Also changed static `import ... from '...'` to `await import(process.env.INSTALL_DIR + '...')` to avoid JS SyntaxError when any path component contains a single-quote or backslash.
+- **F5 test** `extension/test/install-mcp-merge.test.sh`: added apostrophe path test (creates a project dir named `user's-project`, runs M-02 merge via env vars, asserts claws entry written).
+- **F1 test** `extension/test/install-error-path.test.sh` (9 checks): static checks that `_hooks_exit` and `_mcp_exit` capture patterns are present; behavioral harness proving the message fires before set-e exit.
+
 ## [0.7.4-bulletproof-L2] - 2026-04-29 — Layer 2: install.sh data-loss + atomicity fixes (M-01, M-02, M-09, M-17, M-27–M-30)
 
 ### Fixed

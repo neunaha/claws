@@ -857,6 +857,9 @@ else
     if [ -d "$INSTALL_DIR/scripts/hooks" ]; then
       # M-09: atomic rename pattern — copy to tmp dir first, then swap into place.
       # Prevents kill-window leaving an empty hooks dir that breaks every Bash hook.
+      # F1: set +e around heredoc so $? is readable (under set -eo pipefail the script
+      # would abort at the heredoc before reaching any if [ $? ] check).
+      set +e
       node --no-deprecation --input-type=module <<HOOKSATOMICEOF
 import { copyDirAtomic } from '${INSTALL_DIR}/scripts/_helpers/atomic-file.mjs';
 try {
@@ -866,7 +869,9 @@ try {
   process.exit(1);
 }
 HOOKSATOMICEOF
-      if [ $? -ne 0 ]; then
+      _hooks_exit=$?
+      set -e
+      if [ "$_hooks_exit" -ne 0 ]; then
         warn "hooks dir copy failed — .claws-bin/hooks may be incomplete"
       fi
       # package.json shim: write if not present after copy (older hooks dirs omit it).
@@ -976,11 +981,16 @@ CLAWSBIN
     #
     # M-02: use json-safe.mjs mergeIntoFile — JSONC-tolerant, never resets cfg to {}
     # on parse error (which would silently wipe the user's other MCP servers).
+    # F5: PROJECT_MCP and PROJECT_ROOT passed as env vars (not string-literal-embedded in JS)
+    #     to avoid JS SyntaxError when paths contain single-quotes or backslashes.
     PROJECT_MCP="$PROJECT_ROOT/.mcp.json"
+    # F1: set +e around heredoc so _mcp_exit is readable before set -e is restored.
+    set +e
+    PROJECT_MCP="$PROJECT_MCP" PROJECT_ROOT="$PROJECT_ROOT" INSTALL_DIR="$INSTALL_DIR" \
     node --no-deprecation --input-type=module <<MCPMERGEEOF
-import { mergeIntoFile } from '${INSTALL_DIR}/scripts/_helpers/json-safe.mjs';
-const mcpPath = '${PROJECT_MCP}';
-const projectRoot = '${PROJECT_ROOT}';
+const { mergeIntoFile } = await import(process.env.INSTALL_DIR + '/scripts/_helpers/json-safe.mjs');
+const mcpPath = process.env.PROJECT_MCP;
+const projectRoot = process.env.PROJECT_ROOT;
 const result = await mergeIntoFile(mcpPath, cfg => {
   if (!cfg.mcpServers) cfg.mcpServers = {};
   cfg.mcpServers.claws = { command: 'node', args: [projectRoot + '/.claws-bin/mcp_server.js'] };
@@ -995,15 +1005,15 @@ if (!result.ok) {
   process.exit(1);
 }
 MCPMERGEEOF
-    if [ $? -ne 0 ]; then
-      bad ".mcp.json merge failed — original preserved, see above for details"
-      bad "Fix the JSON in $PROJECT_MCP and re-run /claws-update"
-    else
-      ok "wrote $PROJECT_MCP"
-      if ! node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
-        bad ".mcp.json written to $PROJECT_ROOT but is not valid JSON — MCP server will fail to load"
-        bad "Check $CLAWS_LOG for jq/cat errors above"
-      fi
+    _mcp_exit=$?
+    set -e
+    if [ "$_mcp_exit" -ne 0 ]; then
+      die ".mcp.json merge failed — original preserved. Fix $PROJECT_MCP then re-run /claws-update"
+    fi
+    ok "wrote $PROJECT_MCP"
+    if ! node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
+      bad ".mcp.json written to $PROJECT_ROOT but is not valid JSON — MCP server will fail to load"
+      bad "Check $CLAWS_LOG for jq/cat errors above"
     fi
     touch "$PROJECT_ROOT/.gitignore" 2>/dev/null || true
     if ! grep -q "^\.claws/" "$PROJECT_ROOT/.gitignore" 2>/dev/null; then

@@ -171,7 +171,64 @@ fi
 
 rm -rf "$tmpdir"
 
-# ── TEST 4: verify install.sh uses mergeIntoFile (M-02 applied) ──────────────
+# ── TEST 4: F5 — path with apostrophe must not cause JS SyntaxError ──────────
+# Create a tmpdir whose name contains a single-quote (e.g., user's data dir).
+# The M-02 heredoc in install.sh now passes paths via env vars (not string literals),
+# so a quote in the path should not produce a JS syntax error.
+apostrophe_base="${TMPDIR:-/tmp}/claws-m02-apos-XXXXXX"
+tmpdir=$(mktemp -d "$apostrophe_base")
+# Rename to include an apostrophe in the leaf
+apos_dir="${tmpdir}/user's-project"
+mkdir -p "$apos_dir"
+mcp_file="$apos_dir/.mcp.json"
+project_root="$apos_dir"
+printf '{"mcpServers":{}}\n' > "$mcp_file"
+
+# Run the merge using env-var passing (same pattern as install.sh M-02/F5 fix).
+# INSTALL_DIR = project root (contains scripts/_helpers/), matching install.sh convention.
+_install_dir="$(cd "$SCRIPT_DIR/../.." && pwd)"
+set +e
+output=$(PROJECT_MCP="$mcp_file" PROJECT_ROOT="$project_root" INSTALL_DIR="$_install_dir" \
+  node --no-deprecation --input-type=module <<APOSEOF
+const { mergeIntoFile } = await import(process.env.INSTALL_DIR + '/scripts/_helpers/json-safe.mjs');
+const mcpPath = process.env.PROJECT_MCP;
+const projectRoot = process.env.PROJECT_ROOT;
+const result = await mergeIntoFile(mcpPath, cfg => {
+  if (!cfg.mcpServers) cfg.mcpServers = {};
+  cfg.mcpServers.claws = { command: 'node', args: [projectRoot + '/.claws-bin/mcp_server.js'] };
+});
+if (!result.ok) { process.stderr.write(result.error.message + '\\n'); process.exit(1); }
+process.stdout.write('ok\\n');
+APOSEOF
+)
+exit_code=$?
+set -e
+
+if [ $exit_code -eq 0 ]; then
+  pass "path with apostrophe: merge exits 0 (F5 env-var passing works)"
+else
+  fail "path with apostrophe: merge failed (exit $exit_code) — F5 regression: $output"
+fi
+
+if MCP_FILE="$mcp_file" node -e "
+const c = JSON.parse(require('fs').readFileSync(process.env.MCP_FILE, 'utf8'));
+if (!c.mcpServers.claws) process.exit(1);
+" 2>/dev/null; then
+  pass "claws entry written to path-with-apostrophe .mcp.json"
+else
+  fail "claws entry missing in path-with-apostrophe .mcp.json"
+fi
+
+# Also check install.sh uses env-var passing (not string literal ${PROJECT_MCP})
+if grep -q 'process.env.PROJECT_MCP' "$INSTALL_SH"; then
+  pass "install.sh M-02 block uses process.env.PROJECT_MCP (F5 applied)"
+else
+  fail "install.sh M-02 block embeds PROJECT_MCP as string literal (F5 not applied)"
+fi
+
+rm -rf "$tmpdir"
+
+# ── TEST 5: verify install.sh uses mergeIntoFile (M-02 applied) ──────────────
 if grep -q 'M-02' "$INSTALL_SH" && grep -q 'mergeIntoFile' "$INSTALL_SH"; then
   pass "install.sh uses mergeIntoFile (M-02)"
 else
@@ -198,5 +255,5 @@ if [ "$FAIL_COUNT" -gt 0 ]; then
   echo "FAIL: $FAIL_COUNT/$((PASS_COUNT + FAIL_COUNT)) install-mcp-merge check(s) failed."
   exit 1
 fi
-echo "PASS: $PASS_COUNT install-mcp-merge checks"
+echo "PASS: $PASS_COUNT install-mcp-merge checks (includes F5 apostrophe check)"
 exit 0
