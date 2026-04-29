@@ -492,14 +492,22 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
   NATIVE_PTY_ELECTRON=$(node -e "try{console.log(require('$INSTALL_DIR/extension/native/.metadata.json').electronVersion||'?')}catch(e){console.log('?')}" 2>/dev/null || echo '?')
   ok "native node-pty ready (${NATIVE_PTY_SIZE} bytes, Electron $NATIVE_PTY_ELECTRON) — VSIX will ship this binary"
   if command -v file &>/dev/null; then
+    # M-34: when bash runs under Rosetta 2 (x64 shell on Apple Silicon), uname -m returns
+    # x86_64 but bundle-native.mjs (M-05) builds for arm64. Detect Rosetta via sysctl so
+    # the expected arch is arm64, not x86_64 — prevents a spurious arch mismatch warning.
     # Linux x86_64 false-positive: `uname -m` returns `x86_64` (underscore),
     # but `file(1)` describes ELF binaries as `x86-64` (hyphen). Match both
     # spellings so legitimate x86_64 bundles don't trigger the warning.
     # Audit 1 finding H-1.
-    _claws_arch_alt="$(uname -m | sed 's/_/-/g')"
-    file "$NATIVE_PTY_BIN" 2>/dev/null | grep -qiE "$(uname -m)|${_claws_arch_alt}" \
-      || warn "pty.node architecture may not match current machine ($(uname -m)) — check bundle-native.mjs output in $CLAWS_LOG"
-    unset _claws_arch_alt
+    _claws_expected_arch="$(uname -m)"
+    if [ "$_claws_expected_arch" = "x86_64" ] && [ "$(uname -s)" = "Darwin" ]; then
+      _claws_rosetta=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo "0")
+      [ "$_claws_rosetta" = "1" ] && _claws_expected_arch="arm64"
+    fi
+    _claws_arch_alt="$(echo "$_claws_expected_arch" | sed 's/_/-/g')"
+    file "$NATIVE_PTY_BIN" 2>/dev/null | grep -qiE "$_claws_expected_arch|$_claws_arch_alt" \
+      || warn "pty.node architecture may not match current machine ($(uname -m) → expected $_claws_expected_arch) — check bundle-native.mjs output in $CLAWS_LOG"
+    unset _claws_arch_alt _claws_rosetta _claws_expected_arch
   fi
 
   # R3.7: Check if other installed editors use a different Electron version.

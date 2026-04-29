@@ -149,10 +149,21 @@ if [ -f "$INSTALL_DIR/extension/native/.metadata.json" ]; then
   _claws_built_for=$(node -e "try{console.log(require('$INSTALL_DIR/extension/native/.metadata.json').electronVersion||'')}catch(e){}" 2>/dev/null || echo "")
   _claws_using=""
   if [ "$(uname)" = "Darwin" ]; then
-    for _claws_app in "/Applications/Visual Studio Code.app" "/Applications/Cursor.app" "/Applications/Windsurf.app"; do
+    # M-35: prefer the editor that launched this shell ($TERM_PROGRAM) so the
+    # user's daily-driver Electron version is checked first, not first-found.
+    _claws_u_tp="${TERM_PROGRAM:-}"
+    [ "$_claws_u_tp" = "vscode" ] && [ -n "${CURSOR_CHANNEL:-}" ] && _claws_u_tp="cursor"
+    _claws_u_tp=$(echo "$_claws_u_tp" | tr '[:upper:]' '[:lower:]')
+    case "$_claws_u_tp" in
+      cursor)   _claws_update_apps=('/Applications/Cursor.app' '/Applications/Visual Studio Code.app' '/Applications/Windsurf.app') ;;
+      windsurf) _claws_update_apps=('/Applications/Windsurf.app' '/Applications/Visual Studio Code.app' '/Applications/Cursor.app') ;;
+      *)        _claws_update_apps=('/Applications/Visual Studio Code.app' '/Applications/Cursor.app' '/Applications/Windsurf.app') ;;
+    esac
+    for _claws_app in "${_claws_update_apps[@]}"; do
       _claws_plist="$_claws_app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
       [ -f "$_claws_plist" ] && _claws_using=$(plutil -extract CFBundleVersion raw "$_claws_plist" 2>/dev/null || true) && break
     done
+    unset _claws_u_tp _claws_update_apps
   fi
   if [ -n "$_claws_using" ] && [ -n "$_claws_built_for" ] && [ "$_claws_using" != "$_claws_built_for" ]; then
     _claws_health_ok=0

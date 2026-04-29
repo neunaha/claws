@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **M-32** `scripts/fix.sh` ABI detection: TERM_PROGRAM-aware darwin loop (bash array, same F2 pattern); CURSOR_CHANNEL secondary signal for old Cursor builds.
 - **M-33** `scripts/fix.sh` ABI detection: Linux Cursor (`/usr/share/cursor/electron`, `/opt/cursor/electron`) + Windsurf paths added; TERM_PROGRAM-ordered.
 - **M-36 (editor detect)** `scripts/rebuild-node-pty.sh` detection: TERM_PROGRAM-aware darwin ordering + CURSOR_CHANNEL + Linux Cursor/Windsurf paths.
+- **M-34** `scripts/install.sh` arch verify: when bash runs under Rosetta 2 (`uname -m=x86_64` on Apple Silicon), `sysctl.proc_translated` is checked and the expected arch is promoted to `arm64`. Prevents false "pty.node arch mismatch" warning after M-05 build.
+- **M-35** `scripts/update.sh` Step 6 ABI check: TERM_PROGRAM-aware darwin ordering for editor detection (cursor/windsurf/default). CURSOR_CHANNEL secondary signal included.
 
 ## [0.7.4-bulletproof-L1] - 2026-04-29 — Layer 1: ABI/native-bundle fixes (M-05, M-06, M-07, M-08, M-22, M-23, M-25, M-26)
 
