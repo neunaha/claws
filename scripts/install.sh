@@ -1146,7 +1146,11 @@ CLAWSCMD
       node --no-deprecation "$INSTALL_DIR/scripts/inject-claude-md.js" "$TARGET" 2>&1 | sed 's/^/  /' || warn "CLAUDE.md injector failed — see $CLAWS_LOG for details"
     fi
     # Global ~/.claude/CLAUDE.md injection (machine-wide Claws policy)
-    if [ -f "$INSTALL_DIR/scripts/inject-global-claude-md.js" ]; then
+    # F2/M-21: same GIT_PULL_OK gate as project CLAUDE.md — avoids rewriting
+    # the machine-wide policy from stale source when git pull failed.
+    if [ "${GIT_PULL_OK:-1}" = "0" ]; then
+      note "global CLAUDE.md injection skipped — git pull failed, stale source (F2/M-21)"
+    elif [ -f "$INSTALL_DIR/scripts/inject-global-claude-md.js" ]; then
       node --no-deprecation "$INSTALL_DIR/scripts/inject-global-claude-md.js" 2>&1 | sed 's/^/  /' || warn "global CLAUDE.md injector failed"
     fi
     # Hook registration in ~/.claude/settings.json (SessionStart / PreToolUse / Stop).

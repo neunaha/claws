@@ -154,8 +154,13 @@ export class EventLogWriter {
     const manifestPath = path.join(this.streamDir, 'manifest.json');
     const tmpPath = `${manifestPath}.tmp`;
     try {
-      // Atomic write: temp file in same dir (avoids cross-device rename failures).
-      fs.writeFileSync(tmpPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+      // F7: fsync before rename — mirrors M-29/M-43 pattern; manifest survives
+      // power-cut or SIGKILL after write but before kernel page-cache flush.
+      const fd = fs.openSync(tmpPath, 'w');
+      try {
+        fs.writeSync(fd, JSON.stringify(manifest, null, 2) + '\n');
+        fs.fsyncSync(fd);
+      } finally { fs.closeSync(fd); }
       fs.renameSync(tmpPath, manifestPath);
     } catch {
       // Non-fatal: manifest write failure must not crash the writer.

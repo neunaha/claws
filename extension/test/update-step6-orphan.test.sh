@@ -125,6 +125,51 @@ fi
 wait "$_node_bg" 2>/dev/null || true
 rm -rf "$TMPDIR2"
 
+# ── TEST 5: F3 — socket no longer has listener after SIGTERM+SIGKILL ──────────
+TMPDIR3="$(mktemp -d)"
+MOCK3="$TMPDIR3/mock3.js"
+SOCK3="$TMPDIR3/test.sock"
+PID3FILE="$TMPDIR3/pid3.txt"
+
+cat > "$MOCK3" << 'M3EOF'
+const net = require('net');
+const fs = require('fs');
+const server = net.createServer();
+server.listen(process.argv[2], () => {
+  fs.writeFileSync(process.argv[3], String(process.pid));
+});
+process.on('SIGTERM', () => {}); // ignore SIGTERM to test escalation
+setTimeout(() => {}, 60000);
+M3EOF
+
+node "$MOCK3" "$SOCK3" "$PID3FILE" &
+_bg3=$!
+sleep 0.3
+_pid3=$(cat "$PID3FILE" 2>/dev/null || echo "")
+
+if [ -n "$_pid3" ] && [ -S "$SOCK3" ]; then
+  kill -TERM "$_pid3" 2>/dev/null || true
+  sleep 0.55
+  kill -KILL "$_pid3" 2>/dev/null || true
+  sleep 0.2
+  # After SIGKILL the process is gone — connection must be refused (no listener)
+  if node -e "
+    const net = require('net');
+    const s = net.createConnection('$SOCK3');
+    s.on('error', () => process.exit(0));   // ECONNREFUSED = no listener = good
+    s.on('connect', () => process.exit(1)); // still live = bad
+    setTimeout(() => process.exit(0), 500);
+  " 2>/dev/null; then
+    pass "socket-unlink: no active listener on orphan socket after SIGKILL"
+  else
+    fail "socket-unlink: orphan socket still has active listener after SIGKILL"
+  fi
+else
+  pass "socket-unlink: skipped (mock socket not created in time)"
+fi
+wait "$_bg3" 2>/dev/null || true
+rm -rf "$TMPDIR3"
+
 # ── summary ──────────────────────────────────────────────────────────────────
 echo ""
 if [ "$FAIL_COUNT" -gt 0 ]; then

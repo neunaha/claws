@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **F1** `scripts/update.sh` M-10 retry loop: added `_claws_attempt` counter; emits `note "MCP handshake timeout — retry N of 3 (Nms)..."` between attempts so the operator knows progress during the silent ~38s retry window.
 - **F4** `extension/src/extension.ts` M-41 `runRebuildPty()`: killTimer now sends SIGTERM first, then SIGKILL after 5s grace, matching the recipe pattern from M-11. Previously sent SIGKILL directly. Regression test: `extension-rebuild-pty-timeout.test.js` updated (SIGTERM-before-SIGKILL check added).
+- **F2** `scripts/install.sh`: `inject-global-claude-md.js` now gated on `GIT_PULL_OK` — mirrors the project-level CLAUDE.md gate; avoids rewriting machine-wide policy from stale source when git pull failed. Emits skip note on GIT_PULL_OK=0.
+- **F3** `extension/test/update-step6-orphan.test.sh`: added test 5 — behavioral check that a Unix socket server has no active listener after SIGTERM+SIGKILL sequence (process is gone, no orphan socket-holder).
+- **F6** `extension/src/extension.ts` plutil candidate loop: added JSDoc noting 4 candidates × 3s timeout = 12s worst-case synchronous block; acceptable for explicit user-triggered rebuild command.
+- **F7** `extension/src/event-log.ts` `writeManifest()`: migrated from `writeFileSync` to `openSync+writeSync+fsyncSync+closeSync+renameSync` — mirrors M-29/M-43 fsync-before-rename pattern; manifest survives power-cut or SIGKILL after write.
 
 ## [0.7.4-bulletproof-L4] - 2026-04-29 — Layer 4: update.sh + extension.ts hardening (M-10, M-11, M-18, M-19, M-20, M-21, M-41, M-42, M-43)
 

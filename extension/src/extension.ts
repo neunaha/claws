@@ -713,6 +713,11 @@ async function runRebuildPty(extensionPath: string): Promise<void> {
   // Detect Electron version so @electron/rebuild can target the right ABI.
   // On macOS we read it from the app bundle's Info.plist. On other platforms
   // we fall back to a default — user can override via env var.
+  //
+  // F6/M-42: 4 candidates × 3s timeout = 12s worst-case synchronous block on
+  // a network-mounted /Applications (NFS/SMB hung filesystem). Acceptable for
+  // an explicit user-triggered command (Claws: Rebuild Native PTY); all 4 are
+  // attempted in order and the loop breaks on the first hit.
   let electronVersion = process.env.CLAWS_ELECTRON_VERSION || '';
   if (!electronVersion && process.platform === 'darwin') {
     const plistPaths = [
