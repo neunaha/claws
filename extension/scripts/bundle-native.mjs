@@ -120,7 +120,8 @@ function detectElectronVersion() {
 }
 
 // ─── Detect target architecture ──────────────────────────────────────────────
-function detectTargetArch() {
+// Exported for testing (injectable platform/arch/execFn).
+export function detectTargetArch({ platform = process.platform, arch = process.arch, execFn = execFileSync } = {}) {
   // Honour explicit override first.
   const envArch = process.env.CLAWS_ELECTRON_ARCH;
   if (envArch) {
@@ -128,23 +129,24 @@ function detectTargetArch() {
     return envArch;
   }
 
-  const machineArch = process.arch; // 'arm64' or 'x64'
-
-  // Rosetta 2 detection: node reports 'x64' even on arm64 when running under
-  // Rosetta. Check the actual CPU via sysctl.
-  if (process.platform === 'darwin' && machineArch === 'x64') {
+  // Rosetta 2 fix (M-05): when Node.js runs under Rosetta (x64 emulation on an
+  // arm64 Mac), process.arch reports 'x64'. Building pty.node for x64 produces a
+  // binary that native arm64 VS Code/Cursor cannot dlopen — extension falls into
+  // pipe-mode silently. Detect via sysctl.proc_translated and return 'arm64' so
+  // @electron/rebuild targets the host CPU, not the emulated one.
+  if (platform === 'darwin' && arch === 'x64') {
     try {
-      const rosetta = execFileSync('sysctl', ['-n', 'sysctl.proc_translated'], { encoding: 'utf8' }).trim();
+      const rosetta = execFn('sysctl', ['-n', 'sysctl.proc_translated'], { encoding: 'utf8' }).trim();
       if (rosetta === '1') {
-        log('WARNING: Node.js is running under Rosetta 2 (x64 emulation on arm64 Mac)');
-        log('The pty.node binary will be built for x64. If your VS Code is native arm64,');
-        log('it will run in pipe-mode. Use CLAWS_ELECTRON_ARCH=arm64 to build for arm64.');
+        log('Rosetta detected — overriding x64 to arm64 for native VS Code/Cursor compatibility');
+        log('(Node.js is running under Rosetta 2 on an arm64 Mac — rebuilding for arm64)');
+        return 'arm64';
       }
     } catch { /* sysctl not available — not on macOS or too old */ }
   }
 
-  log(`target arch: ${machineArch}`);
-  return machineArch;
+  log(`target arch: ${arch}`);
+  return arch;
 }
 
 // ─── Step 2: @electron/rebuild ───────────────────────────────────────────────
@@ -349,4 +351,7 @@ function main() {
   log('[bundle-native] done.');
 }
 
-main();
+// Only run main when executed directly (not when imported by tests).
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main();
+}
