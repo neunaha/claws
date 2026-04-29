@@ -32,23 +32,26 @@ const SOURCE_TAG    = 'claws';
 
 const HELPERS_URL = pathToFileURL(path.resolve(__dirname, '_helpers', 'json-safe.mjs')).href;
 
-// M-15: canonical install = CLAWS_BIN/hooks/ directory exists on disk.
-// When canonical, register hooks as direct `node "<path>"` invocations
-// (skips the sh -c fork overhead). When non-canonical (hooks dir absent,
-// custom or untested path), use the wrapped form with misfire logging.
-function isCanonicalInstall() {
+// M-15 + F1: canonical install = CLAWS_BIN/hooks/ directory exists AND the
+// specific script file is present. Both checks are required: if only the dir
+// is present but the script is missing (empty hooks/ dir, custom CLAWS_BIN,
+// or post-install deletion), a bare `node` invocation exits non-zero with
+// MODULE_NOT_FOUND — breaking the SAFETY CONTRACT (hooks must never exit
+// non-zero except intentional deny). Fall through to wrapped form instead.
+function isCanonicalInstall(scriptName) {
   try {
-    return fs.statSync(path.join(CLAWS_BIN, 'hooks')).isDirectory();
+    const hooksDir = path.join(CLAWS_BIN, 'hooks');
+    return fs.statSync(hooksDir).isDirectory() &&
+           fs.existsSync(path.join(hooksDir, scriptName));
   } catch {
     return false;
   }
 }
-const CANONICAL = isCanonicalInstall();
 
 function hookCmd(scriptName) {
   const scriptPath = path.join(CLAWS_BIN, 'hooks', scriptName);
-  if (CANONICAL) {
-    // Direct node invocation: hooks/ dir exists, path is guaranteed stable.
+  if (isCanonicalInstall(scriptName)) {
+    // Direct node invocation: hooks/ dir and script both confirmed present.
     // Skips the sh -c wrapper to reduce fork overhead per hook invocation.
     return `node ${JSON.stringify(scriptPath)}`;
   }

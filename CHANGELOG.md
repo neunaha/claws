@@ -5,6 +5,14 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4-bulletproof-L3-fix] - 2026-04-29 — Layer 3 fix: code-review findings F1+F2+F3
+
+### Fixed
+
+- **F1** `scripts/inject-settings-hooks.js` `isCanonicalInstall()`: now checks both `CLAWS_BIN/hooks/` directory presence AND individual script file existence before emitting bare `node "<path>"`. Previously, a hooks/ dir with missing scripts would produce a `node` invocation that exits non-zero (MODULE_NOT_FOUND), breaking the SAFETY CONTRACT. Falls through to the wrapped `sh -c` misfire-log form instead. [L3.11]
+- **F2** `scripts/inject-settings-hooks.js` M-14 comment: corrected to accurately state that `_source === 'claws'` already prevented non-Claws hooks from being matched before M-14; M-14's actual improvement is replacing substring `command.includes(scriptName)` with exact-command equality, making the "already current" vs "stale, upgrade in-place" distinction unambiguous. [L3.12]
+- **F3** `scripts/inject-settings-hooks.js` `hookCmd()` non-canonical form: misfire message now also written to stderr (`>&2`) alongside `/tmp/claws-hook-misfire.log` (with `2>/dev/null`). When `/tmp` is unwritable, the message still reaches stderr for forensics while `exit 0` preserves the SAFETY CONTRACT. [L3.13]
+
 ## [0.7.4-bulletproof-L3] - 2026-04-29 — Layer 3: hooks + settings.json hardening (M-03, M-04, M-12, M-13, M-14, M-15, M-16, M-24, M-38, M-39)
 
 ### Fixed

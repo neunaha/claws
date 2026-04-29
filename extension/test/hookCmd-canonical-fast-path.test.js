@@ -138,6 +138,46 @@ function runInjectWith(clawsBin, home) {
     }
   });
 
+  // 4. F1: partial canonical (hooks/ dir present, but specific scripts missing) → wrapped form
+  //    Regression for isCanonicalInstall() dir-only check: an empty hooks/ dir must NOT
+  //    produce bare `node` invocations — the missing script would exit non-zero
+  //    (MODULE_NOT_FOUND), breaking the SAFETY CONTRACT.
+  await check('partial canonical (hooks/ dir present, scripts missing) → sh -c wrapped form', () => {
+    const tmp = makeTmpDir();
+    try {
+      const claudeDir = path.join(tmp, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      const settingsPath = path.join(claudeDir, 'settings.json');
+      fs.writeFileSync(settingsPath, '{}', 'utf8');
+
+      // Create hooks/ dir but leave it EMPTY — no script files
+      const fakeBin = path.join(tmp, 'partial-canonical');
+      fs.mkdirSync(path.join(fakeBin, 'hooks'), { recursive: true });
+
+      const r = runInjectWith(fakeBin, tmp);
+      assert.strictEqual(r.status, 0, `Inject must succeed: ${r.stderr}`);
+
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      for (const event of ['SessionStart', 'PreToolUse', 'Stop']) {
+        const cmd = settings.hooks[event][0].hooks[0].command;
+        assert.ok(
+          cmd.startsWith('sh -c '),
+          `${event}: partial canonical (empty hooks/) must fall back to sh -c wrapper; got: ${cmd}`
+        );
+        assert.ok(
+          cmd.includes('if [ -f "$0" ]'),
+          `${event}: wrapped form must use if-then-fi guard; got: ${cmd}`
+        );
+        assert.ok(
+          cmd.includes('claws-hook-misfire.log'),
+          `${event}: wrapped form must reference misfire log; got: ${cmd}`
+        );
+      }
+    } finally {
+      cleanTmpDir(tmp);
+    }
+  });
+
   // Report
   const pass = assertions.filter(a => a.ok).length;
   const fail = assertions.filter(a => !a.ok).length;
