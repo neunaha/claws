@@ -410,7 +410,15 @@ function skipCheck(name, reason) {
   }
 
   if (hasVim()) {
-    // Note: vim opens a TUI — send q after to close it
+    // Interrupt any running foreground process (e.g. python3 sleep) before launching vim.
+    await rpc({ cmd: 'send', id: terminalId, text: '\x03', newline: false });
+    // Wait for content to settle back to shell before launching vim.
+    await waitFor(
+      () => contentSub.frames.some(f =>
+        f.topic === `vehicle.${terminalId}.content` && f.payload.contentType === 'shell'
+      ),
+      5000
+    );
     const framesBeforeVim = contentSub.frames.length;
     await check('send vim to terminal via send command', async () => {
       const r = await rpc({ cmd: 'send', id: terminalId, text: 'vim /dev/null', newline: true });
@@ -422,7 +430,7 @@ function skipCheck(name, reason) {
         () => contentSub.frames.slice(framesBeforeVim).some(f =>
           f.topic === `vehicle.${terminalId}.content` && f.payload.contentType === 'vim'
         ),
-        5000
+        8000
       );
       if (!ok) {
         const newFrames = contentSub.frames.slice(framesBeforeVim);

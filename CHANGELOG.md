@@ -42,6 +42,7 @@ The embedder wave introduces the Wave Army Protocol — a structured multi-agent
 - `extension/test/claws-event-log-replay.test.js` — 13-assertion integration test: publishes 10 events, subscribes with `fromCursor`, verifies all 10 replayed frames carry `replayed:true`, caught-up frame fires with correct count, live events arrive without `replayed`, invalid cursor rejected (TDD: 6 failing → 13 passing).
 
 ### Fixed
+- `extension/test/claws-v2-content.test.js` — interrupt foreground process with `\x03` before sending vim and extend wait timeout from 5s to 8s to reduce flakiness on slow machines.
 - `extension/test/event-schemas.test.js` — update `SCHEMA_BY_NAME` count from 19 to 20 (added `vehicle-state-v1`).
 - `extension/test/topic-registry.test.js` — update `TOPIC_REGISTRY` count from 19 to 22 (added 3 vehicle.* patterns).
 - `extension/test/event-schemas.test.js` — align `SCHEMA_BY_NAME` count assertion with current registry: was 19, now 20 after v0.7.5 L1.1+L1.4 schemas added `vehicle-state-v1`; test now derives expected names explicitly and asserts the correct total.
