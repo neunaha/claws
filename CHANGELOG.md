@@ -5,6 +5,20 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4-bulletproof-L4] - 2026-04-29 — Layer 4: update.sh + extension.ts hardening (M-10, M-11, M-18, M-19, M-20, M-21, M-41, M-42, M-43)
+
+### Fixed
+
+- **M-10** `scripts/update.sh` Step 6 health check: bumped timeout from 2000ms to 8s; added 3-attempt retry loop with exponential timeout series (8s, 12s, 16s) so loaded machines don't see false-positive YELLOW on slow startup. YELLOW only declared after all three attempts fail.
+- **M-11** `scripts/update.sh` Step 6 health check: SIGKILL escalation 500ms after SIGTERM — mcp_server.js child is force-killed if SIGTERM is not handled quickly, preventing orphaned socket fd. mcp_server.js path passed via `CLAWS_MCP_PATH` env var (no embedded path injection).
+- **M-19** `scripts/update.sh`: `CLAWS_LOG` now defined and exported before `install.sh` runs, so Step 6 warning "see install log: $CLAWS_LOG" references the actual log path written by install.sh.
+- **M-20** `scripts/update.sh` socket probe: project root path passed via `CLAWS_PROBE_PATH` env var instead of string-interpolation into `node -e` — handles project paths containing apostrophes/backslashes without JS syntax errors.
+- **M-21** `scripts/update.sh` + `scripts/install.sh`: `GIT_PULL_OK` flag exported on git pull failure; `install.sh` skips `inject-claude-md.js` when `GIT_PULL_OK=0` — avoids rewriting CLAUDE.md tool-set from stale source.
+- **M-18** `scripts/inject-settings-hooks.js` + `scripts/install.sh`: added `--update` mode that removes old Claws hooks and adds new ones in a single atomic `mergeIntoFile` call. `install.sh` now calls `inject-settings-hooks.js --update` instead of two-pass `--remove` + add, eliminating the kill-window where settings.json has zero Claws hooks.
+- **M-41** `extension/src/extension.ts` `runRebuildPty()`: added 5-minute SIGKILL timer (`setTimeout → proc.kill('SIGKILL')`) to prevent hung `@electron/rebuild` invocations from freezing VS Code indefinitely. Timer cleared on normal exit.
+- **M-42** `extension/src/extension.ts` `execFileSync('plutil', ...)`: added `{ timeout: 3000 }` to prevent synchronous Electron-version detection from blocking the VS Code extension host on network-mounted `/Applications`.
+- **M-43** `extension/src/lifecycle-store.ts` `flushToDisk()`: added `fs.fsyncSync(fd)` between `writeSync` and `renameSync` — mirrors the M-29 hooks-side fix for parity; ensures lifecycle state survives power-cut or SIGKILL after write but before kernel flush.
+
 ## [0.7.4-bulletproof-L3-fix] - 2026-04-29 — Layer 3 fix: code-review findings F1+F2+F3
 
 ### Fixed

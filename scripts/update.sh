@@ -187,21 +187,35 @@ if [ -f "$PROJECT_ROOT/.mcp.json" ]; then
 fi
 
 # .claws-bin/mcp_server.js exists and starts
+# M-10: up to 3 attempts with exponential timeouts (8s, 12s, 16s); only YELLOW after all exhausted.
 if [ -f "$PROJECT_ROOT/.claws-bin/mcp_server.js" ]; then
-  if node --no-deprecation -e "
-    const { spawn } = require('child_process');
-    const p = spawn('node', ['$PROJECT_ROOT/.claws-bin/mcp_server.js'], { stdio: ['pipe','pipe','ignore'] });
-    let out='';
-    p.stdout.on('data', d => out += d);
-    p.stdin.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'health',version:'1'}}}) + '\n');
-    setTimeout(() => { p.kill(); process.exit(out.includes('claws') ? 0 : 1); }, 2000);
-  " 2>/dev/null; then
+  _claws_mcp_ok=0
+  for _claws_mcp_ms in 8000 12000 16000; do
+    [ "$_claws_mcp_ok" = "1" ] && break
+    if CLAWS_MCP_PATH="$PROJECT_ROOT/.claws-bin/mcp_server.js" node --no-deprecation -e "
+      const { spawn } = require('child_process');
+      const p = spawn('node', [process.env.CLAWS_MCP_PATH], { stdio: ['pipe','pipe','ignore'] });
+      let out='';
+      p.stdout.on('data', d => { out += d; });
+      p.stdin.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'health',version:'1'}}}) + '\n');
+      setTimeout(() => {
+        p.kill('SIGTERM');
+        setTimeout(() => { try { p.kill('SIGKILL'); } catch {} }, 500);
+        setTimeout(() => { process.exit(out.includes('claws') ? 0 : 1); }, 600);
+      }, $_claws_mcp_ms);
+    " 2>/dev/null; then
+      _claws_mcp_ok=1
+    fi
+  done
+  unset _claws_mcp_ms
+  if [ "$_claws_mcp_ok" = "1" ]; then
     note "MCP server handshake OK"
   else
     _claws_health_ok=0
     _claws_health_warns+=("MCP server failed to respond to initialize — see install log: $CLAWS_LOG")
     _claws_health_warns+=("  fix: bash $INSTALL_DIR/scripts/fix.sh")
   fi
+  unset _claws_mcp_ok
 fi
 
 # ─── Done ──────────────────────────────────────────────────────────────────
