@@ -194,6 +194,22 @@ export const SystemMalformedReceivedV1 = z.object({
 });
 export type SystemMalformedReceived = z.infer<typeof SystemMalformedReceivedV1>;
 
+// ── Vehicle state schemas (server-emitted, not published by clients) ──────
+
+export const VEHICLE_STATES = [
+  'PROVISIONING', 'BOOTING', 'READY', 'BUSY', 'IDLE', 'CLOSING', 'CLOSED',
+] as const;
+export const VehicleStateEnum = z.enum(VEHICLE_STATES);
+export type VehicleStateName = z.infer<typeof VehicleStateEnum>;
+
+export const VehicleStateV1 = z.object({
+  terminalId: z.string().min(1),
+  from:       VehicleStateEnum.nullable(),
+  to:         VehicleStateEnum,
+  ts:         z.string().datetime(),
+});
+export type VehicleState = z.infer<typeof VehicleStateV1>;
+
 // ── Schema name → Zod schema map (for server validation and SDK use) ───────
 
 export const SCHEMA_BY_NAME: Record<string, z.ZodTypeAny> = {
@@ -216,4 +232,5 @@ export const SCHEMA_BY_NAME: Record<string, z.ZodTypeAny> = {
   'system-gate-fired-v1':          SystemGateFiredV1,
   'system-budget-warning-v1':      SystemBudgetWarningV1,
   'system-malformed-received-v1':  SystemMalformedReceivedV1,
+  'vehicle-state-v1':              VehicleStateV1,
 };

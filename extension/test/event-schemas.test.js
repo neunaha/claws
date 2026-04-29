@@ -268,7 +268,7 @@ check('SystemPeerLeftV1 — reason=vanished → fails', () => {
 
 // ─── SCHEMA_BY_NAME ──────────────────────────────────────────────────────────
 
-check('SCHEMA_BY_NAME — all 19 schema names are present', () => {
+check('SCHEMA_BY_NAME — all 20 schema names are present', () => {
   const expected = [
     'worker-boot-v1', 'worker-phase-v1', 'worker-event-v1',
     'worker-heartbeat-v1', 'worker-complete-v1',
@@ -277,11 +277,12 @@ check('SCHEMA_BY_NAME — all 19 schema names are present', () => {
     'cmd-spawn-v1', 'cmd-inject-text-v1',
     'system-peer-joined-v1', 'system-peer-left-v1', 'system-peer-stale-v1',
     'system-gate-fired-v1', 'system-budget-warning-v1', 'system-malformed-received-v1',
+    'vehicle-state-v1',
   ];
   for (const name of expected) {
     assert.ok(s.SCHEMA_BY_NAME[name] !== undefined, `Missing schema: ${name}`);
   }
-  assert.strictEqual(Object.keys(s.SCHEMA_BY_NAME).length, 19);
+  assert.strictEqual(Object.keys(s.SCHEMA_BY_NAME).length, 20);
 });
 
 // ─── PhaseEnum ───────────────────────────────────────────────────────────────
