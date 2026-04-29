@@ -47,6 +47,12 @@ const DESC = {
     'Read the current server-side lifecycle state without changing it. Returns null when no PLAN has been logged yet. Use this to check what phase you are in before sending lifecycle commands.',
   claws_lifecycle_reflect:
     'Terminal lifecycle transition: advance to REFLECT and persist your retrospective text. Call this after CLEANUP when all workers are closed and you have assessed the session. The REFLECT phase is terminal — no further transitions are allowed.',
+  claws_wave_create:
+    "Register a new wave on the server, initialising heartbeat tracking for each expected sub-worker role. Call this as LEAD immediately after hello. waveId should be a stable human-readable slug (e.g. 'embedder-v1'). The server fires a 25s violation timer per sub-worker that resets on each heartbeat.",
+  claws_wave_status:
+    'Fetch a live snapshot of the wave: sub-worker heartbeat timestamps, completion flags, and wave-level complete/summary fields. Use this to monitor progress or diagnose silent sub-workers.',
+  claws_wave_complete:
+    'Mark the wave as complete on the server. Clears all sub-worker violation timers. Call this after every sub-worker has published its complete event and the LEAD has committed, built, and run the full test suite. Only the peer that created the wave (LEAD) may call this.',
 };
 
 export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
@@ -154,6 +160,23 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
 
     tool('claws_lifecycle_reflect', z.object({
       reflect: z.string().describe('Retrospective text: what succeeded, what failed, what to improve next time.'),
+    })),
+
+    tool('claws_wave_create', z.object({
+      waveId:   z.string().describe("Stable human-readable wave identifier (e.g. 'embedder-v1', 'bus-hardening-r2')."),
+      layers:   z.array(z.string()).describe("Human-readable layer or goal labels this wave covers (e.g. ['L1-schemas', 'L2-handlers']).").optional(),
+      manifest: z.array(z.enum(['lead', 'tester', 'reviewer', 'auditor', 'bench', 'doc'])).describe('Expected sub-worker roles. One violation timer is started per role.'),
+    })),
+
+    tool('claws_wave_status', z.object({
+      waveId: z.string().describe('Wave identifier to inspect.'),
+    })),
+
+    tool('claws_wave_complete', z.object({
+      waveId:          z.string().describe('Wave identifier to complete.'),
+      summary:         z.string().describe('One-paragraph retrospective: what shipped, test result, any regressions.'),
+      commits:         z.array(z.string()).describe('Git commit SHAs produced during this wave.').optional(),
+      regressionClean: z.boolean().describe('True if the full test suite passed with no regressions after the wave\'s changes.').optional(),
     })),
   ];
 

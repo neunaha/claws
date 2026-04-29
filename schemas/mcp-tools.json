@@ -409,5 +409,95 @@
       ],
       "additionalProperties": false
     }
+  },
+  {
+    "name": "claws_wave_create",
+    "description": "Register a new wave on the server, initialising heartbeat tracking for each expected sub-worker role. Call this as LEAD immediately after hello. waveId should be a stable human-readable slug (e.g. 'embedder-v1'). The server fires a 25s violation timer per sub-worker that resets on each heartbeat.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "description": "Stable human-readable wave identifier (e.g. 'embedder-v1', 'bus-hardening-r2')."
+        },
+        "layers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Human-readable layer or goal labels this wave covers (e.g. ['L1-schemas', 'L2-handlers'])."
+        },
+        "manifest": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "lead",
+              "tester",
+              "reviewer",
+              "auditor",
+              "bench",
+              "doc"
+            ]
+          },
+          "description": "Expected sub-worker roles. One violation timer is started per role."
+        }
+      },
+      "required": [
+        "waveId",
+        "manifest"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_wave_status",
+    "description": "Fetch a live snapshot of the wave: sub-worker heartbeat timestamps, completion flags, and wave-level complete/summary fields. Use this to monitor progress or diagnose silent sub-workers.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "description": "Wave identifier to inspect."
+        }
+      },
+      "required": [
+        "waveId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_wave_complete",
+    "description": "Mark the wave as complete on the server. Clears all sub-worker violation timers. Call this after every sub-worker has published its complete event and the LEAD has committed, built, and run the full test suite. Only the peer that created the wave (LEAD) may call this.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "description": "Wave identifier to complete."
+        },
+        "summary": {
+          "type": "string",
+          "description": "One-paragraph retrospective: what shipped, test result, any regressions."
+        },
+        "commits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Git commit SHAs produced during this wave."
+        },
+        "regressionClean": {
+          "type": "boolean",
+          "description": "True if the full test suite passed with no regressions after the wave's changes."
+        }
+      },
+      "required": [
+        "waveId",
+        "summary"
+      ],
+      "additionalProperties": false
+    }
   }
 ]

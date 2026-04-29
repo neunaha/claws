@@ -28,7 +28,7 @@ The embedder wave introduces the Wave Army Protocol — a structured multi-agent
 - `extension/src/wave-registry.ts` — new `WaveRegistry` class tracking active waves: per-role heartbeat timers fire `wave.<N>.violation` after 25s silence; `createWave`, `recordHeartbeat`, `markSubWorkerComplete`, `completeWave`, `handlePeerDisconnect`, `dispose`.
 - `extension/src/server.ts` — `WaveRegistry` wired into `ClawsServer`; handlers for `wave.create`, `wave.status`, `wave.complete`; `hello` records sub-worker heartbeat when `waveId+subWorkerRole` present; `handleDisconnect` notifies registry.
 
-**Pending (in-progress):** MCP tools (`claws_wave_create/status/complete/dispatch_subworker`), CLAUDE.md template embedding, session-start hook update, skill files, slash commands.
+**MCP tools:** `claws_wave_create`, `claws_wave_status`, `claws_wave_complete` added to `gen-mcp-tools.mjs`; `schemas/mcp-tools.json` regenerated (18 → 21 tools); `mcp-tools-codegen.test.js` aligned to expect 21 tools.
 
 ### Added — W2/L15 Event Log Replay + L9 Observation
 
