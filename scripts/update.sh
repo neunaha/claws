@@ -33,6 +33,12 @@ fi
 header() { printf "\n${C_BOLD}═════ %s ═════${C_RESET}\n" "$*"; }
 note()   { printf "  ${C_DIM}%s${C_RESET}\n" "$*"; }
 
+# M-19: Anchor CLAWS_LOG BEFORE install.sh runs so Step 6's warning
+# "see install log: $CLAWS_LOG" references the real log written by install.sh.
+# install.sh uses ${CLAWS_LOG:-...} so it inherits this value when exported.
+CLAWS_LOG="${CLAWS_LOG:-/tmp/claws-install-$(date +%Y%m%d-%H%M%S)-$$.log}"
+export CLAWS_LOG
+
 # ─── Step 0: Ensure Claws source + pull latest ─────────────────────────────
 # Runs whether update.sh was invoked via curl URL or from the local clone —
 # this is the one action that can't be delegated to install.sh because
