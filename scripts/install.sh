@@ -1164,17 +1164,28 @@ inject_hook() {
     had_stale=1
   fi
 
+  # M-01: create a timestamped backup of the dotfile BEFORE any modification.
+  # Allows the user to restore if something goes wrong. Only created when the
+  # file already has content — no backup for a freshly touch'd empty file.
+  local tmp="$rcfile.claws-tmp.$$"
+  if [ -s "$rcfile" ]; then
+    local _bak_ts
+    _bak_ts=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%Y%m%dT%H%M%SZ)
+    cp "$rcfile" "${rcfile}.claws-bak.${_bak_ts}" 2>/dev/null || true
+  fi
+
   # Portable cleanup via awk (works on BSD awk and GNU awk identically).
   # Replaces the GNU-only `sed '/pat/,+1d'` form, which silently failed on
   # macOS ≤ Monterey and left orphaned `source ".../shell-hook.sh"` lines.
   #
-  # 1. Strip every `# CLAWS terminal hook` line + the immediately following line.
-  # 2. Strip any standalone orphaned `source .../shell-hook.sh` line.
-  local tmp="$rcfile.claws-tmp.$$"
+  # M-01: strips ONLY lines inside a Claws-marked block:
+  #   1. Strip every `# CLAWS terminal hook` marker line.
+  #   2. Strip the immediately following line (the source line in that block).
+  # The previous generic `/source .../shell-hook\.sh/` regex is removed because
+  # it matched non-Claws tools (oh-my-zsh, asdf, custom dotfiles) causing data loss.
   if awk '
     /# CLAWS terminal hook/ { skip = 1; next }
     skip { skip = 0; next }
-    /^[[:space:]]*source[[:space:]].*\/shell-hook\.sh/ { next }
     { print }
   ' "$rcfile" > "$tmp" 2>/dev/null && [ -s "$tmp" -o ! -s "$rcfile" ]; then
     mv "$tmp" "$rcfile" 2>/dev/null || rm -f "$tmp"
