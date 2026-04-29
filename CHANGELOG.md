@@ -57,6 +57,12 @@ Pre-fix symptoms: `claws_list` always showed `[unwrapped]` and `pid=-1` for wrap
 - `extension/package.json` — added `claws.heartbeatIntervalMs` configuration property (type: number, default: 60000, minimum: 0)
 - `extension/test/heartbeat.test.js` — new regression test: boots extension with `heartbeatIntervalMs=200ms`, waits 700ms, asserts ≥2 `system.heartbeat` entries in the segment file and validates payload shape (uptimeMs, peers, terminals, from, ts_server, sequence)
 
+### L1.5 — [CLAWS_PUB] line scanner for SDK-less worker publishing (landed)
+- `mcp_server.js` — new `_scanAndPublishCLAWSPUB(newText, sockPath)` async helper: scans lines for `[CLAWS_PUB] topic=<topic> key=val ...` markers, parses key=value pairs (quoted strings, bare tokens, numeric, boolean coercion), and calls `_pconnEnsureRegistered` + `_pconnWrite` to publish on the worker's behalf; parse errors and publish failures are logged and never abort the worker run
+- `mcp_server.js` — poll loop (step 6) in `runBlockingWorker` now tracks `pubScanOffset` across iterations; each tick slices `text.slice(scanStart)` (new bytes only) into `_scanAndPublishCLAWSPUB` and advances `pubScanOffset = text.length` so each pty line is scanned at most once
+- Workers using Templates 1–7 can now emit bus events by printing a single line: `[CLAWS_PUB] topic=worker.<id>.phase kind=DEPLOY step=3` — no socket, SDK, peerId, or env-var injection required
+- `extension/test/claws-pub-scanner.test.js` — 12 regression checks: source-level (function defined, MARKER_RE present, called in poll loop, pubScanOffset present, _pconnEnsureRegistered called) + behavioral (3 publishes from 3 markers, duplicate-scan no-re-publish, new-bytes-after-offset published, malformed lines skipped without throw, quoted values, boolean/numeric coercion, non-prefixed lines ignored)
+
 ### L4 — Bus correctness (landed)
 
 #### L4.1 — `_pconnWrite` id field collision fix
