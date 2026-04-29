@@ -5,7 +5,7 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 0.7.5 — Bus hardening cycle (in progress)
+## [0.7.5] - 2026-04-29 — Bus hardening release
 
 This release hardens the orchestrator↔worker communication bus surfaced by W1–W4 audits. The `.claws/events/default/*.jsonl` was empty on user systems because (a) the MCP server was dropping every push frame from the persistent socket, and (b) default workers never publish.
 

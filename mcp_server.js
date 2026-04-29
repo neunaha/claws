@@ -947,7 +947,7 @@ async function main() {
       respond(id, {
         protocolVersion: '2024-11-05',
         // Version must match extension/package.json — bump both together on release.
-        serverInfo: { name: 'claws', version: '0.7.4' },
+        serverInfo: { name: 'claws', version: '0.7.5' },
         capabilities: { tools: {} },
       });
     } else if (method === 'notifications/initialized') {
