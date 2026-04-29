@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `extension/src/topic-registry.ts` — `rpc.*.request` and `rpc.response.**` patterns registered; registry grows 32 → 34.
 - `extension/src/protocol.ts` — `RpcCallRequest`, `SchemaListRequest`, `SchemaGetRequest` interfaces added to `ClawsRequest` union.
 - `mcp_server.js` — `claws_schema_list`, `claws_schema_get`, `claws_rpc_call` handlers.
-- `scripts/codegen/gen-mcp-tools.mjs` — descriptions and input schemas for the 3 new tools; tool count grows 23 → 26.
-- `schemas/json/rpc-request-v1.json`, `schemas/json/rpc-response-v1.json` — generated JSON Schema files.
+- `scripts/codegen/gen-mcp-tools.mjs` — descriptions and input schemas for the 3 new tools (`claws_schema_list`, `claws_schema_get`, `claws_rpc_call`); tool count grows 23 → 26; `schemas/mcp-tools.json` is fully generated — no hand-edits needed.
+- `schemas/json/rpc-request-v1.json`, `schemas/json/rpc-response-v1.json`, `schemas/json/pipeline-step-v1.json` — generated JSON Schema files (pipeline-step-v1 was missing from prior run).
 - `scripts/gen-client-types.mjs` (new) — standalone codegen script: bundles `event-schemas.ts`, walks `SCHEMA_BY_NAME`, emits `schemas/client-types.d.ts` with TypeScript interface declarations for all 35 schemas.
 - `schemas/client-types.d.ts` (new) — generated TypeScript client type declarations.
 - `extension/test/claws-v2-typed-rpc.test.js` (new) — 40-check integration suite: round-trip RPC (<500ms), timeout (300ms), unknown-peer error, `schema.list` (checks rpc/worker/cmd names), `schema.get` (positive + negative), validation (missing method/targetPeerId).

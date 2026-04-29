@@ -57,6 +57,12 @@ const DESC = {
     "Deliver a typed command envelope to a specific worker peer over the pub/sub bus. The server validates the payload against the declared schema, allocates a monotonic sequence number, and pushes the command to the worker's auto-subscription. Use idempotencyKey (a UUID) to make retries safe — duplicate keys return {ok:true, duplicate:true} without re-delivering.",
   claws_cmd_ack:
     'Acknowledge receipt and execution of a delivered command (worker-only). The server fans out a cmd.<workerPeerId>.ack event to all orchestrator subscribers. status must be one of: executed, rejected, duplicate.',
+  claws_schema_list:
+    'Return a sorted list of all Zod schema names registered in the Claws schema registry. Use this to discover which schemas are available before calling claws_schema_get.',
+  claws_schema_get:
+    "Return a simplified JSON representation of one registered Zod schema by name (e.g. 'worker-boot-v1', 'rpc-request-v1'). Use claws_schema_list to discover valid names.",
+  claws_rpc_call:
+    'Issue a typed RPC call to a target peer. The server routes the call to rpc.<targetPeerId>.request and waits for the worker to publish a response to rpc.response.<callerPeerId>.<requestId>. Returns the result or a timeout error.',
 };
 
 export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
@@ -194,6 +200,19 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
       seq:            z.number().int().nonnegative().describe('Sequence number from the deliver-cmd response.'),
       status:         z.enum(['executed', 'rejected', 'duplicate']).describe('Execution outcome reported by the worker.'),
       correlation_id: z.string().uuid().describe('Optional UUID carried through for orchestrator correlation.').optional(),
+    })),
+
+    tool('claws_schema_list', z.object({})),
+
+    tool('claws_schema_get', z.object({
+      name: z.string().describe("Schema name as returned by claws_schema_list (e.g. 'worker-boot-v1')."),
+    })),
+
+    tool('claws_rpc_call', z.object({
+      targetPeerId: z.string().describe('peerId of the peer to call.'),
+      method:       z.string().describe("RPC method name (e.g. 'introspect', 'status')."),
+      params:       z.record(z.unknown()).describe('Optional method parameters.').optional(),
+      timeoutMs:    z.number().int().min(100).max(30000).describe('Milliseconds before the call times out. Default: 5000.').optional(),
     })),
   ];
 

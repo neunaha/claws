@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pipeline-step-v1",
+  "$ref": "#/definitions/pipeline-step-v1",
+  "definitions": {
+    "pipeline-step-v1": {
+      "type": "object",
+      "properties": {
+        "pipelineId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stepId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "source",
+            "sink"
+          ]
+        },
+        "terminalId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "degraded",
+            "closed"
+          ]
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "pipelineId",
+        "stepId",
+        "role",
+        "terminalId",
+        "state",
+        "ts"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
