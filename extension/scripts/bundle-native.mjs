@@ -21,7 +21,7 @@
 // bundle for their local dev loop.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, statSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync, renameSync, chmodSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -245,15 +245,21 @@ function verifyBinary() {
 }
 
 // ─── Step 4: copy runtime-only slice of node-pty ─────────────────────────────
-function resetNativeDest() {
-  if (existsSync(NATIVE_DEST)) {
+// M-40: atomic copy via staging dir — prevents kill-window leaving an empty
+// NATIVE_DEST that silently degrades the extension to pipe-mode on next load.
+// Pattern: copy into NATIVE_DEST.claws-new, then rename aside + rename into place.
+function setupStagingDir() {
+  const staging = NATIVE_DEST + '.claws-new';
+  // Clean any stale staging dir from a previous interrupted run.
+  if (existsSync(staging)) {
     try {
-      rmSync(NATIVE_DEST, { recursive: true, force: true });
+      rmSync(staging, { recursive: true, force: true });
     } catch (err) {
-      fail(`failed to remove stale ${NATIVE_DEST}`, err);
+      fail(`failed to remove stale staging dir ${staging}`, err);
     }
   }
-  mkdirSync(NATIVE_DEST, { recursive: true });
+  mkdirSync(staging, { recursive: true });
+  return staging;
 }
 
 function copyFileSafe(src, dest) {
@@ -282,7 +288,7 @@ function copyLibTree(srcLib, destLib, totals) {
 }
 
 function copyRuntimeSlice() {
-  resetNativeDest();
+  const staging = setupStagingDir();
 
   const totals = { files: 0, bytes: 0 };
 
@@ -290,23 +296,23 @@ function copyRuntimeSlice() {
   if (!existsSync(join(NODE_PTY_SRC, 'package.json'))) {
     fail(`node-pty package.json not found at ${NODE_PTY_SRC}`);
   }
-  copyFileSafe(join(NODE_PTY_SRC, 'package.json'), join(NATIVE_DEST, 'package.json'));
+  copyFileSafe(join(NODE_PTY_SRC, 'package.json'), join(staging, 'package.json'));
   totals.files += 1;
-  totals.bytes += statSync(join(NATIVE_DEST, 'package.json')).size;
+  totals.bytes += statSync(join(staging, 'package.json')).size;
 
   // 2. lib/** (runtime JS, minus tests and *.d.ts)
-  copyLibTree(join(NODE_PTY_SRC, 'lib'), join(NATIVE_DEST, 'lib'), totals);
+  copyLibTree(join(NODE_PTY_SRC, 'lib'), join(staging, 'lib'), totals);
 
   // 3. build/Release/pty.node (native binary) and spawn-helper (Unix helper)
   const ptyNode = join(NODE_PTY_SRC, 'build', 'Release', 'pty.node');
   if (!existsSync(ptyNode)) fail(`pty.node missing at ${ptyNode}`);
-  copyFileSafe(ptyNode, join(NATIVE_DEST, 'build', 'Release', 'pty.node'));
+  copyFileSafe(ptyNode, join(staging, 'build', 'Release', 'pty.node'));
   totals.files += 1;
-  totals.bytes += statSync(join(NATIVE_DEST, 'build', 'Release', 'pty.node')).size;
+  totals.bytes += statSync(join(staging, 'build', 'Release', 'pty.node')).size;
 
   const spawnHelper = join(NODE_PTY_SRC, 'build', 'Release', 'spawn-helper');
   if (existsSync(spawnHelper)) {
-    const dest = join(NATIVE_DEST, 'build', 'Release', 'spawn-helper');
+    const dest = join(staging, 'build', 'Release', 'spawn-helper');
     copyFileSafe(spawnHelper, dest);
     try { chmodSync(dest, 0o755); } catch { /* best-effort */ }
     totals.files += 1;
@@ -317,10 +323,22 @@ function copyRuntimeSlice() {
   for (const optional of ['LICENSE', 'README.md']) {
     const src = join(NODE_PTY_SRC, optional);
     if (existsSync(src)) {
-      copyFileSafe(src, join(NATIVE_DEST, optional));
+      copyFileSafe(src, join(staging, optional));
       totals.files += 1;
-      totals.bytes += statSync(join(NATIVE_DEST, optional)).size;
+      totals.bytes += statSync(join(staging, optional)).size;
     }
+  }
+
+  // M-40: atomic swap — staging → NATIVE_DEST via rename(2).
+  // Kill before this point leaves NATIVE_DEST intact (old version).
+  // Kill after renameSync(staging, NATIVE_DEST) leaves NATIVE_DEST correct (new version).
+  const oldDest = NATIVE_DEST + '.claws-old';
+  if (existsSync(NATIVE_DEST)) {
+    renameSync(NATIVE_DEST, oldDest);
+  }
+  renameSync(staging, NATIVE_DEST);
+  if (existsSync(oldDest)) {
+    try { rmSync(oldDest, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
 
   return totals;
