@@ -30,6 +30,20 @@ Step 7  claws_send id=<N> text="
 
 PLAN → SPAWN → DEPLOY → OBSERVE → RECOVER → HARVEST → CLEANUP → REFLECT
 
+### Wave Discipline Contract (mandatory for Wave Army sub-workers)
+
+When you receive a Wave Army mission you are a sub-worker. You MUST:
+
+1. **Register** — call `claws_hello` with `waveId` and `subWorkerRole` within 60 s of boot.
+2. **Publish boot event** — publish `wave.<waveId>.<role>.boot` (matching WaveLeadBootV1 or role-specific schema) immediately after hello.
+3. **Heartbeat every 20 s** — publish `worker.*.heartbeat` continuously while active. The server fires a `wave.<waveId>.violation` event after 25 s of silence.
+4. **Phase events** — publish `worker.*.phase` on every lifecycle transition.
+5. **Error events** — publish `worker.*.event` with `kind=ERROR` for any blocking failure; never swallow errors silently.
+6. **No --no-verify** — every commit MUST pass pre-commit hooks. `--no-verify` is forbidden.
+7. **Full suite before every commit** — run `npm test` (or equivalent); assert zero failures.
+8. **Type check per .ts file** — run `npx tsc --noEmit` after editing any TypeScript; fix all errors before proceeding.
+9. **Complete event** — publish `wave.<waveId>.<role>.complete` as final act, then close terminal.
+
 ### If `.claws/claws.sock` does not exist
 
 No Claws server running. Use standard tools. If the user explicitly installs Claws for this project, re-read `.claws-bin/README.md` for project-specific tool list.

@@ -28,7 +28,13 @@ The embedder wave introduces the Wave Army Protocol — a structured multi-agent
 - `extension/src/wave-registry.ts` — new `WaveRegistry` class tracking active waves: per-role heartbeat timers fire `wave.<N>.violation` after 25s silence; `createWave`, `recordHeartbeat`, `markSubWorkerComplete`, `completeWave`, `handlePeerDisconnect`, `dispose`.
 - `extension/src/server.ts` — `WaveRegistry` wired into `ClawsServer`; handlers for `wave.create`, `wave.status`, `wave.complete`; `hello` records sub-worker heartbeat when `waveId+subWorkerRole` present; `handleDisconnect` notifies registry.
 
-**MCP tools:** `claws_wave_create`, `claws_wave_status`, `claws_wave_complete` added to `gen-mcp-tools.mjs`; `schemas/mcp-tools.json` regenerated (18 → 21 tools); `mcp-tools-codegen.test.js` aligned to expect 21 tools.
+**MCP tools (shipped):** `claws_wave_create`, `claws_wave_status`, `claws_wave_complete`, `claws_dispatch_subworker` added to `mcp_server.js` handler dispatch; `schemas/mcp-tools.json` updated with all 4 tool schemas (total grows by 4).
+
+**Discipline contract embedded (shipped):** `templates/CLAUDE.project.md` and `templates/CLAUDE.global.md` gain "Wave Discipline Contract (mandatory)" sections listing all 8 sub-worker rules (heartbeat, boot event, phase events, error events, no --no-verify, full suite before commit, type check per .ts file, complete event). `scripts/hooks/session-start-claws.js` extended to include wave discipline summary block when Claws socket is detected.
+
+**Skills (shipped):** `.claude/skills/claws-wave-lead/SKILL.md` and `.claude/skills/claws-wave-subworker/SKILL.md` — full role contracts, boot sequences, schema references.
+
+**Commands (shipped):** `.claude/commands/claws-wave-lead.md` (LEAD activation flow) and `.claude/commands/claws-army.md` (full army deployment with monitoring and completion criteria).
 
 ### Added — W2/L15 Event Log Replay + L9 Observation
 

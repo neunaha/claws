@@ -57,6 +57,19 @@ try {
         '',
         'Lifecycle: PLAN → SPAWN → DEPLOY → OBSERVE → RECOVER → HARVEST → CLEANUP → REFLECT',
         'Slash commands: /claws-boot /claws-go /claws-fleet /claws-cleanup /claws-fix /claws-help',
+        '',
+        '## Wave Army Discipline Contract (if you received a Wave Army mission)',
+        '',
+        'If your mission includes a waveId and subWorkerRole you are a Wave Army sub-worker. You MUST:',
+        '  • Call claws_hello with waveId + subWorkerRole within 60 s of boot.',
+        '  • Publish wave.<waveId>.<role>.boot immediately after hello.',
+        '  • Publish worker.*.heartbeat every 20 s — silence >25 s triggers a server violation event.',
+        '  • Publish worker.*.phase on every lifecycle transition.',
+        '  • Publish worker.*.event kind=ERROR for any blocking failure; never swallow errors silently.',
+        '  • NEVER commit with --no-verify. Every commit must pass pre-commit hooks.',
+        '  • Run npm test before every commit; assert zero failures.',
+        '  • Run npx tsc --noEmit after every .ts edit; fix all errors before proceeding.',
+        '  • Publish wave.<waveId>.<role>.complete as your last act, then close your terminal.',
       ].join('\n');
 
       try { process.stdout.write(JSON.stringify({ type: 'system', content: reminder }) + '\n'); } catch {}

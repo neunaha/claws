@@ -49,4 +49,22 @@ Step 7  claws_send id=<N> text="
 7. **CLEANUP** — close every terminal you created
 8. **REFLECT** — summarise outcomes, commit if relevant
 
+### Wave Discipline Contract (mandatory for Wave Army sub-workers)
+
+Every sub-worker spawned as part of a Wave Army MUST:
+
+1. **Boot event** — publish `wave.<waveId>.<role>.boot` within 60 s of receiving mission.
+2. **Heartbeat** — publish `worker.*.heartbeat` every 20 s while active. Silence > 25 s triggers a server-side violation event.
+3. **Phase events** — publish `worker.*.phase` on every phase transition (PLAN→SPAWN→DEPLOY→…→REFLECT).
+4. **Error events** — publish `worker.*.event` with `kind=ERROR` for any blocking failure; never silently swallow errors.
+5. **No --no-verify** — every commit must pass pre-commit hooks. Never bypass with `--no-verify` or `--no-gpg-sign`.
+6. **Complete event** — publish `wave.<waveId>.<role>.complete` as the final act, before closing the terminal.
+7. **Full suite before commit** — run `npm test` (or equivalent) and assert zero failures before every `git commit`.
+8. **Type check per file** — run `npx tsc --noEmit` after editing any `.ts` file; fix all errors before proceeding.
+
+LEAD sub-worker additionally:
+- Calls `claws_wave_create` on boot, `claws_wave_complete` after all sub-workers have published complete.
+- Publishes `wave.<waveId>.lead.boot` (WaveLeadBootV1) and `wave.<waveId>.lead.complete` (WaveLeadCompleteV1).
+- Owns the final `git commit`; may not commit until tester confirms green.
+
 <!-- CLAWS:END -->

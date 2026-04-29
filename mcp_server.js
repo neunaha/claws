@@ -927,6 +927,78 @@ async function handleTool(name, args) {
     return { content: [{ type: 'text', text: JSON.stringify({ state: resp.state }, null, 2) }] };
   }
 
+  if (name === 'claws_wave_create') {
+    const resp = await clawsRpc(sock, {
+      cmd: 'wave.create',
+      waveId: args.waveId,
+      layers: args.layers,
+      manifest: args.manifest,
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ waveId: resp.waveId, created: resp.created }, null, 2) }] };
+  }
+
+  if (name === 'claws_wave_status') {
+    const resp = await clawsRpc(sock, { cmd: 'wave.status', waveId: args.waveId });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify(resp.wave, null, 2) }] };
+  }
+
+  if (name === 'claws_wave_complete') {
+    const resp = await clawsRpc(sock, {
+      cmd: 'wave.complete',
+      waveId: args.waveId,
+      summary: args.summary,
+      commits: args.commits,
+      regressionClean: args.regressionClean,
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ waveId: resp.waveId, completedAt: resp.completedAt }, null, 2) }] };
+  }
+
+  if (name === 'claws_dispatch_subworker') {
+    const workerName = `wave-${args.waveId}-${args.role}`;
+    const cr = await clawsRpc(sock, {
+      cmd: 'create', name: workerName, wrapped: true, show: true,
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+    });
+    if (!cr.ok) return toolError(`ERROR: create failed: ${cr.error}`);
+    const termId = cr.id;
+
+    await sleep(400);
+    await clawsRpc(sock, {
+      cmd: 'send', id: termId,
+      text: 'claude --model claude-sonnet-4-6 --dangerously-skip-permissions', newline: true,
+    });
+
+    // Poll for trust prompt (~20 s)
+    let bootOk = false;
+    const bootDeadline = Date.now() + 25_000;
+    while (Date.now() < bootDeadline) {
+      const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+      if (snap.ok && typeof snap.bytes === 'string' && snap.bytes.includes('trust')) {
+        bootOk = true;
+        break;
+      }
+      await sleep(500);
+    }
+    if (!bootOk) log(`claws_dispatch_subworker: trust prompt not seen for ${workerName} — continuing anyway`);
+
+    // Send bypass selection (1) without newline, then mission via bracketed paste
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: '1', newline: false });
+    await sleep(1000);
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: args.mission, newline: true, paste: true });
+    await sleep(300);
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ terminal_id: termId, waveId: args.waveId, role: args.role, name: workerName }, null, 2),
+      }],
+    };
+  }
+
   return toolError(`unknown tool: ${name}`);
 }
 
