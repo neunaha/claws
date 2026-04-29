@@ -971,23 +971,27 @@ async function handleTool(name, args) {
       text: 'claude --model claude-sonnet-4-6 --dangerously-skip-permissions', newline: true,
     });
 
-    // Poll for trust prompt (~20 s)
+    // Poll for trust prompt (~25 s), tracking log offset to avoid re-reading.
     let bootOk = false;
+    let logOffset = 0;
     const bootDeadline = Date.now() + 25_000;
     while (Date.now() < bootDeadline) {
-      const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
-      if (snap.ok && typeof snap.bytes === 'string' && snap.bytes.includes('trust')) {
-        bootOk = true;
-        break;
+      const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, offset: logOffset, limit: 32 * 1024 });
+      if (snap.ok && typeof snap.bytes === 'string') {
+        if (snap.bytes.includes('trust')) { bootOk = true; break; }
+        if (typeof snap.nextOffset === 'number') logOffset = snap.nextOffset;
       }
       await sleep(500);
     }
     if (!bootOk) log(`claws_dispatch_subworker: trust prompt not seen for ${workerName} — continuing anyway`);
 
-    // Send bypass selection (1) without newline, then mission via bracketed paste
+    // Send bypass selection without newline, wait for Claude prompt, then deliver
+    // mission via bracketed paste with newline=false + separate \r submit.
+    // Using separate \r (not relying on newline:true) avoids a double-LF in the
+    // Claude TUI that can dismiss spinners mid-think (reviewer finding F28).
     await clawsRpc(sock, { cmd: 'send', id: termId, text: '1', newline: false });
     await sleep(1000);
-    await clawsRpc(sock, { cmd: 'send', id: termId, text: args.mission, newline: true, paste: true });
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: args.mission, newline: false, paste: true });
     await sleep(300);
     await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
 

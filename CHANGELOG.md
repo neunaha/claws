@@ -32,6 +32,11 @@ The embedder wave introduces the Wave Army Protocol — a structured multi-agent
 
 **Discipline contract embedded (shipped):** `templates/CLAUDE.project.md` and `templates/CLAUDE.global.md` gain "Wave Discipline Contract (mandatory)" sections listing all 8 sub-worker rules (heartbeat, boot event, phase events, error events, no --no-verify, full suite before commit, type check per .ts file, complete event). `scripts/hooks/session-start-claws.js` extended to include wave discipline summary block when Claws socket is detected.
 
+### Fixed — embedder wave reviewer findings (F28/F29)
+
+- `mcp_server.js` `claws_dispatch_subworker` — F28 (MEDIUM): switched mission delivery from `newline:true` to `newline:false` + separate `\r` submit, matching the established `claws_worker` pattern; prevents spurious double-LF in Claude TUI mid-think (reviewer finding F28).
+- `mcp_server.js` `claws_dispatch_subworker` — F29 (LOW): boot-poll loop now tracks `nextOffset` from each `readLog` response and passes it as `offset` on the next call; eliminates repeated full-log reads during the 25 s boot window.
+
 **Skills (shipped):** `.claude/skills/claws-wave-lead/SKILL.md` and `.claude/skills/claws-wave-subworker/SKILL.md` — full role contracts, boot sequences, schema references.
 
 **Commands (shipped):** `.claude/commands/claws-wave-lead.md` (LEAD activation flow) and `.claude/commands/claws-army.md` (full army deployment with monitoring and completion criteria).
