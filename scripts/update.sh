@@ -190,8 +190,10 @@ if [ -f "$INSTALL_DIR/extension/native/.metadata.json" ]; then
 fi
 
 # Project .mcp.json sanity
+# M-47: path passed via env var — handles project roots with apostrophes/backslashes
+# without causing JS syntax errors from string interpolation in -e argument.
 if [ -f "$PROJECT_ROOT/.mcp.json" ]; then
-  if node -e "JSON.parse(require('fs').readFileSync('$PROJECT_ROOT/.mcp.json','utf8'))" 2>/dev/null; then
+  if CLAWS_MCP_CHECK="$PROJECT_ROOT/.mcp.json" node -e "JSON.parse(require('fs').readFileSync(process.env.CLAWS_MCP_CHECK,'utf8'))" 2>/dev/null; then
     note "project .mcp.json is valid JSON"
   else
     _claws_health_ok=0
