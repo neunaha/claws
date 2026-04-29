@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — 0.7.6
 
+### Added — W8/L16+L7 Typed RPC + Schema Registry (Wave 8)
+
+- `extension/src/server.ts` — `rpc.call` command: synchronous blocking RPC — caller's request is held open (like `exec`) until the target peer publishes to `rpc.response.<callerPeerId>.<requestId>` or the timeout fires; `rpcPending` correlation map with `clearTimeout` cleanup on resolution; `schema.list` command returns sorted keys from `SCHEMA_BY_NAME`; `schema.get` command returns a simplified JSON representation via `serializeZodSchema` (recursive Zod `_def` traversal covering object, string, number, boolean, array, record, enum, literal, optional, nullable, unknown).
+- `extension/src/event-schemas.ts` — `RpcRequestV1` (requestId uuid, method, params optional, callerPeerId) and `RpcResponseV1` (requestId, ok, result optional, error optional) Zod schemas; both registered in `SCHEMA_BY_NAME` (32 → 35 with PipelineStepV1).
+- `extension/src/topic-registry.ts` — `rpc.*.request` and `rpc.response.**` patterns registered; registry grows 32 → 34.
+- `extension/src/protocol.ts` — `RpcCallRequest`, `SchemaListRequest`, `SchemaGetRequest` interfaces added to `ClawsRequest` union.
+- `mcp_server.js` — `claws_schema_list`, `claws_schema_get`, `claws_rpc_call` handlers.
+- `scripts/codegen/gen-mcp-tools.mjs` — descriptions and input schemas for the 3 new tools; tool count grows 23 → 26.
+- `schemas/json/rpc-request-v1.json`, `schemas/json/rpc-response-v1.json` — generated JSON Schema files.
+- `scripts/gen-client-types.mjs` (new) — standalone codegen script: bundles `event-schemas.ts`, walks `SCHEMA_BY_NAME`, emits `schemas/client-types.d.ts` with TypeScript interface declarations for all 35 schemas.
+- `schemas/client-types.d.ts` (new) — generated TypeScript client type declarations.
+- `extension/test/claws-v2-typed-rpc.test.js` (new) — 40-check integration suite: round-trip RPC (<500ms), timeout (300ms), unknown-peer error, `schema.list` (checks rpc/worker/cmd names), `schema.get` (positive + negative), validation (missing method/targetPeerId).
+
 ### Added — W9/L11+L17 Pipeline Composition + Workflow DAG Foundation (Wave 9)
 
 - `extension/src/pipeline-registry.ts` (new) — `PipelineRegistry` with `create`, `get`, `list`, `close`, `findBySource`, `clear`; `PipelineRecord` and `PipelineStep` types; `pipe_NNNN` monotonic IDs; `findBySource` returns only active pipelines for O(n) output-wiring dispatch.

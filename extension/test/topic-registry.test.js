@@ -123,8 +123,8 @@ check("schemaForTopic('worker.p7.unknown_suffix') → null", () => {
   assert.strictEqual(reg.schemaForTopic('worker.p7.unknown_suffix'), null);
 });
 
-check('TOPIC_REGISTRY has 35 entries', () => {
-  assert.strictEqual(reg.TOPIC_REGISTRY.length, 35);
+check('TOPIC_REGISTRY has 34 entries', () => {
+  assert.strictEqual(reg.TOPIC_REGISTRY.length, 34);
 });
 
 // ─── matchTopic correctness ───────────────────────────────────────────────────

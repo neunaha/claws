@@ -22,6 +22,7 @@ const EXPECTED_NAMES = [
   'claws_lifecycle_snapshot', 'claws_lifecycle_reflect',
   'claws_wave_create', 'claws_wave_status', 'claws_wave_complete',
   'claws_deliver_cmd', 'claws_cmd_ack',
+  'claws_schema_list', 'claws_schema_get', 'claws_rpc_call',
 ];
 
 const assertions = [];
@@ -48,11 +49,11 @@ check('schemas/mcp-tools.json exists', () => {
 
 const TOOLS = fs.existsSync(TOOLS_JSON) ? require(TOOLS_JSON) : [];
 
-check('tool count is 23', () => {
-  assert.strictEqual(TOOLS.length, 23, `expected 23 tools, got ${TOOLS.length}`);
+check('tool count is 26', () => {
+  assert.strictEqual(TOOLS.length, 26, `expected 26 tools, got ${TOOLS.length}`);
 });
 
-check('all 23 tool names present in correct order', () => {
+check('all 26 tool names present in correct order', () => {
   const names = TOOLS.map((t) => t.name);
   assert.deepStrictEqual(names, EXPECTED_NAMES, `tool names or order mismatch`);
 });
@@ -86,7 +87,7 @@ check('each tool has name, description, and inputSchema', () => {
 
 // ─── mcp_server.js tools/list smoke test ─────────────────────────────────────
 
-check('mcp_server.js tools/list returns 23 tools with correct names', () => {
+check('mcp_server.js tools/list returns 26 tools with correct names', () => {
   const input = [
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}',
     '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}',
@@ -106,7 +107,7 @@ check('mcp_server.js tools/list returns 23 tools with correct names', () => {
   const parsed = JSON.parse(toolsResp);
   const tools  = parsed.result.tools;
   assert.ok(Array.isArray(tools), 'tools is not an array');
-  assert.strictEqual(tools.length, 23, `expected 23 tools from mcp_server, got ${tools.length}`);
+  assert.strictEqual(tools.length, 26, `expected 26 tools from mcp_server, got ${tools.length}`);
   const names = tools.map((t) => t.name);
   assert.deepStrictEqual(names, EXPECTED_NAMES, 'mcp_server tool names or order mismatch');
 });
