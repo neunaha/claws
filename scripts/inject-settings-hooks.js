@@ -27,6 +27,9 @@ const CLAWS_BIN = (process.argv[2] && !process.argv[2].startsWith('--'))
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const REMOVE  = process.argv.includes('--remove');
+// M-18: atomic remove+add in one read-modify-write cycle — eliminates the
+// kill-window where settings.json has zero Claws hooks between --remove and re-add.
+const UPDATE  = process.argv.includes('--update');
 const SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 const SOURCE_TAG    = 'claws';
 
@@ -138,6 +141,39 @@ function makeHookEntry(matcher, scriptName) {
       process.exit(1);
     }
     console.log(`Removed ${removed} Claws hook(s) from ${SETTINGS_PATH}`);
+    return;
+  }
+
+  // M-18: --update does remove-then-add atomically in one mergeIntoFile call.
+  // No kill-window where settings.json has zero Claws hooks.
+  if (UPDATE) {
+    let removed = 0;
+    let changed = 0;
+    const result = await mergeIntoFile(SETTINGS_PATH, (cfg) => {
+      if (!cfg.hooks) cfg.hooks = {};
+      // Step 1: remove all existing Claws hooks
+      for (const [event, arr] of Object.entries(cfg.hooks)) {
+        if (!Array.isArray(arr)) continue;
+        const filtered = arr.filter(e => e._source !== SOURCE_TAG);
+        removed += arr.length - filtered.length;
+        cfg.hooks[event] = filtered;
+      }
+      // Step 2: add current Claws hooks
+      for (const { event, entry } of HOOKS_TO_ADD) {
+        if (!cfg.hooks[event]) cfg.hooks[event] = [];
+        cfg.hooks[event].push(entry);
+        changed++;
+      }
+    });
+    if (!result.ok) {
+      console.error('[claws] Failed to update settings.json:', result.error.message);
+      if (result.error.backupSavedAt) {
+        console.error('  Original backed up to:', result.error.backupSavedAt);
+        console.error('  Aborting — your settings.json is unchanged.');
+      }
+      process.exit(1);
+    }
+    console.log(`Updated Claws hooks in ${SETTINGS_PATH} (removed ${removed}, added ${changed})`);
     return;
   }
 
