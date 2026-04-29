@@ -696,14 +696,23 @@ _install_via_vsix() {
         # different CLI, old <publisher>.<name>-X.Y.Z dirs can linger and
         # confuse VS Code's extension picker. Keep only the just-installed
         # version (matches EXT_VERSION).
+        # M-06: gate cleanup on kept_dir existing first. VS Code extracts VSIX
+        # asynchronously — if kept_dir hasn't appeared yet, the safety guard
+        # ([ "$stale" = "$kept_dir" ]) never matches and the loop would delete
+        # every installed version. Skip and warn instead of destroying all installs.
         local kept_dir="$ext_dir/neunaha.claws-$EXT_VERSION"
-        for stale in "$ext_dir"/neunaha.claws-*; do
-          [ -d "$stale" ] || continue
-          [ "$stale" = "$kept_dir" ] && continue
-          if rm -rf "$stale" 2>/dev/null || sudo rm -rf "$stale" 2>/dev/null; then
-            info "  removed stale install $(basename "$stale")"
-          fi
-        done
+        if [ -d "$kept_dir" ]; then
+          for stale in "$ext_dir"/neunaha.claws-*; do
+            [ -d "$stale" ] || continue
+            [ "$stale" = "$kept_dir" ] && continue
+            if rm -rf "$stale" 2>/dev/null || sudo rm -rf "$stale" 2>/dev/null; then
+              info "  removed stale install $(basename "$stale")"
+            fi
+          done
+        else
+          warn "  kept_dir not yet present ($kept_dir) — skipping stale cleanup to avoid removing all versions"
+          warn "  (VS Code may still be extracting the VSIX — stale dirs will be cleaned on next install)"
+        fi
       else
         ok "Claws extension installed in $label (via VSIX — extensions dir not found for verification)"
       fi
