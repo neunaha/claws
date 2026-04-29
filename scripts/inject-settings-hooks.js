@@ -34,15 +34,17 @@ const HELPERS_URL = pathToFileURL(path.resolve(__dirname, '_helpers', 'json-safe
 
 function hookCmd(scriptName) {
   const scriptPath = path.join(CLAWS_BIN, 'hooks', scriptName);
-  // Wrap in `sh -c` with a file-exists check. Missing-path logs a forensic
-  // entry to /tmp/claws-hook-misfire.log (timestamp + path) then exits 0 so
-  // Claude Code does not surface a "non-blocking status code" error. Path is
-  // passed as $0 to avoid shell-escape pitfalls with spaces or apostrophes.
+  // Explicit if-then-else: the `else` branch is reachable even if `exec` fails
+  // for unusual reasons (e.g. node binary gone). The previous `&& exec || (...)`
+  // form left the else branch unreachable after a successful exec (M-12).
+  // Missing-path logs a forensic entry to /tmp/claws-hook-misfire.log then
+  // exits 0 so Claude Code never surfaces a "non-blocking status code" error.
+  // Path is passed as $0 to avoid shell-escape pitfalls.
   return (
-    `sh -c '[ -f "$0" ] && exec node "$0" || ` +
-    `(printf "[claws-hook-misfire] %s missing path: %s\\n" ` +
-    `"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$0" >> /tmp/claws-hook-misfire.log; exit 0)' ` +
-    `${JSON.stringify(scriptPath)}`
+    `sh -c 'if [ -f "$0" ]; then exec node "$0"; ` +
+    `else printf "[claws-hook-misfire] %s missing path: %s\\n" ` +
+    `"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$0" >> /tmp/claws-hook-misfire.log; ` +
+    `exit 0; fi' ${JSON.stringify(scriptPath)}`
   );
 }
 
