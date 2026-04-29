@@ -76,6 +76,7 @@ export class EventLogWriter {
   protected currentSegmentPath = '';
   protected openedAt = 0;
   protected fd: number | null = null;
+  protected fdDeferred = false;  // true when segment path is set but fs.openSync not yet called
   protected degraded = false;
   protected segments: SegmentEntry[] = [];
   private appendCount = 0;
@@ -127,16 +128,33 @@ export class EventLogWriter {
       const segEntry = m.segments.find(s => s.id === m.current_segment);
       if (!segEntry) return false;
       const segPath = path.join(this.streamDir, segEntry.path);
-      const stat = fs.statSync(segPath); // throws if file missing
       const segId = parseInt(m.current_segment, 10);
       if (isNaN(segId) || segId < 1) return false;
 
       this.segmentId = segId;
       this.currentSegmentPath = segPath;
       this.segments = m.segments.map(s => ({ ...s }));
-      this.currentOffset = stat.size; // trust file, not stale manifest offset
       this.openedAt = Date.now();
-      this.fd = fs.openSync(segPath, 'a');
+
+      // File may not exist yet when the segment was opened lazily and no events
+      // arrived before the process restarted. Treat it as a deferred segment.
+      let statSize = 0;
+      let fileExists = true;
+      try {
+        statSize = fs.statSync(segPath).size;
+      } catch {
+        fileExists = false;
+      }
+
+      if (fileExists) {
+        this.currentOffset = statSize; // trust file, not stale manifest offset
+        this.fd = fs.openSync(segPath, 'a');
+        this.fdDeferred = false;
+      } else {
+        this.currentOffset = 0;
+        this.fd = null;
+        this.fdDeferred = true;
+      }
       return true;
     } catch {
       return false;
@@ -194,20 +212,16 @@ export class EventLogWriter {
   protected openFreshSegment(): void {
     const name = this.makeSegmentName(this.segmentId);
     this.currentSegmentPath = path.join(this.streamDir, name);
-    try {
-      this.fd = fs.openSync(this.currentSegmentPath, 'a');
-      this.currentOffset = fs.fstatSync(this.fd).size;
-    } catch {
-      this.fd = null;
-      this.currentOffset = 0;
-      this.degraded = true;
-      return;
-    }
+    // Defer fs.openSync until the first doAppend call — file only created when
+    // an event actually arrives, so activation produces no empty .jsonl files.
+    this.fd = null;
+    this.fdDeferred = true;
+    this.currentOffset = 0;
     this.openedAt = Date.now();
     this.segments.push({
       id: this.segmentIdStr(),
       path: name,
-      size: this.currentOffset,
+      size: 0,
       first_ts: null,
       last_ts: null,
     });
@@ -228,9 +242,10 @@ export class EventLogWriter {
       try { fs.closeSync(this.fd); } catch { /* ignore */ }
       this.fd = null;
     }
+    this.fdDeferred = false;
     this.segmentId++;
     this.currentOffset = 0;
-    this.openFreshSegment();
+    this.openFreshSegment(); // sets fdDeferred = true for the new segment
     this.writeManifest();
   }
 
@@ -243,7 +258,7 @@ export class EventLogWriter {
   }
 
   append(record: LogRecord): Promise<AppendResult> {
-    if (this.degraded || this.fd === null) {
+    if (this.degraded || (this.fd === null && !this.fdDeferred)) {
       return Promise.resolve({ cursor: '', sequence: -1 });
     }
     const result = this.appendQueue.then(() => this.doAppend(record));
@@ -252,6 +267,18 @@ export class EventLogWriter {
   }
 
   protected doAppend(record: LogRecord): AppendResult {
+    // Lazy open: materialise the segment file on first write.
+    if (this.fd === null && !this.degraded && this.fdDeferred) {
+      try {
+        this.fd = fs.openSync(this.currentSegmentPath, 'a');
+        this.currentOffset = fs.fstatSync(this.fd).size;
+        this.fdDeferred = false;
+      } catch {
+        this.degraded = true;
+        return { cursor: '', sequence: -1 };
+      }
+    }
+
     if (this.fd === null) return { cursor: '', sequence: -1 };
 
     // Rotate BEFORE writing so the record lands in the new segment.
