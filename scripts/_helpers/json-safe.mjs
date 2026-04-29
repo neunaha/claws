@@ -159,10 +159,8 @@ export async function mergeIntoFile(filePath, mutator, opts = {}) {
 
   // Read — absent file is treated as empty object, not an error.
   let raw = '{}';
-  let fileExisted = false;
   try {
     raw = await fs.promises.readFile(filePath, 'utf8');
-    fileExisted = true;
   } catch (e) {
     if (e.code !== 'ENOENT') {
       return { ok: false, error: { code: 'READ_ERROR', message: e.message } };
@@ -215,6 +213,4 @@ export async function mergeIntoFile(filePath, mutator, opts = {}) {
   } catch (e) {
     return { ok: false, error: { code: 'WRITE_ERROR', message: e.message } };
   }
-
-  void fileExisted; // referenced above via raw = '{}' branch
 }

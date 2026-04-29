@@ -110,6 +110,9 @@ export async function copyDirAtomic(srcDir, destDir) {
  * @param {string} filePath
  * @param {string} [suffix]  optional extra suffix appended after the timestamp
  * @returns {Promise<string>}
+ * @throws {Error} If filePath does not exist (ENOENT) or is not readable.
+ *   Layer 2 callers (M-01 dotfile backup) must guard against missing files with
+ *   a prior fs.access() check or try/catch — backupFile does not silently skip.
  */
 export async function backupFile(filePath, suffix) {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
