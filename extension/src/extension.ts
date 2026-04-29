@@ -726,7 +726,9 @@ async function runRebuildPty(extensionPath: string): Promise<void> {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { execFileSync } = require('child_process') as typeof import('child_process');
-        const v = execFileSync('plutil', ['-extract', 'CFBundleVersion', 'raw', p], { encoding: 'utf8' }).trim();
+        // M-42: 3s timeout prevents sync call from blocking extension host on
+        // network-mounted /Applications (enterprise NFS/SMB with hung filesystem).
+        const v = execFileSync('plutil', ['-extract', 'CFBundleVersion', 'raw', p], { encoding: 'utf8', timeout: 3000 }).trim();
         if (v) { electronVersion = v; logger(`detected Electron ${v} from ${p}`); break; }
       } catch { /* try next */ }
     }
