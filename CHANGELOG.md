@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **M-10** `scripts/update.sh` Step 6 health check: bumped timeout from 2000ms to 8s; added 3-attempt retry loop with exponential timeout series (8s, 12s, 16s) so loaded machines don't see false-positive YELLOW on slow startup. YELLOW only declared after all three attempts fail.
-- **M-11** `scripts/update.sh` Step 6 health check: SIGKILL escalation 500ms after SIGTERM — mcp_server.js child is force-killed if SIGTERM is not handled quickly, preventing orphaned socket fd. mcp_server.js path passed via `CLAWS_MCP_PATH` env var (no embedded path injection).
+- **M-11** `scripts/update.sh` Step 6 health check: SIGKILL escalation 500ms after SIGTERM — mcp_server.js child is force-killed if SIGTERM is not handled quickly, preventing orphaned socket fd holding the project socket open. mcp_server.js path passed via `CLAWS_MCP_PATH` env var (no embedded path injection). Regression test: `update-step6-orphan.test.sh` (4 checks, includes behavioral SIGTERM-ignore mock).
 - **M-19** `scripts/update.sh`: `CLAWS_LOG` now defined and exported before `install.sh` runs, so Step 6 warning "see install log: $CLAWS_LOG" references the actual log path written by install.sh.
 - **M-20** `scripts/update.sh` socket probe: project root path passed via `CLAWS_PROBE_PATH` env var instead of string-interpolation into `node -e` — handles project paths containing apostrophes/backslashes without JS syntax errors.
 - **M-21** `scripts/update.sh` + `scripts/install.sh`: `GIT_PULL_OK` flag exported on git pull failure; `install.sh` skips `inject-claude-md.js` when `GIT_PULL_OK=0` — avoids rewriting CLAUDE.md tool-set from stale source.
