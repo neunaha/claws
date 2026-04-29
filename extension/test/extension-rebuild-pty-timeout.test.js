@@ -35,12 +35,15 @@ check('extension.ts: killTimer uses 5 * 60 * 1000 (5-minute ceiling)', () => {
   );
 });
 
-// 3. SIGKILL used (not just SIGTERM)
-check('extension.ts: proc.kill("SIGKILL") called in kill timer', () => {
-  assert(
-    src.includes("proc.kill('SIGKILL')") || src.includes('proc.kill("SIGKILL")'),
-    'SIGKILL not found in timeout handler',
-  );
+// 3. SIGTERM sent first in kill timer (F4: graceful before force)
+check('extension.ts: proc.kill("SIGTERM") called before SIGKILL in kill timer', () => {
+  const timerIdx = src.indexOf('killTimer = setTimeout');
+  assert(timerIdx !== -1, 'killTimer setTimeout not found');
+  const sigterm = src.indexOf("proc.kill('SIGTERM')", timerIdx);
+  const sigkill = src.indexOf("proc.kill('SIGKILL')", timerIdx);
+  assert(sigterm !== -1, 'SIGTERM not found in killTimer body');
+  assert(sigkill !== -1, 'SIGKILL not found in killTimer body');
+  assert(sigterm < sigkill, 'SIGTERM must come before SIGKILL in killTimer');
 });
 
 // 4. clearTimeout called in exit handler (timer cancelled on normal exit)

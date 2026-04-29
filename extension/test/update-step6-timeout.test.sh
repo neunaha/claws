@@ -67,6 +67,13 @@ else
   fail "update.sh: mcp_server.js path not using env var (potential quoting issue)"
 fi
 
+# ── TEST 8: F1 — retry progress notification emitted between attempts ─────────
+if grep -q 'retry.*of 3' "$UPDATE_SH" && grep -q '_claws_attempt' "$UPDATE_SH"; then
+  pass "update.sh: F1 retry progress notification present"
+else
+  fail "update.sh: F1 retry progress notification missing"
+fi
+
 # ── summary ──────────────────────────────────────────────────────────────────
 echo ""
 if [ "$FAIL_COUNT" -gt 0 ]; then

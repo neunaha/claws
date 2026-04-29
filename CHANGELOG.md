@@ -5,6 +5,13 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4-bulletproof-L4-fix] - 2026-04-29 — Layer 4 fix: code-review findings + audit items (F1–F7, M-44–M-50)
+
+### Fixed
+
+- **F1** `scripts/update.sh` M-10 retry loop: added `_claws_attempt` counter; emits `note "MCP handshake timeout — retry N of 3 (Nms)..."` between attempts so the operator knows progress during the silent ~38s retry window.
+- **F4** `extension/src/extension.ts` M-41 `runRebuildPty()`: killTimer now sends SIGTERM first, then SIGKILL after 5s grace, matching the recipe pattern from M-11. Previously sent SIGKILL directly. Regression test: `extension-rebuild-pty-timeout.test.js` updated (SIGTERM-before-SIGKILL check added).
+
 ## [0.7.4-bulletproof-L4] - 2026-04-29 — Layer 4: update.sh + extension.ts hardening (M-10, M-11, M-18, M-19, M-20, M-21, M-41, M-42, M-43)
 
 ### Fixed

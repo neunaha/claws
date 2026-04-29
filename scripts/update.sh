@@ -204,8 +204,11 @@ fi
 # M-10: up to 3 attempts with exponential timeouts (8s, 12s, 16s); only YELLOW after all exhausted.
 if [ -f "$PROJECT_ROOT/.claws-bin/mcp_server.js" ]; then
   _claws_mcp_ok=0
+  _claws_attempt=0
   for _claws_mcp_ms in 8000 12000 16000; do
     [ "$_claws_mcp_ok" = "1" ] && break
+    _claws_attempt=$(( _claws_attempt + 1 ))
+    [ "$_claws_attempt" -gt 1 ] && note "MCP handshake timeout — retry $_claws_attempt of 3 (${_claws_mcp_ms}ms)..."
     if CLAWS_MCP_PATH="$PROJECT_ROOT/.claws-bin/mcp_server.js" node --no-deprecation -e "
       const { spawn } = require('child_process');
       const p = spawn('node', [process.env.CLAWS_MCP_PATH], { stdio: ['pipe','pipe','ignore'] });
@@ -221,7 +224,7 @@ if [ -f "$PROJECT_ROOT/.claws-bin/mcp_server.js" ]; then
       _claws_mcp_ok=1
     fi
   done
-  unset _claws_mcp_ms
+  unset _claws_mcp_ms _claws_attempt
   if [ "$_claws_mcp_ok" = "1" ]; then
     note "MCP server handshake OK"
   else
