@@ -46,7 +46,18 @@ Pre-fix symptoms: `claws_list` always showed `[unwrapped]` and `pid=-1` for wrap
 - `extension/src/server.ts` — `lifecycle.plan` handler sets `idempotent:false` when the previous phase was `REFLECT` (a cycle reset is not an idempotent no-op); `idempotent:true` only for mid-cycle duplicate calls
 - `extension/test/lifecycle-reset.test.js` — 8 regression checks covering: gate-closes-at-REFLECT, plan-resets-cycle, phases_completed-reset, hasPlan-reopens, SPAWN-advances-after-reset, mid-cycle-idempotency-preserved, reflect-field-cleared
 
-### L1.3–L4 (in progress — see `.local/audits/bus-issues-master.md`)
+### L1.3 — Periodic system.heartbeat from the extension (landed)
+- `extension/src/server-config.ts` — added `heartbeatIntervalMs` field (default 60 000 ms, 0 = disabled) to `ServerConfig` and `defaultServerConfig`; exported `DEFAULT_HEARTBEAT_INTERVAL_MS`
+- `extension/src/server.ts` — new `private async emitSystemEvent(topic, payload)` helper: appends to the event log then fans out with the returned sequence; skips entirely when `eventLog.isDegraded` is true; errors are swallowed so timer failures never crash the extension
+- `extension/src/server.ts` — `start()` schedules a `setInterval` after `bind()` resolves; reads `heartbeatIntervalMs` from `getConfig()` at schedule time; 0 = no timer created; stores timer in `private heartbeatTimer`
+- `extension/src/server.ts` — `stop()` clears `heartbeatTimer` before closing the event log and socket
+- `extension/src/event-log.ts` — added public `get isDegraded(): boolean` accessor so the server can gate heartbeat emissions without accessing a private field
+- `extension/src/terminal-manager.ts` — added public `get terminalCount(): number` accessor so heartbeat payload can report the live terminal count without exposing the private `records` Map
+- `extension/src/extension.ts` — `getConfig()` now reads `claws.heartbeatIntervalMs` from VS Code settings and passes it to the server
+- `extension/package.json` — added `claws.heartbeatIntervalMs` configuration property (type: number, default: 60000, minimum: 0)
+- `extension/test/heartbeat.test.js` — new regression test: boots extension with `heartbeatIntervalMs=200ms`, waits 700ms, asserts ≥2 `system.heartbeat` entries in the segment file and validates payload shape (uptimeMs, peers, terminals, from, ts_server, sequence)
+
+### L1.4–L4 (in progress — see `.local/audits/bus-issues-master.md`)
 Fleet of layered fixes ordered root-up: L0 capture (push frames captured, `claws_drain_events` MCP tool), L1 production (`system.worker.spawned/completed`, lazy `.jsonl`, heartbeat, task event persistence, `[CLAWS_PUB]` line scanner), L2 lifecycle (REFLECT-reset cycle), L3 reverse-channel hardening (idempotent re-delivery, ACK protocol, backpressure), L4 bus correctness (sequence persistence, peer reconnect, replay).
 
 ## [0.7.4] - 2026-04-29 — Bulletproof regression fix release

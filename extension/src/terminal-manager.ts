@@ -49,6 +49,8 @@ export class TerminalManager {
     for (const t of terminals) this.idFor(t);
   }
 
+  get terminalCount(): number { return this.records.size; }
+
   idFor(terminal: vscode.Terminal): string {
     const existing = this.byTerminal.get(terminal);
     if (existing) return existing;

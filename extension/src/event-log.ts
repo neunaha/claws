@@ -257,6 +257,8 @@ export class EventLogWriter {
     return formatCursor(this.segmentId, this.currentOffset);
   }
 
+  get isDegraded(): boolean { return this.degraded; }
+
   append(record: LogRecord): Promise<AppendResult> {
     if (this.degraded || (this.fd === null && !this.fdDeferred)) {
       return Promise.resolve({ cursor: '', sequence: -1 });

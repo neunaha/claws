@@ -10,6 +10,7 @@ import {
   DEFAULT_EXEC_TIMEOUT_MS,
   DEFAULT_POLL_LIMIT,
   DEFAULT_STRICT_EVENT_VALIDATION,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
   ServerConfig,
 } from './server-config';
 import { HistoryEvent } from './protocol';
@@ -282,6 +283,7 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
     execTimeoutMs: cfg('execTimeoutMs', DEFAULT_EXEC_TIMEOUT_MS),
     pollLimit: cfg('pollLimit', DEFAULT_POLL_LIMIT),
     strictEventValidation: cfg('strictEventValidation', DEFAULT_STRICT_EVENT_VALIDATION),
+    heartbeatIntervalMs: cfg('heartbeatIntervalMs', DEFAULT_HEARTBEAT_INTERVAL_MS),
   });
 
   const buildIntrospectSnapshot = (): IntrospectSnapshot => {

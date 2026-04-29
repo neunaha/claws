@@ -257,6 +257,12 @@
           "type": "boolean",
           "default": false,
           "description": "When true, the server rejects publish requests that fail envelope or payload schema validation. When false (default), validation failures emit system.malformed.received but the event is still fanned out."
+        },
+        "claws.heartbeatIntervalMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 0,
+          "description": "Milliseconds between automatic system.heartbeat events emitted by the server. Set to 0 to disable. Default: 60000 ms (1 minute)."
         }
       }
     }
