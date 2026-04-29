@@ -1209,11 +1209,18 @@ inject_hook() {
   #   2. Strip the immediately following line (the source line in that block).
   # The previous generic `/source .../shell-hook\.sh/` regex is removed because
   # it matched non-Claws tools (oh-my-zsh, asdf, custom dotfiles) causing data loss.
+  #
+  # M-17: always promote awk output when awk succeeds, even if output is empty.
+  # When the file contains ONLY the Claws block, awk produces no output (empty tmp).
+  # The old `[ -s "$tmp" -o ! -s "$rcfile" ]` guard prevented promotion in that case
+  # (rcfile had content → `! -s` false; tmp empty → `-s` false → guard fails), so the
+  # original was left intact and a new block was appended on the next install, creating
+  # duplicate hooks. Fix: mv unconditionally when awk exits 0.
   if awk '
     /# CLAWS terminal hook/ { skip = 1; next }
     skip { skip = 0; next }
     { print }
-  ' "$rcfile" > "$tmp" 2>/dev/null && [ -s "$tmp" -o ! -s "$rcfile" ]; then
+  ' "$rcfile" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$rcfile" 2>/dev/null || rm -f "$tmp"
   else
     rm -f "$tmp" 2>/dev/null || true
