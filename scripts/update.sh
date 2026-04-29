@@ -112,9 +112,11 @@ if [ -S "$PROJECT_ROOT/.claws/claws.sock" ]; then
   _claws_sock="$PROJECT_ROOT/.claws/claws.sock"
   _claws_alive=0
   if command -v node >/dev/null 2>&1; then
-    if node --no-deprecation -e "
+    # M-20: pass path via env var — handles project roots with apostrophes/backslashes
+    # without causing JS syntax errors from string interpolation in -e argument.
+    if CLAWS_PROBE_PATH="$_claws_sock" node --no-deprecation -e "
       const net = require('net');
-      const s = net.createConnection('$_claws_sock');
+      const s = net.createConnection(process.env.CLAWS_PROBE_PATH);
       const t = setTimeout(() => { try { s.destroy(); } catch {} process.exit(1); }, 800);
       s.on('connect', () => { s.write('{\"id\":1,\"cmd\":\"list\"}\n'); });
       s.on('data', () => { clearTimeout(t); try { s.destroy(); } catch {} process.exit(0); });
