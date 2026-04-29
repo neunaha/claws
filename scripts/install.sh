@@ -1216,9 +1216,14 @@ inject_hook() {
   #
   # M-01: strips ONLY lines inside a Claws-marked block:
   #   1. Strip every `# CLAWS terminal hook` marker line.
-  #   2. Strip the immediately following line (the source line in that block).
+  #   2. Strip the immediately following line IF it is the Claws source line.
   # The previous generic `/source .../shell-hook\.sh/` regex is removed because
   # it matched non-Claws tools (oh-my-zsh, asdf, custom dotfiles) causing data loss.
+  #
+  # F4: orphaned-marker edge case — if a user manually deleted the source line but
+  # left the marker, the old `skip { skip=0; next }` would silently strip whatever
+  # user content happened to follow the marker. Fix: only skip the following line if
+  # it matches the Claws source pattern; otherwise keep it (skip=0; print).
   #
   # M-17: always promote awk output when awk succeeds, even if output is empty.
   # When the file contains ONLY the Claws block, awk produces no output (empty tmp).
@@ -1228,7 +1233,8 @@ inject_hook() {
   # duplicate hooks. Fix: mv unconditionally when awk exits 0.
   if awk '
     /# CLAWS terminal hook/ { skip = 1; next }
-    skip { skip = 0; next }
+    skip && /source.*shell-hook\.sh/ { skip = 0; next }
+    skip { skip = 0; print }
     { print }
   ' "$rcfile" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$rcfile" 2>/dev/null || rm -f "$tmp"

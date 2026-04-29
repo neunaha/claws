@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tests for M-01: inject_hook awk ONLY strips Claws-marked lines, not generic
-# source .../shell-hook.sh lines from other tools. Also verifies backup creation.
+# Tests for M-01+F4: inject_hook awk ONLY strips Claws-marked lines, not generic
+# source .../shell-hook.sh lines from other tools. Also verifies backup creation
+# and the F4 orphaned-marker edge case (user content after bare marker preserved).
 # Run: bash extension/test/install-awk-anchor.test.sh
 # Exits 0 on success, 1 on failure.
 
@@ -15,16 +16,19 @@ fail() { echo "  ✗ $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="$SCRIPT_DIR/../../scripts/install.sh"
 
-# ── helper: run the M-01-fixed awk logic in isolation ───────────────────────
+# ── helper: run the M-01+F4-fixed awk logic in isolation ────────────────────
 # Mirrors inject_hook's awk call + mv logic exactly.
+# F4: only skip the line after the marker if it is the Claws source line;
+# otherwise keep the user content (orphaned-marker edge case).
 run_awk_strip() {
   local rcfile="$1"
   local tmp="${rcfile}.claws-tmp.$$"
   if awk '
     /# CLAWS terminal hook/ { skip = 1; next }
-    skip { skip = 0; next }
+    skip && /source.*shell-hook\.sh/ { skip = 0; next }
+    skip { skip = 0; print }
     { print }
-  ' "$rcfile" > "$tmp" 2>/dev/null && [ -s "$tmp" -o ! -s "$rcfile" ]; then
+  ' "$rcfile" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$rcfile" 2>/dev/null || rm -f "$tmp"
   else
     rm -f "$tmp" 2>/dev/null || true
@@ -169,18 +173,20 @@ fi
 
 rm -rf "$tmpdir"
 
-# ── TEST 4: verify install.sh removed the generic source regex ────────────────
+# ── TEST 4: verify install.sh removed the generic source regex (M-01+F4) ──────
 if grep -q 'M-01' "$INSTALL_SH"; then
   pass "install.sh contains M-01 comment"
 else
   fail "install.sh missing M-01 comment — fix not applied"
 fi
 
-# The old regex should not appear in the awk block anymore
-if grep -A5 "CLAWS terminal hook.*skip" "$INSTALL_SH" | grep -q 'source.*shell-hook'; then
-  fail "install.sh still has generic source .../shell-hook.sh awk regex (M-01 regression)"
+# The old unguarded top-level awk pattern /source.*shell-hook/ must not appear.
+# An awk top-level pattern starts with /.../ at the beginning of a line.
+# F4 correctly guards it as: skip && /source.*shell-hook/
+if grep -Eq '^\s*/source.*shell-hook' "$INSTALL_SH"; then
+  fail "install.sh has unguarded top-level awk pattern /source.*shell-hook/ (M-01 regression)"
 else
-  pass "install.sh awk: no generic source shell-hook.sh stripping"
+  pass "install.sh awk: no unguarded /source.*shell-hook/ top-level pattern"
 fi
 
 # Backup creation code must exist
@@ -190,7 +196,56 @@ else
   fail "install.sh missing dotfile backup logic"
 fi
 
+# F4: install.sh must use the orphaned-marker-safe awk pattern (3 rules, not 2)
+if grep -q 'skip && /source.*shell-hook' "$INSTALL_SH"; then
+  pass "install.sh awk: F4 orphaned-marker guard present (skip && /source.*shell-hook/)"
+else
+  fail "install.sh awk: F4 orphaned-marker guard missing — user content after bare marker gets stripped"
+fi
+
 rm -rf "$tmpdir" 2>/dev/null || true
+
+# ── TEST 5: F4 — orphaned marker (no following source line) preserves next line
+# Scenario: user manually deleted the source line but left the marker.
+# The old awk would silently strip the next line (e.g., NVM_DIR export).
+# The F4 fix must preserve it.
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/claws-m01-orphan-XXXXXX")
+rcfile="$tmpdir/.zshrc"
+
+cat > "$rcfile" <<'RCEOF'
+export EDITOR=vim
+# CLAWS terminal hook
+export NVM_DIR="$HOME/.nvm"
+export ANOTHER_VAR=foo
+RCEOF
+
+run_awk_strip "$rcfile"
+
+if grep -q 'NVM_DIR' "$rcfile"; then
+  pass "F4 orphaned-marker: user content after bare marker preserved (NVM_DIR not stripped)"
+else
+  fail "F4 orphaned-marker: user content after bare marker was stripped (data loss)"
+fi
+
+if grep -q 'ANOTHER_VAR' "$rcfile"; then
+  pass "F4 orphaned-marker: content beyond orphaned block preserved"
+else
+  fail "F4 orphaned-marker: content beyond orphaned block was lost"
+fi
+
+if grep -q 'CLAWS terminal hook' "$rcfile"; then
+  fail "F4 orphaned-marker: bare marker not stripped (should be removed)"
+else
+  pass "F4 orphaned-marker: bare marker stripped"
+fi
+
+if grep -q 'EDITOR=vim' "$rcfile"; then
+  pass "F4 orphaned-marker: content before marker preserved"
+else
+  fail "F4 orphaned-marker: content before marker was stripped"
+fi
+
+rm -rf "$tmpdir"
 
 # ── summary ──────────────────────────────────────────────────────────────────
 echo ""
@@ -198,5 +253,5 @@ if [ "$FAIL_COUNT" -gt 0 ]; then
   echo "FAIL: $FAIL_COUNT/$((PASS_COUNT + FAIL_COUNT)) install-awk-anchor check(s) failed."
   exit 1
 fi
-echo "PASS: $PASS_COUNT install-awk-anchor checks"
+echo "PASS: $PASS_COUNT install-awk-anchor checks (M-01 anchor + F4 orphaned-marker)"
 exit 0
