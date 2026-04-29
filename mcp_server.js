@@ -367,6 +367,16 @@ async function runBlockingWorker(sock, args) {
   const termId = cr.id;
   const startedAt = Date.now();
 
+  // Publish system.worker.spawned — best-effort, never aborts on failure.
+  try {
+    await _pconnEnsureRegistered(sock);
+    await _pconnWrite({
+      cmd: 'publish', protocol: 'claws/2',
+      topic: 'system.worker.spawned',
+      payload: { terminal_id: termId, name: args.name || 'claws-worker', wrapped: true, started_at: new Date(startedAt).toISOString() },
+    });
+  } catch (e) { log('system.worker.spawned publish failed: ' + (e && e.message || e)); }
+
   // 2. Give shell a moment to emit prompt
   await sleep(400);
 
@@ -445,6 +455,16 @@ async function runBlockingWorker(sock, args) {
 
     await sleep(opt.poll_interval_ms);
   }
+
+  // Publish system.worker.completed — best-effort, never aborts on failure.
+  try {
+    await _pconnEnsureRegistered(sock);
+    await _pconnWrite({
+      cmd: 'publish', protocol: 'claws/2',
+      topic: 'system.worker.completed',
+      payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted },
+    });
+  } catch (e) { log('system.worker.completed publish failed: ' + (e && e.message || e)); }
 
   // 7. Harvest final output
   const final = await clawsRpc(sock, {

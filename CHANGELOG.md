@@ -23,7 +23,11 @@ Pre-fix symptoms: `claws_list` always showed `[unwrapped]` and `pid=-1` for wrap
 - `mcp_server.js` — `_pconnEnsureRegistered` helper: lazily hellos as `orchestrator / mcp-orchestrator` on the persistent socket (once per process lifetime) so publish/subscribe calls work without a prior `claws_hello`
 - `schemas/mcp-tools.json` — added `claws_drain_events` tool schema
 
-### L1–L4 (in progress — see `.local/audits/bus-issues-master.md`)
+### L1.1 — Worker lifecycle events (landed)
+- `mcp_server.js` — `runBlockingWorker` publishes `system.worker.spawned` (with `terminal_id`, `name`, `wrapped`, `started_at`) immediately after the terminal is created and `system.worker.completed` (with `terminal_id`, `status`, `duration_ms`, `marker_line`, `booted`) after the poll loop exits; guaranteed for both mission-mode and command-mode workers
+- `mcp_server.js` — publishes go via the persistent socket registered as `orchestrator / mcp-orchestrator`; both are best-effort — failure is logged and the worker run continues unaffected
+
+### L1.2–L4 (in progress — see `.local/audits/bus-issues-master.md`)
 Fleet of layered fixes ordered root-up: L0 capture (push frames captured, `claws_drain_events` MCP tool), L1 production (`system.worker.spawned/completed`, lazy `.jsonl`, heartbeat, task event persistence, `[CLAWS_PUB]` line scanner), L2 lifecycle (REFLECT-reset cycle), L3 reverse-channel hardening (idempotent re-delivery, ACK protocol, backpressure), L4 bus correctness (sequence persistence, peer reconnect, replay).
 
 ## [0.7.4] - 2026-04-29 — Bulletproof regression fix release
