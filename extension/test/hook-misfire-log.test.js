@@ -165,6 +165,36 @@ function cleanTmpDir(dir) {
     }
   });
 
+  // 4. F3: /tmp unwritable → stderr fallback, exit 0 (SAFETY CONTRACT preserved)
+  //    Simulates an unwritable log path by pointing the redirect at a directory
+  //    (>> to a dir always fails). Verifies that the stderr fallback carries the
+  //    misfire message and exit is still 0.
+  await check('/tmp unwritable: misfire message reaches stderr, exit 0 preserved', () => {
+    const tmp = makeTmpDir();
+    try {
+      const nonExistentScript = path.join(tmp, 'not-a-real-hook.js');
+      // Use a directory as the log path — >> redirect into a dir always fails
+      const fakeLogDir = path.join(tmp, 'fake-log-dir');
+      fs.mkdirSync(fakeLogDir, { recursive: true });
+
+      // Build the F3 misfire command form (msg variable + 2>/dev/null + stderr fallback)
+      const cmd = (
+        `sh -c 'if [ -f "$0" ]; then exec node "$0"; ` +
+        `else msg="[claws-hook-misfire] $(date -u +%Y-%m-%dT%H:%M:%SZ) missing path: $0"; ` +
+        `printf "%s\\n" "$msg" >> ${JSON.stringify(fakeLogDir)} 2>/dev/null; ` +
+        `printf "%s\\n" "$msg" >&2; ` +
+        `exit 0; fi' ${JSON.stringify(nonExistentScript)}`
+      );
+
+      const r = spawnSync('sh', ['-c', cmd], { encoding: 'utf8', timeout: 5000 });
+      assert.strictEqual(r.status, 0, `Must exit 0 even when log write fails; status: ${r.status}, stderr: ${r.stderr}`);
+      assert.ok(r.stderr.includes('[claws-hook-misfire]'), `Misfire marker must reach stderr; got: ${JSON.stringify(r.stderr)}`);
+      assert.ok(r.stderr.includes('missing path:'), `"missing path:" must reach stderr; got: ${JSON.stringify(r.stderr)}`);
+    } finally {
+      cleanTmpDir(tmp);
+    }
+  });
+
   // Report
   const pass = assertions.filter(a => a.ok).length;
   const fail = assertions.filter(a => !a.ok).length;

@@ -55,14 +55,16 @@ function hookCmd(scriptName) {
     // Skips the sh -c wrapper to reduce fork overhead per hook invocation.
     return `node ${JSON.stringify(scriptPath)}`;
   }
-  // Non-canonical path: wrap with file-exists guard + misfire logging.
-  // Missing-path logs a forensic entry to /tmp/claws-hook-misfire.log then
-  // exits 0 so Claude Code never surfaces a "non-blocking status code" error.
+  // Non-canonical or partially-installed: wrap with file-exists guard + misfire logging.
+  // Missing path: writes forensic entry to /tmp/claws-hook-misfire.log (2>/dev/null
+  // suppresses errors when /tmp is unwritable) AND echoes to stderr so the event is
+  // always visible even on read-only filesystems. exit 0 preserves the SAFETY CONTRACT.
   // Path is passed as $0 to avoid shell-escape pitfalls.
   return (
     `sh -c 'if [ -f "$0" ]; then exec node "$0"; ` +
-    `else printf "[claws-hook-misfire] %s missing path: %s\\n" ` +
-    `"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$0" >> /tmp/claws-hook-misfire.log; ` +
+    `else msg="[claws-hook-misfire] $(date -u +%Y-%m-%dT%H:%M:%SZ) missing path: $0"; ` +
+    `printf "%s\\n" "$msg" >> /tmp/claws-hook-misfire.log 2>/dev/null; ` +
+    `printf "%s\\n" "$msg" >&2; ` +
     `exit 0; fi' ${JSON.stringify(scriptPath)}`
   );
 }
