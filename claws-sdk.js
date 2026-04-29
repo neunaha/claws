@@ -66,6 +66,12 @@ class ClawsSDK {
       if (!this.socketPath) return reject(new Error('no socket path — is Claws running?'));
       const sock = net.createConnection(this.socketPath);
       sock.setEncoding('utf8');
+      // M-37: 5-second connect ceiling — prevents indefinite hang when socket file is
+      // stale (VS Code crashed, server not running). destroy(err) triggers 'error' → reject.
+      sock.setTimeout(5000);
+      sock.on('timeout', () => {
+        sock.destroy(new Error('connect timed out after 5s — is Claws running? Run /claws-fix'));
+      });
       sock.on('data', (chunk) => {
         this._buf += chunk;
         let nl;
@@ -80,7 +86,7 @@ class ClawsSDK {
           } catch { /* ignore non-JSON */ }
         }
       });
-      sock.on('connect', () => { this._sock = sock; resolve(this); });
+      sock.on('connect', () => { sock.setTimeout(0); this._sock = sock; resolve(this); });
       sock.on('error',   reject);
     });
   }
@@ -89,13 +95,19 @@ class ClawsSDK {
     if (this._sock) { this._sock.destroy(); this._sock = null; }
   }
 
-  _send(obj) {
+  _send(obj, timeoutMs = 10000) {
     return new Promise((resolve, reject) => {
       if (!this._sock) return reject(new Error('not connected'));
       const rid = this._rid++;
       obj.id  = rid;
       obj.rid = rid;
-      this._pending.set(rid, resolve);
+      // M-37: per-request timeout — prevents _pending Map leaking if server stops
+      // responding after connect (e.g., extension reloading, partial write).
+      const timer = setTimeout(() => {
+        this._pending.delete(rid);
+        reject(new Error(`request ${rid} timed out after ${timeoutMs}ms — server may be reloading`));
+      }, timeoutMs);
+      this._pending.set(rid, (msg) => { clearTimeout(timer); resolve(msg); });
       this._sock.write(JSON.stringify(obj) + '\n');
     });
   }
