@@ -79,13 +79,18 @@ function makeHookEntry(matcher, scriptName) {
     for (const { event, scriptName, entry } of HOOKS_TO_ADD) {
       if (!cfg.hooks[event]) cfg.hooks[event] = [];
       const arr = cfg.hooks[event];
-      const existingIdx = arr.findIndex(e =>
+      // Dry-run: use same exact-match dedup as live path (M-14)
+      const exactDryIdx = arr.findIndex(e =>
         e._source === SOURCE_TAG && e.matcher === entry.matcher &&
-        e.hooks && e.hooks[0] && e.hooks[0].command &&
-        e.hooks[0].command.includes(scriptName)
+        e.hooks && e.hooks[0] && e.hooks[0].command === entry.hooks[0].command
       );
-      if (existingIdx === -1) arr.push(entry);
-      else if (arr[existingIdx].hooks[0].command !== entry.hooks[0].command) arr[existingIdx] = entry;
+      if (exactDryIdx === -1) {
+        const staleDryIdx = arr.findIndex(e =>
+          e._source === SOURCE_TAG && e.matcher === entry.matcher && e.hooks && e.hooks[0]
+        );
+        if (staleDryIdx !== -1) arr[staleDryIdx] = entry;
+        else arr.push(entry);
+      }
     }
     console.log('[dry-run] would write to:', SETTINGS_PATH);
     console.log(JSON.stringify(cfg, null, 2));
@@ -123,24 +128,35 @@ function makeHookEntry(matcher, scriptName) {
       if (!cfg.hooks[event]) cfg.hooks[event] = [];
       const arr = cfg.hooks[event];
 
-      // Find any existing Claws entry for this script. Match by scriptName
-      // substring so we can detect old-format entries (plain `node "<path>"`)
-      // and replace them in place with the new wrapped form, avoiding
-      // duplicate accumulation on repeated runs across versions.
-      const existingIdx = arr.findIndex(e =>
+      // M-14: exact-command equality + _source guard for dedup.
+      // Previously used command.includes(scriptName) which could match non-Claws
+      // hooks whose command happened to contain our script name as a substring.
+      // Now: match only on _source === 'claws' AND exact command string.
+      // Stale/old-format Claws entries (wrong command) get replaced in-place
+      // after detection via _source+matcher lookup.
+      const exactIdx = arr.findIndex(e =>
         e._source === SOURCE_TAG &&
         e.matcher === entry.matcher &&
         e.hooks && e.hooks[0] &&
-        e.hooks[0].command && e.hooks[0].command.includes(scriptName)
+        e.hooks[0].command === entry.hooks[0].command
       );
 
-      if (existingIdx === -1) {
-        arr.push(entry);
-        changed++;
-      } else if (arr[existingIdx].hooks[0].command !== entry.hooks[0].command) {
-        // Old-format or stale-path entry — upgrade it in place
-        arr[existingIdx] = entry;
-        changed++;
+      if (exactIdx !== -1) {
+        // Already current — no-op
+      } else {
+        // Check for a stale Claws entry to upgrade (different command, same source+matcher)
+        const staleIdx = arr.findIndex(e =>
+          e._source === SOURCE_TAG &&
+          e.matcher === entry.matcher &&
+          e.hooks && e.hooks[0]
+        );
+        if (staleIdx !== -1) {
+          arr[staleIdx] = entry;
+          changed++;
+        } else {
+          arr.push(entry);
+          changed++;
+        }
       }
     }
   });
