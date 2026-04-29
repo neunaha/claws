@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `extension/src/server.ts` — wires `setStateChangeCallback` in the constructor; the callback calls `emitSystemEvent('vehicle.<id>.state', {terminalId, from, to, ts})` so every transition is appended to the event log and fanned out to subscribers.
 - `extension/test/claws-v2-vehicle-state.test.js` — 19-assertion integration test suite covering: PROVISIONING→BOOTING and BOOTING→READY push frames, close emitting CLOSING→CLOSED, vehicleState in list responses, ordering invariants, payload structure (terminalId, from, to, ts).
 
+### Added — Wave Army Protocol (embedder wave)
+
+The embedder wave introduces the Wave Army Protocol — a structured multi-agent orchestration layer built on the claws/2 pub/sub bus. Every wave has a typed lifecycle (create → sub-workers boot → sub-workers complete → lead emits complete) with violation detection and disciplined per-role obligations.
+
+**Protocol layer (shipped):**
+- `extension/src/protocol.ts` — `SubWorkerRole` type (`lead | tester | reviewer | auditor | bench | doc`); `ContractedRoles` constant; `HelloRequest` extended with optional `waveId` and `subWorkerRole`; `WaveCreateRequest`, `WaveCompleteRequest`, `WaveStatusRequest` added to `ClawsRequest` union.
+- `extension/src/event-schemas.ts` — 7 new Zod schemas: `WaveLeadBootV1`, `WaveLeadCompleteV1`, `WaveTesterRedCompleteV1`, `WaveReviewFindingV1`, `WaveAuditFindingV1`, `WaveBenchMetricV1`, `WaveDocCompleteV1`. `SCHEMA_BY_NAME` grows from 24 to 31 entries.
+- `extension/src/topic-registry.ts` — `wave.**` catch-all pattern registered; specific wave schemas bound in `SCHEMA_BY_NAME`.
+- `extension/src/wave-registry.ts` — new `WaveRegistry` class tracking active waves: per-role heartbeat timers fire `wave.<N>.violation` after 25s silence; `createWave`, `recordHeartbeat`, `markSubWorkerComplete`, `completeWave`, `handlePeerDisconnect`, `dispose`.
+- `extension/src/server.ts` — `WaveRegistry` wired into `ClawsServer`; handlers for `wave.create`, `wave.status`, `wave.complete`; `hello` records sub-worker heartbeat when `waveId+subWorkerRole` present; `handleDisconnect` notifies registry.
+
+**Pending (in-progress):** MCP tools (`claws_wave_create/status/complete/dispatch_subworker`), CLAUDE.md template embedding, session-start hook update, skill files, slash commands.
+
 ### Fixed
 - `extension/test/event-schemas.test.js` — update `SCHEMA_BY_NAME` count from 19 to 20 (added `vehicle-state-v1`).
 - `extension/test/topic-registry.test.js` — update `TOPIC_REGISTRY` count from 19 to 22 (added 3 vehicle.* patterns).

@@ -4,18 +4,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CaptureStore } from './capture-store';
 import { TerminalManager } from './terminal-manager';
-import { ClawsRequest, ClawsResponse, HistoryEvent, PROTOCOL_VERSION, PROTOCOL_VERSION_V2 } from './protocol';
+import { ClawsRequest, ClawsResponse, HistoryEvent, PROTOCOL_VERSION, PROTOCOL_VERSION_V2, SubWorkerRole } from './protocol';
+import { WaveRegistry } from './wave-registry';
 import { stripAnsi } from './ansi-strip';
 import {
   ServerConfigProvider,
   defaultServerConfig,
 } from './server-config';
-import { PeerConnection, ClawsRole, allocPeerId, matchTopic } from './peer-registry';
+import { PeerConnection, DisconnectedPeer, ClawsRole, allocPeerId, fingerprintPeer, matchTopic } from './peer-registry';
 import { TaskRecord, allocTaskId } from './task-registry';
 import { LifecycleStore } from './lifecycle-store';
 import { EnvelopeV1 } from './event-schemas';
 import { schemaForTopic } from './topic-registry';
-import { EventLogWriter } from './event-log';
+import { EventLogWriter, EventLogReader, parseCursor } from './event-log';
 
 /**
  * Per-connection context threaded into `handle()`. Holds the raw socket
@@ -37,6 +38,22 @@ const MAX_LINE_BYTES = 1024 * 1024;
 // stale. 250ms is a live-server SLA on localhost — a real server answers in
 // single-digit ms; no answer means nobody's there.
 const STALE_PROBE_TIMEOUT_MS = 250;
+const SHELL_BASENAMES = new Set([
+  'bash', 'zsh', 'fish', 'sh', 'dash', 'tcsh', 'csh', 'ksh', '-bash', '-zsh', '-sh',
+]);
+
+function classifyContentType(basename: string | null): string {
+  if (!basename) return 'unknown';
+  const name = require('path').basename(basename).toLowerCase();
+  if (SHELL_BASENAMES.has(name) || name.startsWith('bash') || name.startsWith('zsh') || name.startsWith('sh')) return 'shell';
+  if (name.startsWith('python')) return 'python';
+  if (name === 'node' || name === 'nodejs') return 'node';
+  if (name === 'vim' || name === 'nvim' || name === 'vi') return 'vim';
+  if (name === 'htop' || name === 'top') return 'htop';
+  if (name.includes('claude')) return 'claude';
+  return 'unknown';
+}
+
 
 /**
  * Lightweight snapshot of extension state used by the `introspect` command.
@@ -98,21 +115,48 @@ export class ClawsServer {
   private taskSeq = 0;
   /** Monotonic sequence number stamped into [CLAWS_CMD] broadcast text for idempotency. */
   private broadcastSeq = 0;
+  /**
+   * Tombstones for fingerprinted peers that have disconnected. Keyed by fingerprint.
+   * On reconnect with the same instanceNonce, subscriptions and tasks are restored
+   * without requiring re-assignment. Cleared on stop().
+   */
+  private readonly disconnectedPeers = new Map<string, DisconnectedPeer>();
   /** Set of peerIds whose socket is currently under backpressure (write returned false). */
   private readonly pausedPeers = new Set<string>();
   /** Dropped push-frame counts per peerId during backpressure windows. */
   private readonly droppedFrames = new Map<string, number>();
   /** Server-owned lifecycle state. Gate checks and lifecycle.* commands use this. */
   private readonly lifecycleStore: LifecycleStore;
+  /** Wave army registry — tracks active waves, sub-worker heartbeats, and violation detection. */
+  private readonly waveRegistry: WaveRegistry;
 
   private readonly eventLog = new EventLogWriter();
   private heartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
+    this.waveRegistry = new WaveRegistry((waveId, role, silentMs) => {
+      void this.emitSystemEvent(`wave.${waveId}.violation`, {
+        waveId,
+        subWorker: role,
+        silentMs,
+        ts: new Date().toISOString(),
+      });
+    });
     opts.terminalManager.setStateChangeCallback((id, from, to) => {
       const payload = { terminalId: id, from, to, ts: new Date().toISOString() };
       void this.emitSystemEvent(`vehicle.${id}.state`, payload);
+    });
+    opts.terminalManager.setContentChangeCallback((id, pid, basename) => {
+      const payload = {
+        terminalId:    id,
+        contentType:   classifyContentType(basename),
+        foregroundPid: pid,
+        basename:      basename ?? null,
+        detectedAt:    new Date().toISOString(),
+        confidence:    pid !== null ? ('high' as const) : ('low' as const),
+      };
+      void this.emitSystemEvent(`vehicle.${id}.content`, payload);
     });
   }
 
@@ -193,6 +237,7 @@ export class ClawsServer {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+    this.waveRegistry.dispose();
     // Best-effort flush: manifest is written synchronously inside close(); the
     // stream.end() drain is async but VS Code deactivation gives it time.
     this.eventLog.close().catch(() => { /* best-effort */ });
@@ -352,25 +397,47 @@ export class ClawsServer {
     const peer = this.peers.get(peerId);
     this.peers.delete(peerId);
     if (peer) {
-      for (const pattern of peer.subscriptions.values()) {
-        const set = this.subscriptionIndex.get(pattern);
-        if (set) { set.delete(peerId); if (set.size === 0) this.subscriptionIndex.delete(pattern); }
+      // For fingerprinted peers, save a tombstone so subscriptions and tasks
+      // can be restored on reconnect. For non-fingerprinted peers, clean up
+      // the subscription index immediately.
+      if (peer.fingerprint) {
+        this.disconnectedPeers.set(peer.fingerprint, {
+          peerId: peer.peerId,
+          fingerprint: peer.fingerprint,
+          role: peer.role,
+          peerName: peer.peerName,
+          capabilities: peer.capabilities,
+          subscriptions: new Map(peer.subscriptions),
+          disconnectedAt: Date.now(),
+        });
+        // Remove from subscriptionIndex but keep tasks alive — they can be
+        // re-bound when the peer reconnects with the same nonce.
+        for (const pattern of peer.subscriptions.values()) {
+          const set = this.subscriptionIndex.get(pattern);
+          if (set) { set.delete(peerId); if (set.size === 0) this.subscriptionIndex.delete(pattern); }
+        }
+      } else {
+        for (const pattern of peer.subscriptions.values()) {
+          const set = this.subscriptionIndex.get(pattern);
+          if (set) { set.delete(peerId); if (set.size === 0) this.subscriptionIndex.delete(pattern); }
+        }
+        // Fail tasks only for non-fingerprinted peers. Fingerprinted peers
+        // may reconnect and continue their tasks.
+        const now = Date.now();
+        for (const task of this.tasks.values()) {
+          if (task.assignee === peerId && ['pending', 'running', 'blocked'].includes(task.status)) {
+            task.status = 'failed';
+            task.note = 'assignee disconnected';
+            task.updatedAt = now;
+            this.emitServerEvent('task.completed', {
+              taskId: task.taskId, status: 'failed', result: null,
+            }).catch(() => { /* best-effort — never block disconnect */ });
+          }
+        }
       }
     }
-    // Fail any tasks that were assigned to this peer and are still active.
-    // Without this they accumulate as eternal pending/running orphans because
-    // the worker can never call task.complete for the old peerId after reconnect.
-    const now = Date.now();
-    for (const task of this.tasks.values()) {
-      if (task.assignee === peerId && ['pending', 'running', 'blocked'].includes(task.status)) {
-        task.status = 'failed';
-        task.note = 'assignee disconnected';
-        task.updatedAt = now;
-        this.emitServerEvent('task.completed', {
-          taskId: task.taskId, status: 'failed', result: null,
-        }).catch(() => { /* best-effort — never block disconnect */ });
-      }
-    }
+    // Notify wave registry so it can cancel violation timers for this peer.
+    if (peerId) this.waveRegistry.handlePeerDisconnect(peerId);
     // Close may fire after extension deactivate has torn down the output
     // channel; guard the logger so a teardown log line never crashes node.
     try { this.opts.logger(`[claws/2] peer disconnected: ${peerId}`); } catch { /* ignore */ }
@@ -480,6 +547,41 @@ export class ClawsServer {
     this.fanOut(topic, 'server', payload, false, sequence);
   }
 
+  private async replayFromCursor(
+    cursor: string,
+    topicPattern: string,
+    subId: string,
+    socket: net.Socket,
+  ): Promise<void> {
+    const reader = new EventLogReader(this.opts.workspaceRoot);
+    let count = 0;
+    try {
+      for await (const record of reader.scanFrom(cursor, topicPattern)) {
+        if (socket.destroyed) return;
+        const frame = JSON.stringify({
+          push: 'message',
+          protocol: PROTOCOL_VERSION_V2,
+          topic: record.topic,
+          from: record.from ?? 'server',
+          payload: record.payload,
+          sentAt: Date.now(),
+          replayed: true,
+          ...(record.sequence !== undefined ? { sequence: record.sequence } : {}),
+        }) + '\n';
+        socket.write(frame);
+        count++;
+      }
+    } catch { /* I/O error during replay — fall through */ }
+    if (socket.destroyed) return;
+    socket.write(JSON.stringify({
+      push: 'caught-up',
+      protocol: PROTOCOL_VERSION_V2,
+      subscriptionId: subId,
+      replayedCount: count,
+      resumeCursor: this.eventLog.currentCursor(),
+    }) + '\n');
+  }
+
   private getConfig() {
     return this.opts.getConfig ? this.opts.getConfig() : defaultServerConfig;
   }
@@ -527,6 +629,24 @@ export class ClawsServer {
     const peer = this.peers.get(pid);
     if (!peer) return { ok: false, error: 'peer unknown' };
     if (!roles.includes(peer.role)) return { ok: false, error: `requires role: ${roles.join('|')}` };
+    return null;
+  }
+
+  /**
+   * Reject a request if the peer has declared a non-empty capability set that
+   * does not include the required capability. Peers that declared an empty
+   * capability list (or omitted capabilities in hello) are allowed through for
+   * backward compatibility — capability enforcement only kicks in when the peer
+   * has explicitly opted into the negotiation by declaring at least one capability.
+   */
+  private requireCapability(ctx: ConnCtx, capability: string): ClawsResponse | null {
+    const pid = ctx.getPeerId();
+    if (!pid) return { ok: false, error: 'call hello first' };
+    const peer = this.peers.get(pid);
+    if (!peer) return { ok: false, error: 'peer unknown' };
+    if (peer.capabilities.length > 0 && !peer.capabilities.includes(capability)) {
+      return { ok: false, error: 'capability:required', required: capability };
+    }
     return null;
   }
 
@@ -593,12 +713,26 @@ export class ClawsServer {
       const rec = tm.recordById(r.id);
       if (!rec) return { ok: false, error: `unknown terminal id ${r.id}` };
       if (r.show !== false) rec.terminal.show(true);
+      const startedAt = new Date().toISOString();
+      void this.emitSystemEvent(`command.${rec.id}.start`, {
+        terminalId: rec.id,
+        command:    r.command,
+        startedAt,
+      });
       if (!rec.terminal.shellIntegration) {
         if (rec.pty) {
           rec.pty.writeInjected(r.command, true, false);
         } else {
           rec.terminal.sendText(r.command, true);
         }
+        void this.emitSystemEvent(`command.${rec.id}.end`, {
+          terminalId: rec.id,
+          command:    r.command,
+          exitCode:   null,
+          durationMs: 0,
+          degraded:   true,
+          endedAt:    new Date().toISOString(),
+        });
         return {
           ok: true,
           degraded: true,
@@ -624,6 +758,13 @@ export class ClawsServer {
           if (i >= 0) list.splice(i, 1);
           reject(err);
         }
+      });
+      void this.emitSystemEvent(`command.${rec.id}.end`, {
+        terminalId: rec.id,
+        command:    r.command,
+        exitCode:   (event as unknown as { exitCode?: number }).exitCode ?? null,
+        durationMs: Date.now() - new Date(startedAt).getTime(),
+        endedAt:    new Date().toISOString(),
       });
       return { ok: true, event };
     }
@@ -752,36 +893,80 @@ export class ClawsServer {
       if (r.role === 'orchestrator' && this.hasOrchestrator()) {
         return { ok: false, error: 'orchestrator already registered' };
       }
-      const peerId = this.allocPeerId();
+
+      // Compute stable fingerprint when instanceNonce is provided.
+      const fingerprint = r.instanceNonce
+        ? fingerprintPeer(r.peerName ?? 'unnamed', r.role, r.instanceNonce)
+        : undefined;
+      const peerId = fingerprint ? `fp_${fingerprint}` : this.allocPeerId();
+      const capabilities = r.capabilities ?? [];
+
+      // Check for a disconnected peer with the same fingerprint.
+      const tombstone = fingerprint ? this.disconnectedPeers.get(fingerprint) : undefined;
+      if (tombstone) this.disconnectedPeers.delete(fingerprint!);
+
+      // Subscriptions: restore from tombstone or start fresh.
+      const subscriptions: Map<string, string> = tombstone
+        ? new Map(tombstone.subscriptions)
+        : new Map();
+
       const peer: PeerConnection = {
         peerId,
         role: r.role as ClawsRole,
         peerName: r.peerName ?? 'unnamed',
         terminalId: r.terminalId,
-        capabilities: r.capabilities ?? [],
+        capabilities,
         socket: ctx.socket,
-        subscriptions: new Map(),
+        subscriptions,
         lastSeen: Date.now(),
         connectedAt: Date.now(),
+        fingerprint,
       };
       this.peers.set(peerId, peer);
       this.socketToPeer.set(ctx.socket, peerId);
       ctx.setPeerId(peerId);
       ctx.setNegotiatedProtocol('claws/2');
-      this.opts.logger(`[claws/2] peer registered: ${peerId} role=${peer.role} name=${peer.peerName}`);
+
+      // Re-add restored subscriptions to the subscription index.
+      if (tombstone) {
+        for (const pattern of peer.subscriptions.values()) {
+          if (!this.subscriptionIndex.has(pattern)) this.subscriptionIndex.set(pattern, new Set());
+          this.subscriptionIndex.get(pattern)!.add(peerId);
+        }
+        // Re-bind any tasks that were assigned to this peerId while disconnected.
+        for (const task of this.tasks.values()) {
+          if (task.assignee === peerId && ['pending', 'running', 'blocked'].includes(task.status)) {
+            task.updatedAt = Date.now();
+          }
+        }
+        this.opts.logger(`[claws/2] peer reconnected (restored): ${peerId} name=${peer.peerName} subs=${peer.subscriptions.size}`);
+      } else {
+        this.opts.logger(`[claws/2] peer registered: ${peerId} role=${peer.role} name=${peer.peerName}`);
+      }
+
+      // Auto-subscribe workers to their cmd channel (skip if already restored).
       if (peer.role === 'worker') {
         const cmdTopic = `cmd.${peerId}.**`;
-        const subId = `s_${(++this.subSeq).toString(16).padStart(4, '0')}`;
-        peer.subscriptions.set(subId, cmdTopic);
-        if (!this.subscriptionIndex.has(cmdTopic)) this.subscriptionIndex.set(cmdTopic, new Set());
-        this.subscriptionIndex.get(cmdTopic)!.add(peerId);
+        const alreadySubscribed = Array.from(peer.subscriptions.values()).includes(cmdTopic);
+        if (!alreadySubscribed) {
+          const subId = `s_${(++this.subSeq).toString(16).padStart(4, '0')}`;
+          peer.subscriptions.set(subId, cmdTopic);
+          if (!this.subscriptionIndex.has(cmdTopic)) this.subscriptionIndex.set(cmdTopic, new Set());
+          this.subscriptionIndex.get(cmdTopic)!.add(peerId);
+        }
       }
+      // If this peer is a wave sub-worker, record its heartbeat.
+      if (r.waveId && r.subWorkerRole) {
+        this.waveRegistry.recordHeartbeat(r.waveId, r.subWorkerRole as SubWorkerRole, peerId);
+      }
+
       return {
         ok: true,
         peerId,
         protocol: PROTOCOL_VERSION_V2,
         serverCapabilities: ['push', 'broadcast', 'tasks'],
         orchestratorPresent: this.hasOrchestrator(),
+        restored: tombstone !== undefined,
       };
     }
 
@@ -794,17 +979,20 @@ export class ClawsServer {
       if (denied) return denied;
       const r = req as import('./protocol').SubscribeRequest;
       if (!r.topic || typeof r.topic !== 'string') return { ok: false, error: 'topic required' };
+      if (r.fromCursor !== undefined && parseCursor(r.fromCursor) === null) {
+        return { ok: false, error: 'invalid cursor format' };
+      }
       const peerId = ctx.getPeerId()!;
       const peer = this.peers.get(peerId)!;
       const subId = `s_${(++this.subSeq).toString(16).padStart(4, '0')}`;
       peer.subscriptions.set(subId, r.topic);
       if (!this.subscriptionIndex.has(r.topic)) this.subscriptionIndex.set(r.topic, new Set());
       this.subscriptionIndex.get(r.topic)!.add(peerId);
-      // TODO(P1 v0.7.6): fromCursor replay — read event log from cursor and push
-      // matching events before switching to live delivery. Structural contract is
-      // in place; full implementation deferred to v0.7.6.
       if (r.fromCursor) {
-        this.opts.logger(`[claws/2] fromCursor replay not yet implemented (peer=${peerId} cursor=${r.fromCursor}) — live delivery only`);
+        const cursor = r.fromCursor;
+        const topicPattern = r.topic;
+        const socket = ctx.socket;
+        setImmediate(() => { void this.replayFromCursor(cursor, topicPattern, subId, socket); });
       }
       return { ok: true, subscriptionId: subId };
     }
@@ -826,6 +1014,8 @@ export class ClawsServer {
     if (cmd === 'publish') {
       const denied = this.requireRole(ctx, ['orchestrator', 'worker', 'observer']);
       if (denied) return denied;
+      const capDenied = this.requireCapability(ctx, 'publish');
+      if (capDenied) return capDenied;
       const r = req as import('./protocol').PublishRequest;
       if (!r.topic || typeof r.topic !== 'string') return { ok: false, error: 'topic required' };
       const peerId = ctx.getPeerId()!;
@@ -1078,6 +1268,82 @@ export class ClawsServer {
         if (sepIdx !== -1) return { ok: false, error: msg.slice(0, sepIdx), message: msg.slice(sepIdx + 3) };
         return { ok: false, error: msg, message: msg };
       }
+    }
+
+    // ── Wave army commands ──────────────────────────────────────────────────
+
+    if (cmd === 'wave.create') {
+      const r = req as import('./protocol').WaveCreateRequest;
+      if (!r.waveId) return { ok: false, error: 'wave.create:missing-waveId' };
+      if (!Array.isArray(r.manifest) || r.manifest.length === 0) {
+        return { ok: false, error: 'wave.create:missing-manifest' };
+      }
+      const peerId = ctx.getPeerId() ?? 'unknown';
+      const wave = this.waveRegistry.createWave(
+        r.waveId,
+        Array.isArray(r.layers) ? r.layers : [],
+        r.manifest as SubWorkerRole[],
+        peerId,
+      );
+      void this.emitSystemEvent(`wave.${r.waveId}.lead.boot`, {
+        waveId: r.waveId,
+        peerName: this.peers.get(peerId)?.peerName ?? peerId,
+        layers: wave.layers,
+        manifest: r.manifest,
+        started_at: new Date(wave.createdAt).toISOString(),
+      });
+      return { ok: true, waveId: wave.waveId, createdAt: wave.createdAt };
+    }
+
+    if (cmd === 'wave.status') {
+      const r = req as import('./protocol').WaveStatusRequest;
+      if (!r.waveId) return { ok: false, error: 'wave.status:missing-waveId' };
+      const wave = this.waveRegistry.getWave(r.waveId);
+      if (!wave) return { ok: false, error: `wave.status:not-found:${r.waveId}` };
+      const subWorkers = [...wave.subWorkers.entries()].map(([role, entry]) => ({
+        role,
+        peerId: entry.peerId ?? null,
+        lastHeartbeatMs: entry.lastHeartbeatMs,
+        complete: entry.complete,
+      }));
+      return {
+        ok: true,
+        waveId: wave.waveId,
+        layers: wave.layers,
+        leadPeerId: wave.leadPeerId,
+        subWorkers,
+        complete: wave.complete,
+        createdAt: wave.createdAt,
+        completedAt: wave.completedAt ?? null,
+        summary: wave.summary ?? null,
+        commits: wave.commits ?? [],
+        regressionClean: wave.regressionClean ?? null,
+      };
+    }
+
+    if (cmd === 'wave.complete') {
+      const r = req as import('./protocol').WaveCompleteRequest;
+      if (!r.waveId) return { ok: false, error: 'wave.complete:missing-waveId' };
+      const peerId = ctx.getPeerId() ?? 'unknown';
+      const wave = this.waveRegistry.getWave(r.waveId);
+      if (!wave) return { ok: false, error: `wave.complete:not-found:${r.waveId}` };
+      if (wave.leadPeerId !== peerId) {
+        return { ok: false, error: 'wave.complete:not-lead — only the LEAD peer may complete a wave' };
+      }
+      const completed = this.waveRegistry.completeWave(
+        r.waveId,
+        r.summary,
+        r.commits,
+        r.regressionClean,
+      );
+      if (!completed) return { ok: false, error: `wave.complete:already-complete:${r.waveId}` };
+      void this.emitSystemEvent(`wave.${r.waveId}.complete`, {
+        waveId: r.waveId,
+        status: 'ok',
+        commits: r.commits ?? [],
+        regression_clean: r.regressionClean ?? false,
+      });
+      return { ok: true, waveId: r.waveId, completedAt: completed.completedAt };
     }
 
     return { ok: false, error: `unknown cmd: ${cmd}` };

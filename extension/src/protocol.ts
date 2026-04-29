@@ -13,6 +13,21 @@
 export const PROTOCOL_VERSION = 'claws/1';
 export const PROTOCOL_VERSION_V2 = 'claws/2';
 
+// ── Wave army protocol types ───────────────────────────────────────────────
+
+/** Sub-worker roles in the wave army protocol. */
+export type SubWorkerRole = 'lead' | 'tester' | 'reviewer' | 'auditor' | 'bench' | 'doc';
+
+/** All contracted sub-worker roles with their discipline obligations. */
+export const ContractedRoles: Record<SubWorkerRole, string> = {
+  lead:     'Implementer — owns the diff, commits, builds, PIAFEUR loop',
+  tester:   'TDD — writes red tests before impl, validates green after',
+  reviewer: 'Read-only code review — watches git diff, publishes findings',
+  auditor:  'Read-only — sweeps for race conditions, schema correctness, regression risks',
+  bench:    'Read-only — runs perf benchmarks after green, publishes metrics',
+  doc:      'Docs only — updates CHANGELOG, gap doc, templates',
+};
+
 export interface BaseRequest {
   id?: number | string;
   cmd: string;
@@ -127,6 +142,42 @@ export interface HelloRequest extends BaseRequest {
   peerName: string;
   terminalId?: string;
   capabilities?: string[];
+  /**
+   * Optional stable identity nonce. When present, the server derives a
+   * fingerprint-based peerId (`fp_` + sha256(peerName+role+nonce)[:12]).
+   * Reconnecting with the same nonce restores subscriptions and re-binds
+   * any orphaned tasks assigned to the previous connection session.
+   */
+  instanceNonce?: string;
+  /** Wave id this peer belongs to (wave army protocol). */
+  waveId?: string;
+  /** Sub-worker role within the wave (wave army protocol). */
+  subWorkerRole?: SubWorkerRole;
+}
+
+/** Create a new wave, registering expected sub-worker roles and heartbeat manifest. */
+export interface WaveCreateRequest extends BaseRequest {
+  cmd: 'wave.create';
+  waveId: string;
+  /** Human-readable layers or goals this wave covers. */
+  layers: string[];
+  /** Expected sub-worker roles — server tracks heartbeats for each. */
+  manifest: SubWorkerRole[];
+}
+
+/** Mark a wave as complete. Only the LEAD should call this. */
+export interface WaveCompleteRequest extends BaseRequest {
+  cmd: 'wave.complete';
+  waveId: string;
+  summary: string;
+  commits?: string[];
+  regressionClean?: boolean;
+}
+
+/** Read-only status snapshot for a wave. */
+export interface WaveStatusRequest extends BaseRequest {
+  cmd: 'wave.status';
+  waveId: string;
 }
 
 /**
@@ -148,6 +199,13 @@ export interface SubscribeRequest extends BaseRequest {
    * warning, then falls through to live delivery only.
    */
   fromCursor?: string;
+}
+
+/** Response to a subscribe command. replayedCount is populated when fromCursor replay is used. */
+export interface SubscribeResponse extends ClawsResponse {
+  ok: true;
+  subscriptionId: string;
+  replayedCount?: number;
 }
 
 /** Remove a subscription by id. */
@@ -279,6 +337,9 @@ export type ClawsRequest =
   | LifecycleAdvanceRequest
   | LifecycleSnapshotRequest
   | LifecycleReflectRequest
+  | WaveCreateRequest
+  | WaveCompleteRequest
+  | WaveStatusRequest
   | BaseRequest;
 
 export interface TerminalDescriptor {
