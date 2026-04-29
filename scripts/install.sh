@@ -547,7 +547,7 @@ fi
 # read from the clone at runtime. If the clone is behind EXPECTED_MIN_VERSION,
 # the working tree is stale and the installer aborts — that was the v0.5.1 bug
 # where users saw "v0.4.0 — installed" because their ~/.claws-src/ was stale.
-EXPECTED_MIN_VERSION="0.5.7"
+EXPECTED_MIN_VERSION="0.7.4"
 EXT_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.0.0')}" 2>/dev/null || echo "0.0.0")
 
 # Flag stale clones loudly so users don't silently run on an old version.
