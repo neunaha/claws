@@ -64,21 +64,50 @@ h1 "Detect VS Code Electron version"
 if [ -n "$ELECTRON_VERSION" ]; then
   info "ELECTRON_VERSION env override: $ELECTRON_VERSION"
 elif [ "$(uname -s)" = "Darwin" ]; then
-  for app in \
-    "/Applications/Visual Studio Code.app" \
-    "/Applications/Visual Studio Code - Insiders.app" \
-    "/Applications/Cursor.app" \
-    "/Applications/Windsurf.app"; do
-    plist="$app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
+  # M-36: TERM_PROGRAM-aware ordering + CURSOR_CHANNEL secondary signal.
+  _rn_tp="${TERM_PROGRAM:-}"
+  [ "$_rn_tp" = "vscode" ] && [ -n "${CURSOR_CHANNEL:-}" ] && _rn_tp="cursor"
+  _rn_tp=$(echo "$_rn_tp" | tr '[:upper:]' '[:lower:]')
+  case "$_rn_tp" in
+    cursor)   _rn_darwin_apps=('/Applications/Cursor.app' '/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Windsurf.app') ;;
+    windsurf) _rn_darwin_apps=('/Applications/Windsurf.app' '/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Cursor.app') ;;
+    *)        _rn_darwin_apps=('/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Cursor.app' '/Applications/Windsurf.app') ;;
+  esac
+  for _rn_app in "${_rn_darwin_apps[@]}"; do
+    plist="$_rn_app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
     if [ -f "$plist" ]; then
       v=$(plutil -extract CFBundleVersion raw "$plist" 2>/dev/null || true)
       if [ -n "$v" ]; then
         ELECTRON_VERSION="$v"
-        ok "$(basename "$app") uses Electron $v"
+        ok "$(basename "$_rn_app") uses Electron $v"
         break
       fi
     else
-      info "$(basename "$app"): not installed"
+      info "$(basename "$_rn_app"): not installed"
+    fi
+  done
+elif [ "$(uname -s)" = "Linux" ]; then
+  # M-36: Linux Cursor/Windsurf paths + TERM_PROGRAM ordering.
+  _rn_tp="${TERM_PROGRAM:-}"
+  [ "$_rn_tp" = "vscode" ] && [ -n "${CURSOR_CHANNEL:-}" ] && _rn_tp="cursor"
+  _rn_tp=$(echo "$_rn_tp" | tr '[:upper:]' '[:lower:]')
+  _rn_linux_vscode=('/usr/share/code/electron' '/usr/lib/code/electron' '/opt/visual-studio-code/electron' '/snap/code/current/electron')
+  _rn_linux_cursor=('/usr/share/cursor/electron' '/opt/cursor/electron' '/snap/cursor/current/usr/share/cursor/electron')
+  _rn_linux_windsurf=('/usr/share/windsurf/electron' '/opt/windsurf/electron')
+  _rn_linux_candidates=()
+  case "$_rn_tp" in
+    cursor)   _rn_linux_candidates=("${_rn_linux_cursor[@]}" "${_rn_linux_vscode[@]}" "${_rn_linux_windsurf[@]}") ;;
+    windsurf) _rn_linux_candidates=("${_rn_linux_windsurf[@]}" "${_rn_linux_vscode[@]}" "${_rn_linux_cursor[@]}") ;;
+    *)        _rn_linux_candidates=("${_rn_linux_vscode[@]}" "${_rn_linux_cursor[@]}" "${_rn_linux_windsurf[@]}") ;;
+  esac
+  for _rn_ep in "${_rn_linux_candidates[@]}"; do
+    if [ -x "$_rn_ep" ]; then
+      v=$("$_rn_ep" --version 2>/dev/null | sed 's/^v//' || true)
+      if echo "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        ELECTRON_VERSION="$v"
+        ok "detected Electron $v from $_rn_ep"
+        break
+      fi
     fi
   done
 fi

@@ -94,15 +94,40 @@ NPTY_BIN="$INSTALL_DIR/extension/node_modules/node-pty/build/Release/pty.node"
 ELECTRON_ABI_FILE="$INSTALL_DIR/extension/dist/.electron-abi"
 ELECTRON_VERSION=""
 if [ "$(uname)" = "Darwin" ]; then
-  for app in \
-    "/Applications/Visual Studio Code.app" \
-    "/Applications/Visual Studio Code - Insiders.app" \
-    "/Applications/Cursor.app" \
-    "/Applications/Windsurf.app"; do
-    plist="$app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
+  # M-32: prefer $TERM_PROGRAM-matching editor; M-33-compat: CURSOR_CHANNEL overrides vscode.
+  _fix_tp="${TERM_PROGRAM:-}"
+  [ "$_fix_tp" = "vscode" ] && [ -n "${CURSOR_CHANNEL:-}" ] && _fix_tp="cursor"
+  _fix_tp=$(echo "$_fix_tp" | tr '[:upper:]' '[:lower:]')
+  case "$_fix_tp" in
+    cursor)   _fix_darwin_apps=('/Applications/Cursor.app' '/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Windsurf.app') ;;
+    windsurf) _fix_darwin_apps=('/Applications/Windsurf.app' '/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Cursor.app') ;;
+    *)        _fix_darwin_apps=('/Applications/Visual Studio Code.app' '/Applications/Visual Studio Code - Insiders.app' '/Applications/Cursor.app' '/Applications/Windsurf.app') ;;
+  esac
+  for _fix_app in "${_fix_darwin_apps[@]}"; do
+    plist="$_fix_app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
     if [ -f "$plist" ]; then
       v=$(plutil -extract CFBundleVersion raw "$plist" 2>/dev/null || true)
       [ -n "$v" ] && ELECTRON_VERSION="$v" && break
+    fi
+  done
+elif [ "$(uname)" = "Linux" ]; then
+  # M-33: Linux Cursor/Windsurf paths + TERM_PROGRAM ordering.
+  _fix_tp="${TERM_PROGRAM:-}"
+  [ "$_fix_tp" = "vscode" ] && [ -n "${CURSOR_CHANNEL:-}" ] && _fix_tp="cursor"
+  _fix_tp=$(echo "$_fix_tp" | tr '[:upper:]' '[:lower:]')
+  _fix_linux_vscode=('/usr/share/code/electron' '/usr/lib/code/electron' '/opt/visual-studio-code/electron' '/snap/code/current/electron')
+  _fix_linux_cursor=('/usr/share/cursor/electron' '/opt/cursor/electron' '/snap/cursor/current/usr/share/cursor/electron')
+  _fix_linux_windsurf=('/usr/share/windsurf/electron' '/opt/windsurf/electron')
+  _fix_linux_candidates=()
+  case "$_fix_tp" in
+    cursor)   _fix_linux_candidates=("${_fix_linux_cursor[@]}" "${_fix_linux_vscode[@]}" "${_fix_linux_windsurf[@]}") ;;
+    windsurf) _fix_linux_candidates=("${_fix_linux_windsurf[@]}" "${_fix_linux_vscode[@]}" "${_fix_linux_cursor[@]}") ;;
+    *)        _fix_linux_candidates=("${_fix_linux_vscode[@]}" "${_fix_linux_cursor[@]}" "${_fix_linux_windsurf[@]}") ;;
+  esac
+  for _fix_ep in "${_fix_linux_candidates[@]}"; do
+    if [ -x "$_fix_ep" ]; then
+      v=$("$_fix_ep" --version 2>/dev/null | sed 's/^v//' || true)
+      if echo "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then ELECTRON_VERSION="$v" && break; fi
     fi
   done
 fi
