@@ -268,7 +268,7 @@ check('SystemPeerLeftV1 — reason=vanished → fails', () => {
 
 // ─── SCHEMA_BY_NAME ──────────────────────────────────────────────────────────
 
-check('SCHEMA_BY_NAME — all 30 schema names are present', () => {
+check('SCHEMA_BY_NAME — all 32 schema names are present', () => {
   const expected = [
     'worker-boot-v1', 'worker-phase-v1', 'worker-event-v1',
     'worker-heartbeat-v1', 'worker-complete-v1',
@@ -283,11 +283,12 @@ check('SCHEMA_BY_NAME — all 30 schema names are present', () => {
     'command-end-v1',
     'wave-lead-boot-v1', 'wave-lead-complete-v1', 'wave-tester-red-complete-v1',
     'wave-review-finding-v1', 'wave-audit-finding-v1', 'wave-bench-metric-v1', 'wave-doc-complete-v1',
+    'cmd-deliver-v1', 'cmd-ack-v1',
   ];
   for (const name of expected) {
     assert.ok(s.SCHEMA_BY_NAME[name] !== undefined, `Missing schema: ${name}`);
   }
-  assert.strictEqual(Object.keys(s.SCHEMA_BY_NAME).length, 30);
+  assert.strictEqual(Object.keys(s.SCHEMA_BY_NAME).length, 32);
 });
 
 // ─── PhaseEnum ───────────────────────────────────────────────────────────────

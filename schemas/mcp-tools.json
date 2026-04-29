@@ -499,5 +499,72 @@
       ],
       "additionalProperties": false
     }
+  },
+  {
+    "name": "claws_deliver_cmd",
+    "description": "Deliver a typed command envelope to a specific worker peer over the pub/sub bus. The server validates the payload against the declared schema, allocates a monotonic sequence number, and pushes the command to the worker's auto-subscription. Use idempotencyKey (a UUID) to make retries safe — duplicate keys return {ok:true, duplicate:true} without re-delivering.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "targetPeerId": {
+          "type": "string",
+          "description": "peerId of the worker to receive the command."
+        },
+        "cmdTopic": {
+          "type": "string",
+          "description": "Full topic the server will push on (e.g. cmd.p_000002.abort)."
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "EnvelopeV1 payload: {v:1, id:uuid, schema:string, from_peer, from_name, ts_published, data}."
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Client-generated UUID. Duplicate keys return {ok:true, duplicate:true} without re-delivering."
+        }
+      },
+      "required": [
+        "targetPeerId",
+        "cmdTopic",
+        "payload",
+        "idempotencyKey"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_cmd_ack",
+    "description": "Acknowledge receipt and execution of a delivered command (worker-only). The server fans out a cmd.<workerPeerId>.ack event to all orchestrator subscribers. status must be one of: executed, rejected, duplicate.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Sequence number from the deliver-cmd response."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "executed",
+            "rejected",
+            "duplicate"
+          ],
+          "description": "Execution outcome reported by the worker."
+        },
+        "correlation_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Optional UUID carried through for orchestrator correlation."
+        }
+      },
+      "required": [
+        "seq",
+        "status"
+      ],
+      "additionalProperties": false
+    }
   }
 ]

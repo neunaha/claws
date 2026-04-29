@@ -53,6 +53,10 @@ const DESC = {
     'Fetch a live snapshot of the wave: sub-worker heartbeat timestamps, completion flags, and wave-level complete/summary fields. Use this to monitor progress or diagnose silent sub-workers.',
   claws_wave_complete:
     'Mark the wave as complete on the server. Clears all sub-worker violation timers. Call this after every sub-worker has published its complete event and the LEAD has committed, built, and run the full test suite. Only the peer that created the wave (LEAD) may call this.',
+  claws_deliver_cmd:
+    "Deliver a typed command envelope to a specific worker peer over the pub/sub bus. The server validates the payload against the declared schema, allocates a monotonic sequence number, and pushes the command to the worker's auto-subscription. Use idempotencyKey (a UUID) to make retries safe — duplicate keys return {ok:true, duplicate:true} without re-delivering.",
+  claws_cmd_ack:
+    'Acknowledge receipt and execution of a delivered command (worker-only). The server fans out a cmd.<workerPeerId>.ack event to all orchestrator subscribers. status must be one of: executed, rejected, duplicate.',
 };
 
 export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
@@ -177,6 +181,19 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
       summary:         z.string().describe('One-paragraph retrospective: what shipped, test result, any regressions.'),
       commits:         z.array(z.string()).describe('Git commit SHAs produced during this wave.').optional(),
       regressionClean: z.boolean().describe('True if the full test suite passed with no regressions after the wave\'s changes.').optional(),
+    })),
+
+    tool('claws_deliver_cmd', z.object({
+      targetPeerId:   z.string().describe('peerId of the worker to receive the command.'),
+      cmdTopic:       z.string().describe('Full topic the server will push on (e.g. cmd.p_000002.abort).'),
+      payload:        z.record(z.unknown()).describe('EnvelopeV1 payload: {v:1, id:uuid, schema:string, from_peer, from_name, ts_published, data}.'),
+      idempotencyKey: z.string().uuid().describe('Client-generated UUID. Duplicate keys return {ok:true, duplicate:true} without re-delivering.'),
+    })),
+
+    tool('claws_cmd_ack', z.object({
+      seq:            z.number().int().nonnegative().describe('Sequence number from the deliver-cmd response.'),
+      status:         z.enum(['executed', 'rejected', 'duplicate']).describe('Execution outcome reported by the worker.'),
+      correlation_id: z.string().uuid().describe('Optional UUID carried through for orchestrator correlation.').optional(),
     })),
   ];
 

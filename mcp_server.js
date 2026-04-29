@@ -956,6 +956,41 @@ async function handleTool(name, args) {
     return { content: [{ type: 'text', text: JSON.stringify({ waveId: resp.waveId, completedAt: resp.completedAt }, null, 2) }] };
   }
 
+  if (name === 'claws_deliver_cmd') {
+    const payload = typeof args.payload === 'string' ? JSON.parse(args.payload) : args.payload;
+    const resp = await clawsRpc(sock, {
+      cmd: 'deliver-cmd',
+      protocol: 'claws/2',
+      targetPeerId: args.targetPeerId,
+      cmdTopic: args.cmdTopic,
+      payload,
+      idempotencyKey: args.idempotencyKey,
+    });
+    if (!resp.ok && !resp.duplicate) return toolError(`ERROR: ${resp.error}`);
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: resp.ok,
+          seq: resp.seq,
+          duplicate: resp.duplicate ?? false,
+        }, null, 2),
+      }],
+    };
+  }
+
+  if (name === 'claws_cmd_ack') {
+    const resp = await clawsRpc(sock, {
+      cmd: 'cmd.ack',
+      protocol: 'claws/2',
+      seq: args.seq,
+      status: args.status,
+      ...(args.correlation_id ? { correlation_id: args.correlation_id } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true }, null, 2) }] };
+  }
+
   if (name === 'claws_dispatch_subworker') {
     const workerName = `wave-${args.waveId}-${args.role}`;
     const cr = await clawsRpc(sock, {

@@ -141,6 +141,12 @@ export class ClawsServer {
   private readonly lifecycleStore: LifecycleStore;
   /** Wave army registry — tracks active waves, sub-worker heartbeats, and violation detection. */
   private readonly waveRegistry: WaveRegistry;
+  /** Monotonic sequence counter for deliver-cmd frames. */
+  private cmdSeq = 0;
+  /** Idempotency map: idempotencyKey → {seq, targetPeerId}. Prevents re-delivery on retry. */
+  private readonly cmdIdempotencyMap = new Map<string, { seq: number; targetPeerId: string }>();
+  /** Delivery record: seq → {targetPeerId, from, cmdTopic}. Needed to fan-out cmd.ack to orchestrator. */
+  private readonly cmdDeliveryMap = new Map<number, { targetPeerId: string; from: string; cmdTopic: string }>();
 
   private readonly eventLog = new EventLogWriter();
   private heartbeatTimer: NodeJS.Timeout | null = null;
@@ -1426,6 +1432,57 @@ export class ClawsServer {
         regression_clean: r.regressionClean ?? false,
       });
       return { ok: true, waveId: r.waveId, completedAt: completed.completedAt };
+    }
+
+    if (cmd === 'deliver-cmd') {
+      const denied = this.requireRole(ctx, ['orchestrator']);
+      if (denied) return denied;
+      const r = req as import('./protocol').DeliverCmdRequest;
+      if (!r.targetPeerId) return { ok: false, error: 'deliver-cmd:missing-targetPeerId' };
+      if (!r.cmdTopic)     return { ok: false, error: 'deliver-cmd:missing-cmdTopic' };
+      if (!r.idempotencyKey) return { ok: false, error: 'deliver-cmd:missing-idempotencyKey' };
+      const targetPeer = this.peers.get(r.targetPeerId);
+      if (!targetPeer) return { ok: false, error: `deliver-cmd:target-not-found:${r.targetPeerId}` };
+      const existing = this.cmdIdempotencyMap.get(r.idempotencyKey);
+      if (existing) return { ok: true, duplicate: true, seq: existing.seq };
+      const seq = ++this.cmdSeq;
+      const from = ctx.getPeerId() ?? 'unknown';
+      this.cmdIdempotencyMap.set(r.idempotencyKey, { seq, targetPeerId: r.targetPeerId });
+      this.cmdDeliveryMap.set(seq, { targetPeerId: r.targetPeerId, from, cmdTopic: r.cmdTopic });
+      try {
+        await this.eventLog.append({
+          schema: 'cmd-deliver-v1',
+          topic: r.cmdTopic,
+          peerId: from,
+          peerName: ctx.getPeerId() ?? 'unknown',
+          payload: { targetPeerId: r.targetPeerId, cmdTopic: r.cmdTopic, idempotencyKey: r.idempotencyKey, seq },
+        });
+      } catch { /* non-fatal: delivery continues even if log fails */ }
+      this.pushFrame(targetPeer.socket, r.cmdTopic, from, r.payload, seq);
+      return { ok: true, seq };
+    }
+
+    if (cmd === 'cmd.ack') {
+      const denied = this.requireRole(ctx, ['worker']);
+      if (denied) return denied;
+      const r = req as import('./protocol').CmdAckRequest;
+      const workerPeerId = ctx.getPeerId() ?? 'unknown';
+      const ackTopic = `cmd.${workerPeerId}.ack`;
+      const ackPayload: Record<string, unknown> = { seq: r.seq, status: r.status, workerPeerId };
+      if (r.correlation_id) ackPayload.correlation_id = r.correlation_id;
+      let sequence: number | undefined;
+      try {
+        const logResult = await this.eventLog.append({
+          schema: 'cmd-ack-v1',
+          topic: ackTopic,
+          peerId: workerPeerId,
+          peerName: workerPeerId,
+          payload: ackPayload,
+        });
+        sequence = logResult.sequence >= 0 ? logResult.sequence : undefined;
+      } catch { /* non-fatal */ }
+      this.fanOut(ackTopic, workerPeerId, ackPayload, false, sequence);
+      return { ok: true };
     }
 
     return { ok: false, error: `unknown cmd: ${cmd}` };

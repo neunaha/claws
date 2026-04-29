@@ -314,6 +314,24 @@ export const WaveDocCompleteV1 = z.object({
 });
 export type WaveDocComplete = z.infer<typeof WaveDocCompleteV1>;
 
+// ── Structured control schemas (L10 deliver-cmd / cmd.ack) ───────────────────
+
+export const CmdDeliverV1 = z.object({
+  targetPeerId:   z.string().min(1),
+  cmdTopic:       z.string().min(1),
+  payload:        EnvelopeV1,
+  idempotencyKey: z.string().uuid(),
+  seq:            z.number().int().nonnegative(),
+});
+export type CmdDeliver = z.infer<typeof CmdDeliverV1>;
+
+export const CmdAckV1 = z.object({
+  seq:            z.number().int().nonnegative(),
+  status:         z.enum(['executed', 'rejected', 'duplicate']),
+  correlation_id: z.string().uuid().optional(),
+});
+export type CmdAck = z.infer<typeof CmdAckV1>;
+
 // ── Schema name → Zod schema map (for server validation and SDK use) ───────
 
 export const SCHEMA_BY_NAME: Record<string, z.ZodTypeAny> = {
@@ -347,4 +365,6 @@ export const SCHEMA_BY_NAME: Record<string, z.ZodTypeAny> = {
   'wave-audit-finding-v1':         WaveAuditFindingV1,
   'wave-bench-metric-v1':          WaveBenchMetricV1,
   'wave-doc-complete-v1':          WaveDocCompleteV1,
+  'cmd-deliver-v1':                CmdDeliverV1,
+  'cmd-ack-v1':                    CmdAckV1,
 };

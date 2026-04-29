@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "cmd-ack-v1",
+  "$ref": "#/definitions/cmd-ack-v1",
+  "definitions": {
+    "cmd-ack-v1": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "executed",
+            "rejected",
+            "duplicate"
+          ]
+        },
+        "correlation_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "seq",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

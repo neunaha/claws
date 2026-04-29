@@ -311,6 +311,23 @@ export interface LifecycleReflectRequest extends BaseRequest {
   reflect: string;
 }
 
+/** Deliver a typed command envelope to a specific worker peer (orchestrator-only). */
+export interface DeliverCmdRequest extends BaseRequest {
+  cmd: 'deliver-cmd';
+  targetPeerId: string;
+  cmdTopic: string;
+  payload: unknown;
+  idempotencyKey: string;
+}
+
+/** Worker acknowledges receipt of a delivered command; fans out to orchestrator. */
+export interface CmdAckRequest extends BaseRequest {
+  cmd: 'cmd.ack';
+  seq: number;
+  status: 'executed' | 'rejected' | 'duplicate';
+  correlation_id?: string;
+}
+
 export type ClawsRequest =
   | ListRequest
   | CreateRequest
@@ -340,6 +357,8 @@ export type ClawsRequest =
   | WaveCreateRequest
   | WaveCompleteRequest
   | WaveStatusRequest
+  | DeliverCmdRequest
+  | CmdAckRequest
   | BaseRequest;
 
 export interface TerminalDescriptor {

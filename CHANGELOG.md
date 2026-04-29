@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — 0.7.6
 
+### Added — W6/L10 Structured Control — deliver-cmd + cmd.ack (Wave 6)
+
+- `extension/src/server.ts` — `deliver-cmd` handler: orchestrator-only; validates target peer exists, deduplicates by `idempotencyKey`, allocates monotonic `seq`, appends to event log, and pushes the command envelope to the worker's auto-subscription topic. `cmd.ack` handler: worker-only; fans out `cmd.<peerId>.ack` to all subscribed orchestrators with the `seq` and `status` fields.
+- `extension/src/protocol.ts` — `DeliverCmdRequest` and `CmdAckRequest` interfaces added to the `ClawsRequest` union.
+- `extension/src/event-schemas.ts` — `CmdDeliverV1` and `CmdAckV1` Zod schemas; `SCHEMA_BY_NAME` grows from 30 → 32.
+- `extension/src/topic-registry.ts` — `cmd.*.ack` pattern registered with `CmdAckV1` schema; registry grows 28 → 29.
+- `mcp_server.js` — `claws_deliver_cmd` and `claws_cmd_ack` MCP tool handlers.
+- `schemas/mcp-tools.json` — 21 → 23 tools; `schemas/json/cmd-deliver-v1.json` and `schemas/json/cmd-ack-v1.json` generated.
+- `scripts/codegen/gen-mcp-tools.mjs` — descriptions and input schemas for the two new tools.
+- `extension/test/claws-v2-control.test.js` — 31-check integration suite (6 suites): basic delivery (push frame, seq number), idempotency (duplicate key returns `{ok:true, duplicate:true}` without re-push), unknown peer error, role gating (orchestrator cannot call `cmd.ack`), event-log durability, and `cmd.*.ack` registry subscription.
+
 ### Added — W7/L13+L14 Observability and Rate Control (Wave 7)
 
 - `extension/src/event-log.ts` — `lastSequence` getter: returns the last successfully appended sequence number (min 0); used by `system.metrics` heartbeat payload.
