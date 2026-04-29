@@ -69,17 +69,26 @@ function listTmpFiles(dir) {
     } finally { cleanTmpDir(dir); }
   });
 
-  // 3. writeAtomic concurrent writes — no corruption (10 parallel writes to same file)
-  await check('writeAtomic: 10 concurrent writes produce valid file (no corruption)', async () => {
+  // 3. writeAtomic concurrent writes — all 10 succeed, content is one exact payload, no tmp leftover (F4)
+  await check('writeAtomic: 10 concurrent writes all succeed, content exact, no tmp leftover', async () => {
     const dir = makeTmpDir();
     try {
       const p = path.join(dir, 'concurrent.txt');
       const payloads = Array.from({ length: 10 }, (_, i) => `payload-${i}\n`);
-      await Promise.all(payloads.map(content => writeAtomic(p, content)));
-      // File must exist and contain exactly one of the payloads (last rename wins)
+      // All 10 writes must resolve without throwing
+      const settled = await Promise.allSettled(payloads.map(content => writeAtomic(p, content)));
+      const rejected = settled.filter(s => s.status === 'rejected');
+      assert.strictEqual(
+        rejected.length, 0,
+        `${rejected.length} write(s) rejected: ${rejected.map(r => r.reason?.message).join(', ')}`
+      );
+      // Final content must be exactly one of the payloads — no partial-byte corruption
       const content = fs.readFileSync(p, 'utf8');
-      assert.ok(payloads.some(pl => content === pl), `content "${content}" must be one of the payloads`);
-      // No tmp files should be left
+      assert.ok(
+        payloads.some(pl => content === pl),
+        `content "${content}" must be exactly one of the 10 payloads (no partial writes)`
+      );
+      // No .claws-tmp.* files should remain — nonce ensures cleanup even on collision
       assert.deepStrictEqual(listTmpFiles(dir), [], 'no .claws-tmp.* files should remain');
     } finally { cleanTmpDir(dir); }
   });
