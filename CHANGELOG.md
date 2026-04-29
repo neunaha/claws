@@ -5,6 +5,13 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4-bulletproof] - 2026-04-29 — Layer 0: shared helpers (M-02, M-03, M-01, M-09 foundation)
+
+### Added
+
+- `scripts/_helpers/json-safe.mjs` — JSONC-tolerant parse + `mergeIntoFile` that aborts on parse error (never silently resets to `{}`). Foundation for M-02 (`.mcp.json` wipe) and M-03 (`settings.json` wipe) fixes.
+- `scripts/_helpers/atomic-file.mjs` — rename-pattern atomic write/dir-copy + `backupFile`. Foundation for M-01 (dotfile backup) and M-09 (hooks copy atomicity) fixes.
+
 ## [0.7.4] - 2026-04-28 — Phase γ (reverse channel + event log) + MCP socket fix
 
 This release integrates Phase γ (γ.1 reverse channel + γ.2 persistent event log)
