@@ -97,11 +97,11 @@ fi
 # config keys, notifying of breaking changes) go here. On first run each
 # migration can write a marker file so it never runs twice.
 #
-# Safe socket cleanup (v0.7.3). The previous version used `find -mtime +1
-# -delete`, which deleted the LIVE socket if VS Code had been open for >24h
-# — the running extension still held the socket fd, but the path was gone,
-# so any new MCP child got ENOENT and the user's MCP appeared "broken".
-# Now we probe the socket; only delete if it's actually unresponsive.
+# M-26: Socket probe is health-check only. The previous version deleted the
+# socket when the probe failed, which races with VS Code's extension hot-reload
+# after a VSIX install — the extension may be momentarily unreachable while
+# reactivating, so a failed probe does NOT mean the socket is stale.
+# Destructive cleanup is deferred to /claws-fix (user-explicit step).
 if [ -S "$PROJECT_ROOT/.claws/claws.sock" ]; then
   _claws_sock="$PROJECT_ROOT/.claws/claws.sock"
   _claws_alive=0
@@ -118,10 +118,11 @@ if [ -S "$PROJECT_ROOT/.claws/claws.sock" ]; then
     fi
   fi
   if [ "$_claws_alive" = "1" ]; then
-    note "claws.sock is live (extension responding) — leaving in place"
+    note "claws.sock is live (extension responding)"
   else
-    rm -f "$_claws_sock" 2>/dev/null || true
-    note "claws.sock was unresponsive — removed; reload VS Code to recreate"
+    note "claws.sock probe returned no response (extension may be reloading after VSIX install)"
+    note "If 'claws_*' tools fail in your next Claude Code session, run /claws-fix to repair"
+    # Do NOT delete the socket here — defer to user-explicit /claws-fix (M-26)
   fi
   unset _claws_sock _claws_alive
 fi
