@@ -11,6 +11,8 @@ import {
   DEFAULT_POLL_LIMIT,
   DEFAULT_STRICT_EVENT_VALIDATION,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
+  DEFAULT_EVENT_LOG_RETENTION_DAYS,
+  DEFAULT_EVENT_LOG_COMPACT,
   ServerConfig,
 } from './server-config';
 import { HistoryEvent } from './protocol';
@@ -284,6 +286,10 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
     pollLimit: cfg('pollLimit', DEFAULT_POLL_LIMIT),
     strictEventValidation: cfg('strictEventValidation', DEFAULT_STRICT_EVENT_VALIDATION),
     heartbeatIntervalMs: cfg('heartbeatIntervalMs', DEFAULT_HEARTBEAT_INTERVAL_MS),
+    eventLog: {
+      retentionDays: cfg('eventLog.retentionDays', DEFAULT_EVENT_LOG_RETENTION_DAYS),
+      compact: cfg('eventLog.compact', DEFAULT_EVENT_LOG_COMPACT),
+    },
   });
 
   const buildIntrospectSnapshot = (): IntrospectSnapshot => {

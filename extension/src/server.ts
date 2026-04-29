@@ -208,6 +208,13 @@ export class ClawsServer {
         // Event log is non-fatal: log a warning and continue in degraded mode.
         this.opts.logger(`[claws] event log disabled at startup: ${String(err)}`);
       }))
+      .then(() => {
+        // Startup compaction: merge tiny segments left from previous runs.
+        if (this.getConfig().eventLog.compact) {
+          return this.eventLog.compact().catch(() => { /* non-fatal */ });
+        }
+        return undefined;
+      })
       .then(() => this.bind(this.socketPath!))
       .then(() => {
         const intervalMs = this.getConfig().heartbeatIntervalMs;
@@ -218,6 +225,11 @@ export class ClawsServer {
               peers: this.peers.size,
               terminals: this.opts.terminalManager.terminalCount,
             });
+            // Retention: delete segments older than the configured threshold.
+            const retentionDays = this.getConfig().eventLog.retentionDays;
+            if (retentionDays > 0) {
+              void this.eventLog.runRetention(retentionDays).catch(() => { /* non-fatal */ });
+            }
           }, intervalMs);
         }
       })

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — 0.7.6
 
+### Added — W5/L8 Event Log Durability Hardening (Wave 5)
+
+- `extension/src/event-log.ts` — `EventLogWriter.runRetention(retentionDays)`: deletes `.jsonl` segments (and companion `.idx` files) whose mtime is older than `retentionDays` days; closes the open fd before unlinking the active segment so no EBUSY on Linux; removes deleted entries from the in-memory manifest and flushes to disk.
+- `extension/src/event-log.ts` — `EventLogWriter.compact()`: on startup, merges all segments smaller than 1 KB (COMPACT_SIZE_THRESHOLD) into a single merged `.jsonl` using atomic tmp-then-rename; preserves event sequence ordering; rebuilds the `.idx` for the merged segment.
+- `extension/src/event-log.ts` — Per-segment `.idx` files: `topic<TAB>byte_offset` index written atomically alongside each `.jsonl` on `close()` and `rotate()`; offsets are the exact byte positions of each record's start, enabling O(1) seek for filtered replay. Written via tmp-then-rename for atomicity.
+- `extension/src/server-config.ts` — `EventLogConfig` interface with `retentionDays` (default 7) and `compact` (default true); added to `ServerConfig` as `eventLog` field; `DEFAULT_EVENT_LOG_RETENTION_DAYS` and `DEFAULT_EVENT_LOG_COMPACT` constants exported.
+- `extension/src/server.ts` — `start()` calls `eventLog.compact()` after `open()` when `eventLog.compact` config is true; heartbeat timer calls `eventLog.runRetention(retentionDays)` each tick.
+- `extension/src/extension.ts` — `getConfig()` now populates `eventLog.retentionDays` and `eventLog.compact` from VS Code settings (`claws.eventLog.*`).
+- `extension/test/claws-event-log-retention.test.js` — 10-check test suite: retention deletes old segments and keeps recent; manifest updated; fd closed before deletion; `.idx` written and parseable; `compact()` merges 3 small segments into 1; sequence ordering preserved; `scanFrom` replay works after compaction; byte offsets in `.idx` match actual line starts.
+
 ### Added — W1/L4 Vehicle State Machine
 
 - `extension/src/protocol.ts` — `TerminalDescriptor` now includes `vehicleState?: 'PROVISIONING' | 'BOOTING' | 'READY' | 'BUSY' | 'IDLE' | 'CLOSING' | 'CLOSED'` so `list` responses expose the current vehicle state.
