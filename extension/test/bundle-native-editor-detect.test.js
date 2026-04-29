@@ -180,6 +180,24 @@ async function captureStderr(fn) {
     assert(result.source.includes('Cursor'), `expected Cursor source, got: ${result.source}`);
   });
 
+  // 9. F4: TERM_PROGRAM=vscode + CURSOR_CHANNEL set → Cursor promoted over VS Code (old Cursor builds)
+  await check('F4: TERM_PROGRAM=vscode + CURSOR_CHANNEL set → Cursor tried before VS Code', async () => {
+    delete process.env.CLAWS_ELECTRON_VERSION;
+    const tried = [];
+    detectElectronVersion({
+      platform: 'darwin',
+      termProgram: 'vscode',
+      cursorChannel: 'stable',  // Cursor-specific env var
+      existsFn: (p) => { tried.push(p); return false; },
+      execFn: () => '99.0.0',
+    });
+    const cursorIdx = tried.findIndex(p => p.includes('Cursor'));
+    const vscodeIdx = tried.findIndex(p => p.includes('Visual Studio Code') && !p.includes('Insiders'));
+    assert(cursorIdx !== -1, 'Cursor plist should be in the tried list');
+    assert(vscodeIdx !== -1, 'VS Code plist should be in the tried list');
+    assert(cursorIdx < vscodeIdx, `CURSOR_CHANNEL should promote Cursor (idx ${cursorIdx}) before VS Code (idx ${vscodeIdx})`);
+  });
+
   let failed = 0;
   for (const c of checks) {
     console.log(`  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? '' : ' — ' + c.err}`);

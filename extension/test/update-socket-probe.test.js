@@ -7,6 +7,7 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
@@ -33,13 +34,21 @@ function cleanTmpRoot(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
-// Create a real Unix socket that immediately refuses connections (nothing listens).
-// On macOS/Linux, a socket file on the filesystem that has no server = connect ECONNREFUSED.
-// We use a regular file to simulate the socket path since we just need to verify it isn't deleted.
-function touchFakeSocket(sockPath) {
-  // Write a zero-byte file at the socket path — enough to make [ -S ] fail,
-  // but we test the probe block in isolation using a Node helper that checks [ -f ] too.
-  fs.writeFileSync(sockPath, '');
+// F3: create a real Unix socket where the server accepts connections but never responds.
+// On macOS/Linux, server.close() unlinks the socket file, so we keep the server bound
+// for the duration of the test and close it in the finally block.
+// The probe connects but times out waiting for data → probe "fails" without deleting the socket.
+// This faithfully replicates an unresponsive Claws server (the M-26 scenario).
+async function makeHangingSocket(sockPath) {
+  const srv = net.createServer(socket => {
+    socket.on('error', () => {}); // swallow cleanup errors
+    // Intentionally never send data — probe will time out.
+  });
+  await new Promise((resolve, reject) => {
+    srv.on('error', reject);
+    srv.listen(sockPath, resolve);
+  });
+  return srv;
 }
 
 (async () => {
@@ -47,7 +56,7 @@ function touchFakeSocket(sockPath) {
   await check('unresponsive socket file is NOT deleted after probe fails', async () => {
     const tmpRoot = makeTmpRoot();
     const sockPath = path.join(tmpRoot, '.claws', 'claws.sock');
-    touchFakeSocket(sockPath);
+    const hangingSrv = await makeHangingSocket(sockPath);
 
     try {
       // Run a minimal shell snippet that mirrors the M-26-fixed update.sh probe block.
@@ -81,6 +90,7 @@ function touchFakeSocket(sockPath) {
       // KEY assertion: socket file must still exist
       assert(fs.existsSync(sockPath), `socket file was deleted by probe — M-26 regression!`);
     } finally {
+      await new Promise(r => hangingSrv.close(r)).catch(() => {});
       cleanTmpRoot(tmpRoot);
     }
   });

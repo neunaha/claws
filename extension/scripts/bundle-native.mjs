@@ -58,6 +58,11 @@ export function detectElectronVersion({
   execFn = execFileSync,
   existsFn = existsSync,
   termProgram = process.env.TERM_PROGRAM,
+  // F4: secondary editor signals for old Cursor builds that still report TERM_PROGRAM=vscode.
+  // $CURSOR_TRACE_ID and $CURSOR_CHANNEL are Cursor-specific env vars; if either is set,
+  // the shell is almost certainly running inside Cursor regardless of TERM_PROGRAM.
+  vscodeInjection = process.env.VSCODE_INJECTION,
+  cursorChannel = process.env.CURSOR_CHANNEL,
 } = {}) {
   const envOverride = process.env.CLAWS_ELECTRON_VERSION;
   if (envOverride) {
@@ -74,8 +79,13 @@ export function detectElectronVersion({
       { key: 'cursor',         plist: '/Applications/Cursor.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist' },
       { key: 'windsurf',       plist: '/Applications/Windsurf.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist' },
     ];
-    const tp = (termProgram || '').toLowerCase();
-    // F1: simplified — (tp === 'vscode' && c.key === 'vscode') is identical to c.key === tp when tp='vscode'.
+    // F4: if CURSOR_CHANNEL/VSCODE_INJECTION signals Cursor, promote 'cursor' even
+    // when TERM_PROGRAM still says 'vscode' (old Cursor builds pre-TERM_PROGRAM=cursor).
+    let tp = (termProgram || '').toLowerCase();
+    if (tp === 'vscode' && (cursorChannel || (vscodeInjection && cursorChannel !== undefined))) {
+      // Only override when CURSOR_CHANNEL is explicitly set (Cursor-specific env).
+      if (cursorChannel) { tp = 'cursor'; }
+    }
     const sorted = [
       ...allCandidates.filter(c => tp && c.key === tp),
       ...allCandidates.filter(c => !(tp && c.key === tp)),
@@ -110,11 +120,12 @@ export function detectElectronVersion({
       { key: 'windsurf',  ep: '/usr/share/windsurf/electron' },
       { key: 'windsurf',  ep: '/opt/windsurf/electron' },
     ];
-    // M-22: prefer TERM_PROGRAM-matching editor on Linux too.
-    const tp = (termProgram || '').toLowerCase();
+    // M-22/F4: prefer TERM_PROGRAM-matching editor on Linux too; CURSOR_CHANNEL overrides vscode.
+    let linuxTp = (termProgram || '').toLowerCase();
+    if (linuxTp === 'vscode' && cursorChannel) { linuxTp = 'cursor'; }
     const sorted = [
-      ...allLinuxCandidates.filter(c => tp && c.key === tp),
-      ...allLinuxCandidates.filter(c => !(tp && c.key === tp)),
+      ...allLinuxCandidates.filter(c => linuxTp && c.key === linuxTp),
+      ...allLinuxCandidates.filter(c => !(linuxTp && c.key === linuxTp)),
     ];
     for (const { ep } of sorted) {
       if (!existsFn(ep)) continue;
