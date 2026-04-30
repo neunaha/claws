@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wave-harvested-v1",
+  "$ref": "#/definitions/wave-harvested-v1",
+  "definitions": {
+    "wave-harvested-v1": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "orphaned_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "closed_terminals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "already_closed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "waveId",
+        "orphaned_count",
+        "closed_terminals",
+        "already_closed",
+        "ts"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

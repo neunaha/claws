@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **P1-7** `schemas/mcp-tools.json` + `mcp_server.js` — all 5 `claws_task_*` tools (`claws_task_assign`, `claws_task_update`, `claws_task_complete`, `claws_task_cancel`, `claws_task_list`) registered in schemas and MCP handlers.
 - **P1-8** `scripts/shell-hook.sh` — banner version no longer drifts across releases (see Added above).
 
+### Known Issues
+
+- `auto-subscribe-cmd.test.js` — emits `envelope:invalid` under `strictEventValidation=true`; pre-existing since v0.7.6.1 P1-1 flip. Not introduced by v0.7.7.
+- `claws-v2-rate.test.js` — same `envelope:invalid` root cause. Pre-existing.
+- `claws-v2-typed-rpc.test.js` — `rpc.call` timeout on test teardown; pre-existing race condition unrelated to v0.7.7 changes.
+
 ## [0.7.6.1] - 2026-04-30 — Bug-fix patch (8 P0/P1 code + 2 hot-fixes)
 
 ### Fixed
