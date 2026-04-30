@@ -447,6 +447,42 @@ SOCK="$PROJECT_ROOT/.claws/claws.sock"
 if [ -S "$SOCK" ]; then
   if command -v nc &>/dev/null && echo '{"id":1,"cmd":"list"}' | nc -U "$SOCK" 2>/dev/null | head -c 200 | grep -q '"ok"'; then
     ok "socket is LIVE — extension listening"
+    # FINDING-C-13: probe wrapped terminals for missing logPath (pipe-mode / script(1) failure)
+    LIST_OUT=$(echo '{"id":2,"cmd":"list"}' | nc -U "$SOCK" 2>/dev/null | head -c 4096)
+    if echo "$LIST_OUT" | node --no-deprecation -e "
+const lines = require('fs').readFileSync('/dev/stdin','utf8').split('\n');
+let broken = 0;
+for (const l of lines) {
+  try {
+    const j = JSON.parse(l);
+    if (j.ok && Array.isArray(j.terminals)) {
+      for (const t of j.terminals) {
+        if (t.wrapped && !t.logPath) {
+          process.stderr.write('  WRAPPED_NO_LOG: terminal ' + t.id + ' (' + (t.name||'?') + ')\n');
+          broken++;
+        }
+      }
+    }
+  } catch {}
+}
+if (broken > 0) { process.stdout.write(broken + ''); process.exit(1); }
+process.exit(0);
+" 2>/dev/null; then
+      :
+    else
+      BAD_COUNT=$(echo "$LIST_OUT" | node --no-deprecation -e "
+const ls=require('fs').readFileSync('/dev/stdin','utf8').split('\n');
+let n=0;
+for(const l of ls){try{const j=JSON.parse(l);if(j.ok&&Array.isArray(j.terminals)){for(const t of j.terminals){if(t.wrapped&&!t.logPath)n++;}}}catch{}}
+process.stdout.write(n+'');
+" 2>/dev/null || echo "?")
+      fail "$BAD_COUNT wrapped terminal(s) have wrapped=true but no logPath — script(1) may have failed"
+      # script(1) availability check (Linux only; macOS always has it)
+      if [ "$(uname -s)" = "Linux" ] && ! command -v script &>/dev/null; then
+        fix "script(1) not found on Linux — install bsdutils or util-linux: sudo apt-get install bsdutils"
+      fi
+      ISSUES=$((ISSUES+1))
+    fi
   else
     fix "socket is stale — VS Code needs to reload"
     rm -f "$SOCK" 2>/dev/null || true
