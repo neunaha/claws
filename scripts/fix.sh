@@ -430,6 +430,32 @@ else
   ISSUES=$((ISSUES+1))
 fi
 
+# ─── 6b. Shell hook sourcing in rc files (FINDING-C-11) ─────────────────────
+check "Shell hook sourcing in rc files (.zshrc / .bashrc)"
+HOOK_SCRIPT="$INSTALL_DIR/scripts/shell-hook.sh"
+RC_SOURCED=0
+RC_CHECKED=0
+for RC in "$HOME/.zshrc" "$HOME/.bashrc"; do
+  [ -f "$RC" ] || continue
+  RC_CHECKED=$((RC_CHECKED+1))
+  if grep -q 'shell-hook.sh' "$RC" 2>/dev/null; then
+    ok "shell-hook.sh sourced in $(basename "$RC")"
+    RC_SOURCED=$((RC_SOURCED+1))
+  fi
+done
+if [ "$RC_SOURCED" -eq 0 ] && [ -f "$HOOK_SCRIPT" ]; then
+  TARGET_RC="$HOME/.zshrc"
+  [ -f "$HOME/.bashrc" ] && TARGET_RC="$HOME/.bashrc"
+  [ -f "$HOME/.zshrc" ] && TARGET_RC="$HOME/.zshrc"
+  fix "shell-hook.sh not sourced in any rc file — appending to $(basename "$TARGET_RC")"
+  printf '\n# Claws shell functions (claws-ls, claws-new, claws-run, claws-log)\n[ -f "%s" ] && source "%s"\n' \
+    "$HOOK_SCRIPT" "$HOOK_SCRIPT" >> "$TARGET_RC"
+  ok "appended source line to $(basename "$TARGET_RC") — open a new terminal to activate"
+  FIXED=$((FIXED+1))
+elif [ "$RC_CHECKED" -eq 0 ]; then
+  fix "no .zshrc or .bashrc found — skipping shell-hook sourcing check"
+fi
+
 # ─── 7. Stale global MCP registration in ~/.claude/settings.json ───────────
 check "Global ~/.claude/settings.json (informational)"
 if [ -f "$HOME/.claude/settings.json" ] && grep -q '"claws"' "$HOME/.claude/settings.json" 2>/dev/null; then
