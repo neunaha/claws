@@ -63,7 +63,7 @@ setTimeout(()=>{console.log('?');s.destroy()},2000);
   printf "  ${_T}║${_R}   ${_T}╚██████╗███████╗██║  ██║╚███╔███╔╝███████║${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_T} ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝${_R} ${_T}║${_R}\n"
   printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_D}Terminal Control Bridge  v0.6.1${_R}            ${_T}║${_R}\n"
+  printf "  ${_T}║${_R}   ${_D}Terminal Control Bridge  v0.7.6${_R}            ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   ${_D}VS Code Extension${_R}                          ${_T}║${_R}\n"
   printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
   printf "  ${_T}║${_R}   Bridge:    $_CLAWS_STATUS                            ${_T}║${_R}\n"

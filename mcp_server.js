@@ -153,14 +153,24 @@ const _pconn = {
 // orchestrator can drain them via claws_drain_events without needing an active
 // subscription loop.
 const _eventBuffer = {
-  ring: [],          // { absoluteIndex, topic, from, payload, sentAt, sequence }
-  maxSize: 1000,     // evict oldest when full
-  totalReceived: 0,  // monotonically increasing; used as cursor by callers
-  waiters: [],       // { resolve, timer } registered by drain with wait_ms > 0
-  subscribed: false, // true once we've sent hello + subscribe("**") on _pconn
+  ring: [],             // { absoluteIndex, topic, from, payload, sentAt, sequence }
+  maxSize: 1000,        // evict oldest when full
+  totalReceived: 0,     // monotonically increasing; used as cursor by callers
+  waiters: [],          // { resolve, timer } registered by drain with wait_ms > 0
+  maxWaiters: 10,       // cap: reject new wait_ms requests beyond this
+  subscribed: false,    // true once we've sent hello + subscribe("**") on _pconn
+  _overflowPending: false, // guards single system.bus.ring-overflow per eviction batch
 };
 
 let _pconnConnecting = null; // Promise | null — guards concurrent connect attempts
+
+// Circuit breaker for _pconnEnsureRegistered and _scanAndPublishCLAWSPUB.
+// Prevents repeated expensive reconnect attempts when the extension socket is down.
+const _circuitBreaker = {
+  lastFailureTs: 0,       // epoch ms of most recent connect failure
+  scanConsecutiveErrors: 0, // consecutive _scanAndPublishCLAWSPUB socket failures
+  scanDisabled: false,    // true after 3 consecutive scan errors; reset on explicit reconnect
+};
 
 function _pconnHandleData(data) {
   _pconn.buf += data.toString('utf8');
@@ -189,7 +199,25 @@ function _pconnHandleData(data) {
           sequence: msg.sequence != null ? msg.sequence : null,
         };
         _eventBuffer.ring.push(entry);
-        if (_eventBuffer.ring.length > _eventBuffer.maxSize) _eventBuffer.ring.shift();
+        if (_eventBuffer.ring.length > _eventBuffer.maxSize) {
+          _eventBuffer.ring.shift();
+          // Emit ring-overflow once per eviction so callers know events were dropped.
+          if (!_eventBuffer._overflowPending) {
+            _eventBuffer._overflowPending = true;
+            setImmediate(() => {
+              _eventBuffer._overflowPending = false;
+              const overflowEntry = {
+                absoluteIndex: ++_eventBuffer.totalReceived,
+                topic: 'system.bus.ring-overflow',
+                from: 'mcp-server',
+                payload: { droppedAt: new Date().toISOString(), ringSize: _eventBuffer.maxSize },
+                sentAt: new Date().toISOString(),
+                sequence: null,
+              };
+              _eventBuffer.ring.push(overflowEntry);
+            });
+          }
+        }
         const woke = _eventBuffer.waiters.splice(0);
         for (const w of woke) { clearTimeout(w.timer); w.resolve(); }
       }
@@ -352,6 +380,8 @@ function findMarkerLine(text, marker) {
 // Grammar:  [CLAWS_PUB] topic=<topic> key1=val key2="quoted val" key3=42
 // Values:   "..." → string  |  true/false → boolean  |  digits → number
 async function _scanAndPublishCLAWSPUB(newText, sockPath) {
+  // Circuit breaker: if 3 consecutive socket errors, stop scanning until reconnect.
+  if (_circuitBreaker.scanDisabled) return;
   const MARKER_RE = /^\[CLAWS_PUB\]\s+topic=(\S+)\s*(.*)?$/;
   const KV_RE = /(\w+)=("([^"]*)"|(\S+))/g;
   for (const line of newText.split('\n')) {
@@ -373,15 +403,22 @@ async function _scanAndPublishCLAWSPUB(newText, sockPath) {
     try {
       await _pconnEnsureRegistered(sockPath);
       await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic, payload });
+      _circuitBreaker.scanConsecutiveErrors = 0;
     } catch (e) {
+      _circuitBreaker.scanConsecutiveErrors++;
       log('[CLAWS_PUB] publish failed topic=' + topic + ': ' + (e && e.message || e));
+      if (_circuitBreaker.scanConsecutiveErrors >= 3) {
+        _circuitBreaker.scanDisabled = true;
+        log('[CLAWS_PUB] circuit breaker tripped after 3 consecutive socket errors — scan disabled until reconnect');
+        return;
+      }
     }
   }
 }
 
 async function runBlockingWorker(sock, args) {
   const DEFAULTS = {
-    timeout_ms: 30 * 60 * 1000,
+    timeout_ms: 5 * 60 * 1000,
     boot_wait_ms: 8000,
     boot_marker: 'Claude Code',
     complete_marker: 'MISSION_COMPLETE',
@@ -542,7 +579,20 @@ async function runBlockingWorker(sock, args) {
 // If not yet registered, sends hello with role=orchestrator, peerName=mcp-orchestrator.
 // Called once per process lifetime in practice (peerId cached on _pconn).
 async function _pconnEnsureRegistered(sockPath) {
-  await _pconnEnsure(sockPath);
+  // 30s failure cache: skip reconnect attempt entirely if we failed recently.
+  if (!_pconn.connected && _circuitBreaker.lastFailureTs > 0) {
+    if (Date.now() - _circuitBreaker.lastFailureTs < 30_000) {
+      throw new Error('circuit-breaker: last connect failed < 30s ago, skipping');
+    }
+  }
+  try {
+    await _pconnEnsure(sockPath);
+  } catch (err) {
+    _circuitBreaker.lastFailureTs = Date.now();
+    throw err;
+  }
+  // Reset failure timestamp on successful connect.
+  _circuitBreaker.lastFailureTs = 0;
   if (!_pconn.peerId) {
     const hr = await _pconnWrite({
       cmd: 'hello', protocol: 'claws/2',
@@ -552,6 +602,9 @@ async function _pconnEnsureRegistered(sockPath) {
       _pconn.peerId = hr.peerId;
       _pconn.role = 'orchestrator';
       _pconn.peerName = 'mcp-orchestrator';
+      // Re-enable scan if it was disabled — explicit reconnect counts as resume.
+      _circuitBreaker.scanDisabled = false;
+      _circuitBreaker.scanConsecutiveErrors = 0;
       log('auto-registered as peer ' + hr.peerId + ' role=orchestrator');
     }
   }
@@ -872,8 +925,12 @@ async function handleTool(name, args) {
     }
 
     // If wait_ms > 0 and no new events yet, register a waiter.
+    // Cap waiters at maxWaiters to prevent unbounded accumulation.
     const hasNew = () => _eventBuffer.ring.some(e => e.absoluteIndex > sinceIndex);
     if (waitMs > 0 && !hasNew()) {
+      if (_eventBuffer.waiters.length >= _eventBuffer.maxWaiters) {
+        return toolError('ERROR: drain waiter queue full (max 10 concurrent wait_ms requests)');
+      }
       await new Promise((resolve) => {
         const timer = setTimeout(resolve, waitMs);
         _eventBuffer.waiters.push({ resolve, timer });
@@ -1091,6 +1148,64 @@ async function handleTool(name, args) {
     return { content: [{ type: 'text', text: JSON.stringify({ requestId: resp.requestId, result: resp.result }, null, 2) }] };
   }
 
+  if (name === 'claws_task_assign') {
+    const resp = await clawsRpcStateful(sock, {
+      cmd: 'task.assign', protocol: 'claws/2',
+      title: args.title,
+      assignee: args.assignee,
+      prompt: args.prompt,
+      ...(args.timeoutMs != null ? { timeoutMs: args.timeoutMs } : {}),
+      ...(args.deliver ? { deliver: args.deliver } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error || 'task.assign failed'}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ taskId: resp.taskId, assignedAt: resp.assignedAt }, null, 2) }] };
+  }
+
+  if (name === 'claws_task_update') {
+    const resp = await clawsRpcStateful(sock, {
+      cmd: 'task.update', protocol: 'claws/2',
+      taskId: args.taskId,
+      status: args.status,
+      ...(args.progressPct != null ? { progressPct: args.progressPct } : {}),
+      ...(args.note != null ? { note: args.note } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error || 'task.update failed'}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true }, null, 2) }] };
+  }
+
+  if (name === 'claws_task_complete') {
+    const resp = await clawsRpcStateful(sock, {
+      cmd: 'task.complete', protocol: 'claws/2',
+      taskId: args.taskId,
+      status: args.status,
+      ...(args.result != null ? { result: args.result } : {}),
+      ...(args.artifacts != null ? { artifacts: args.artifacts } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error || 'task.complete failed'}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true }, null, 2) }] };
+  }
+
+  if (name === 'claws_task_cancel') {
+    const resp = await clawsRpcStateful(sock, {
+      cmd: 'task.cancel', protocol: 'claws/2',
+      taskId: args.taskId,
+      ...(args.reason != null ? { reason: args.reason } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error || 'task.cancel failed'}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true }, null, 2) }] };
+  }
+
+  if (name === 'claws_task_list') {
+    const resp = await clawsRpcStateful(sock, {
+      cmd: 'task.list', protocol: 'claws/2',
+      ...(args.assignee ? { assignee: args.assignee } : {}),
+      ...(args.status ? { status: args.status } : {}),
+      ...(args.since != null ? { since: args.since } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error || 'task.list failed'}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ tasks: resp.tasks || [] }, null, 2) }] };
+  }
+
   return toolError(`unknown tool: ${name}`);
 }
 
@@ -1111,7 +1226,7 @@ async function main() {
       respond(id, {
         protocolVersion: '2024-11-05',
         // Version must match extension/package.json — bump both together on release.
-        serverInfo: { name: 'claws', version: '0.7.6' },
+        serverInfo: { name: 'claws', version: '0.7.6.1' },
         capabilities: { tools: {} },
       });
     } else if (method === 'notifications/initialized') {
