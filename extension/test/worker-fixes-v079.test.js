@@ -97,6 +97,50 @@ check(
   /userExplicitMarker\s*=\s*typeof\s+args\.complete_marker\s*===\s*'string'/.test(MCP),
 );
 
+// v0.7.9 follow-up Fix B — file-nonce / run-token decouple.
+// The initial v0.7.9 fix embedded runToken in the mission file path → the path
+// was in the input echo → marker false-matched on echo. New behavior keeps
+// runToken only inside the file content; path uses an independent fileNonce.
+check(
+  'fileNonce variable declared, separate from runToken (v0.7.9 Fix B)',
+  /\bfileNonce\b/.test(MCP) &&
+  /const\s+fileNonce\s*=\s*Math\.random/.test(MCP),
+);
+check(
+  'mission file path uses fileNonce (NOT runToken) so the run-token never appears in the input echo (v0.7.9 Fix B)',
+  /claws-mission-\$\{termId\}-\$\{fileNonce\}\.md/.test(MCP) &&
+  // sanity: ensure the OLD (buggy) pattern is gone
+  !/claws-mission-\$\{termId\}-\$\{runToken\}\.md/.test(MCP),
+);
+
+// install.sh Fix A — skill-loop self-collision guard. When TARGET == INSTALL_DIR
+// (e.g. ~/.claws-src symlinked to project root), the skill-copy loop's rm -rf
+// would delete the source before cp could read it. The -ef test (same-inode)
+// makes the loop skip the rm+cp pair when source and dest resolve to the same
+// path.
+const INSTALL_SH = fs.readFileSync(
+  path.join(__dirname, '..', '..', 'scripts', 'install.sh'),
+  'utf8',
+);
+check(
+  'install.sh skill loop has -ef self-collision guard (v0.7.9 Fix A)',
+  /if\s*\[\s*"\$_skill_src"\s*-ef\s*"\$TARGET\/\.claude\/skills\/\$_skill_name"\s*\];\s*then\s*continue;\s*fi/.test(INSTALL_SH),
+);
+check(
+  'install.sh prompt-templates rename has -ef self-collision guard (v0.7.9 Fix A)',
+  /-ef\s*"\$TARGET\/\.claude\/skills\/claws-prompt-templates"/.test(INSTALL_SH),
+);
+
+// install.sh Fix C — uncommitted-work guard before git reset --hard. install.sh
+// Step 1 forces $INSTALL_DIR to origin/main, which silently destroys local edits
+// when INSTALL_DIR is a contributor's working repo (via symlink). The guard
+// detects dirty tree and refuses to reset unless CLAWS_FORCE_RESET=1.
+check(
+  'install.sh has uncommitted-work guard before git reset --hard (v0.7.9 Fix C)',
+  /CLAWS_FORCE_RESET/.test(INSTALL_SH) &&
+  /uncommitted changes — refusing to git reset/.test(INSTALL_SH),
+);
+
 // Final report
 let pass = 0;
 let fail = 0;

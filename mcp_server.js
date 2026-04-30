@@ -527,9 +527,26 @@ async function runBlockingWorker(sock, args) {
 
   const useFileReferrer = launchClaude && hasMission && !userExplicitMarker;
   if (useFileReferrer) {
+    // FILE-NONCE / RUN-TOKEN DECOUPLE (v0.7.9 follow-up):
+    // The initial v0.7.9 implementation embedded `runToken` directly in the
+    // mission file path. The path was then in the single-line referrer payload,
+    // which gets echoed into the pty log on send. The poll loop scanned `text`
+    // from BEFORE the send, so the slice (everything after the old length)
+    // STILL included the input echo of the path — and the runToken substring
+    // matched immediately on the first poll, false-completing the worker in
+    // 1-2 polls before Claude could read the file.
+    //
+    // Fix: use TWO independent random strings. `fileNonce` is short and only
+    // used to make the temp-file path unique. `runToken` is the completion
+    // marker, lives ONLY inside the file content (which Claude reads via its
+    // Read tool — never appears in the pty stream). The payload sent into the
+    // pty is `Read <path-with-fileNonce> and follow it precisely.` — does NOT
+    // contain `runToken`. Marker can only match when Claude prints it after
+    // actually reading the file and doing the work.
+    const fileNonce = Math.random().toString(36).slice(2, 10);
     runToken = `CLAWS_DONE_${Date.now()}_${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
     try {
-      missionFile = path.join(os.tmpdir(), `claws-mission-${termId}-${runToken}.md`);
+      missionFile = path.join(os.tmpdir(), `claws-mission-${termId}-${fileNonce}.md`);
       const missionContent =
         args.mission +
         '\n\n---\n' +

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **`claws_worker` v0.7.8 was effectively unusable** for any caller passing a multi-line `mission` to Claude Code: workers either false-completed in 1–2 seconds (marker collision on input echo) or sat forever in collapsed-paste limbo (Claude Code v2.x auto-detects multi-line bursts as paste). The only working pattern was hand-rolling a single-line file referrer with a token never present in the mission text. v0.7.9 makes that pattern automatic, and adds boot retry + a correct boot marker.
 
+> **Follow-up patches (post-tag, force-pushed onto v0.7.9):**
+> - **Fix A** — `scripts/install.sh` skill-copy loop: added `-ef` (same-inode) guard so the loop skips the `rm -rf` + `cp -r` pair when source and destination resolve to the same directory. Without this, dev machines where `~/.claws-src` symlinks to the project root had install.sh wipe the source skill before it could be copied — install.sh aborted at step 6, never running steps 7–9.
+> - **Fix B** — `mcp_server.js` `runBlockingWorker` file-referrer: decoupled the mission file path nonce from the run-token. The initial v0.7.9 implementation embedded `runToken` directly in the file path; the path was in the single-line referrer payload, which was echoed into the pty log on send, where the marker scanner false-matched. New behavior: independent `fileNonce` for the path, `runToken` lives only inside the file content (where Claude's Read tool ingests it but the pty never sees it).
+> - **Fix C** — `scripts/install.sh` Step 1: added an uncommitted-work guard before the `git reset --hard origin/main`. install.sh used to silently destroy local edits on dev boxes where INSTALL_DIR == project root. The guard refuses to reset on a dirty tree unless `CLAWS_FORCE_RESET=1` is set; clear error explains the three escape hatches (commit, force, or use a different `CLAWS_DIR`).
+> - Regression test: `extension/test/worker-fixes-v079.test.js` grew from 14 → 19 static-analysis checks covering all three follow-ups.
+
 **No API change.** Existing `claws_worker(name, mission)` calls just work. Existing `command:` / `launch_claude=false` / explicit `complete_marker` paths preserve v0.7.8 behavior exactly.
 
 ### Fixed

@@ -240,6 +240,21 @@ step "Fetching Claws source"
 if [ -d "$INSTALL_DIR/.git" ]; then
   info "updating existing clone at $INSTALL_DIR (ref: $CLAWS_REF)"
   PREV_SHA="$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo 'unknown')"
+  # SAFETY (v0.7.9 follow-up): the `git reset --hard` below is blast-radius-wide —
+  # it will silently DELETE every uncommitted edit in $INSTALL_DIR's working tree.
+  # On dev machines where ~/.claws-src is a symlink to the project root (so the
+  # contributor's working repo == INSTALL_DIR), this destroys in-flight work.
+  # If we detect dirty tree AND CLAWS_FORCE_RESET=1 is NOT set, abort with a
+  # clear error pointing at the safe path (commit, stash, or set the flag).
+  _claws_dirty="$(cd "$INSTALL_DIR" && git status --porcelain 2>/dev/null | head -c 1)"
+  if [ -n "$_claws_dirty" ] && [ "${CLAWS_FORCE_RESET:-0}" != "1" ]; then
+    bad "$INSTALL_DIR has uncommitted changes — refusing to git reset --hard."
+    bad "Your work would be destroyed. Choose one:"
+    bad "  1. Commit or stash your changes, then re-run."
+    bad "  2. Re-run with CLAWS_FORCE_RESET=1 to discard local changes."
+    bad "  3. Use a separate clone path: CLAWS_DIR=/tmp/claws-fresh bash <(curl ...)"
+    exit 1
+  fi
   if ( cd "$INSTALL_DIR" && git fetch origin "$CLAWS_REF" 2>>"$CLAWS_LOG" \
        && git reset --hard --quiet "origin/$CLAWS_REF" ); then
     NEW_SHA="$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo 'unknown')"
@@ -1155,13 +1170,19 @@ CLAWSCMD
 
   # P3-2: glob all claws-* and dev-protocol-* skills so new skills are picked up
   # without editing this script. prompt-templates is renamed to claws-prompt-templates.
+  # SELF-COLLISION GUARD: when TARGET == INSTALL_DIR (e.g. ~/.claws-src is a symlink
+  # to the project root on dev machines), src and dest resolve to the SAME inode.
+  # Without the -ef guard, `rm -rf $dest` would wipe the source before `cp` could
+  # read it, aborting install.sh at this step. -ef is a bash test for same-inode.
   for _skill_src in "$INSTALL_DIR/.claude/skills"/claws-* "$INSTALL_DIR/.claude/skills"/dev-protocol-*; do
     [ -d "$_skill_src" ] || continue
     _skill_name="$(basename "$_skill_src")"
+    if [ "$_skill_src" -ef "$TARGET/.claude/skills/$_skill_name" ]; then continue; fi
     rm -rf "$TARGET/.claude/skills/$_skill_name" 2>/dev/null || true
     cp -r "$_skill_src" "$TARGET/.claude/skills/$_skill_name"
   done
-  if [ -d "$INSTALL_DIR/.claude/skills/prompt-templates" ]; then
+  if [ -d "$INSTALL_DIR/.claude/skills/prompt-templates" ] \
+     && ! [ "$INSTALL_DIR/.claude/skills/prompt-templates" -ef "$TARGET/.claude/skills/claws-prompt-templates" ]; then
     rm -rf "$TARGET/.claude/skills/claws-prompt-templates" 2>/dev/null || true
     cp -r "$INSTALL_DIR/.claude/skills/prompt-templates" "$TARGET/.claude/skills/claws-prompt-templates"
   fi
