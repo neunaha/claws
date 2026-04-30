@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **P1-2** `mcp_server.js` — `_eventBuffer` drain waiters capped at 10; excess `wait_ms` requests rejected immediately; `system.bus.ring-overflow` event emitted once per eviction batch.
 - **P1-5/P1-6** `scripts/install.sh` — copy blocks added for `claws-wave-lead`, `claws-wave-subworker`, `dev-protocol-piafeur` skills; existing `claws*.md` glob already covers `claws-wave-lead.md` and `claws-army.md` commands; `claws-update` on existing projects now picks up all three skills.
 - **P1-7** `schemas/mcp-tools.json` + `mcp_server.js` — added `claws_task_assign`, `claws_task_update`, `claws_task_complete`, `claws_task_cancel`, `claws_task_list` tool definitions (schemas) and their MCP handler stubs routing to `task.*` protocol commands via the stateful socket; `claws_schema_get` no longer returns not-found for these 5 tools.
-- **P1-8** `scripts/shell-hook.sh:66` — banner version updated `v0.6.1` → `v0.7.6`.
+- **P1-8** `scripts/shell-hook.sh:66` — banner version updated `v0.6.1` → `v0.7.6`; was 7 releases stale.
 - **HOT-FIX A** — ran `inject-claude-md.js` against `/Users/ANISH.NEUNAHA/Desktop/Claws`; `CLAWS:BEGIN` block now present.
 - **HOT-FIX B** — removed stale `~/.vscode/extensions/neunaha.claws-0.7.4/` and `neunaha.claws-0.7.5/`; only `neunaha.claws-0.7.6` remains.
 
