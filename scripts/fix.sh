@@ -242,11 +242,25 @@ EXT_VERSION=$(node --no-deprecation -e "try{console.log(require('$INSTALL_DIR/ex
 FOUND_INSTALLS=()
 for dir in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" "$HOME/.cursor/extensions" "$HOME/.windsurf/extensions"; do
   [ -d "$dir" ] || continue
-  # Any `neunaha.claws-*` directory or symlink counts as installed
-  if ls "$dir"/neunaha.claws-* &>/dev/null; then
-    FOUND_INSTALLS+=("$(basename "$dir"): $(ls -d "$dir"/neunaha.claws-* 2>/dev/null | head -1 | xargs basename)")
+  for inst in "$dir"/neunaha.claws-*; do
+    [ -d "$inst" ] || [ -L "$inst" ] || continue
+    FOUND_INSTALLS+=("$(basename "$dir"): $(basename "$inst")")
+  done
+done
+
+# Warn about DUPLICATE extensions in the same editor dir (FINDING-C-4)
+declare -A _EDITOR_COUNT
+for entry in "${FOUND_INSTALLS[@]}"; do
+  editor="${entry%%:*}"
+  _EDITOR_COUNT["$editor"]=$(( ${_EDITOR_COUNT["$editor"]:-0} + 1 ))
+done
+for editor in "${!_EDITOR_COUNT[@]}"; do
+  if [ "${_EDITOR_COUNT[$editor]}" -gt 1 ]; then
+    fail "DUPLICATE extensions in $editor (${_EDITOR_COUNT[$editor]} copies) — remove old versions to avoid load-order conflict"
+    ISSUES=$((ISSUES+1))
   fi
 done
+unset _EDITOR_COUNT
 
 if [ "${#FOUND_INSTALLS[@]}" -gt 0 ]; then
   for entry in "${FOUND_INSTALLS[@]}"; do

@@ -73,6 +73,16 @@ const DESC = {
     'Orchestrator-only: request cancellation of an active task. Emits task.cancel_requested.<assignee> so the worker can react. Does not forcibly terminate the worker.',
   claws_task_list:
     'List tasks in the server registry. Optionally filter by assignee peerId, status, or last-updated timestamp. Available to all peers.',
+  claws_drain_events:
+    'Drain buffered push-frame events from the persistent socket. On first call auto-subscribes to all topics (**). Returns events received since since_index with a dropped count for aged-out events. Set wait_ms > 0 to block until at least one new event arrives or the timeout fires.',
+  claws_pipeline_create:
+    'Create a named pipeline with an ordered list of step definitions on the Claws server. Each step can be a string (shell command) or a structured object. Returns a pipelineId.',
+  claws_pipeline_list:
+    'List all pipelines currently registered on the Claws server.',
+  claws_pipeline_close:
+    'Close and remove a pipeline from the Claws server by pipelineId.',
+  claws_dispatch_subworker:
+    'Spawn a wrapped terminal for a wave sub-worker, launch Claude Code with --dangerously-skip-permissions, wait for the trust prompt, confirm bypass, and send the mission prompt. Returns terminalId and bootOk status. Use inside a wave after claws_wave_create.',
 };
 
 export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
@@ -256,6 +266,31 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
       assignee: z.string().describe('Filter by assignee peerId.').optional(),
       status:   z.enum(['pending', 'in_progress', 'blocked', 'succeeded', 'failed', 'skipped']).describe('Filter by task status.').optional(),
       since:    z.number().int().describe('Return only tasks updated at or after this epoch-ms timestamp.').optional(),
+    })),
+
+    // D-1: tools present in mcp_server.js handlers but previously missing from schema
+    tool('claws_drain_events', z.object({
+      since_index: z.number().int().describe('Return only events with absoluteIndex greater than this value. Default 0 (return all buffered events).').optional(),
+      wait_ms:     z.number().int().describe('Block up to this many milliseconds for at least one new event. Default 0 (return immediately).').optional(),
+      max:         z.number().int().describe('Maximum number of events to return. Default 100.').optional(),
+    })),
+
+    tool('claws_pipeline_create', z.object({
+      name:  z.string().describe('Human-readable pipeline name.').optional(),
+      steps: z.union([z.array(z.unknown()), z.string()]).describe('Ordered pipeline steps. Each step may be a shell-command string or a structured step object. Pass a JSON string if the client cannot send a raw array.'),
+    })),
+
+    tool('claws_pipeline_list', z.object({})),
+
+    tool('claws_pipeline_close', z.object({
+      pipelineId: z.string().describe('Pipeline ID as returned by claws_pipeline_create.'),
+    })),
+
+    tool('claws_dispatch_subworker', z.object({
+      waveId:  z.string().describe('Wave identifier (from claws_wave_create) this sub-worker belongs to.'),
+      role:    z.string().describe('Sub-worker role label (e.g. "tester", "reviewer"). Used to name the terminal and register the heartbeat slot.'),
+      mission: z.string().describe('Mission prompt sent to Claude Code after boot. Include your completion marker.'),
+      cwd:     z.string().describe('Working directory for the spawned terminal (absolute path).').optional(),
     })),
   ];
 

@@ -794,7 +794,7 @@
   },
   {
     "name": "claws_drain_events",
-    "description": "Drain buffered push-frame events from the persistent socket. On first call auto-subscribes to all topics ('**'). Returns events received since since_index with a dropped count for aged-out events. Set wait_ms > 0 to block until at least one new event arrives or the timeout fires.",
+    "description": "Drain buffered push-frame events from the persistent socket. On first call auto-subscribes to all topics (**). Returns events received since since_index with a dropped count for aged-out events. Set wait_ms > 0 to block until at least one new event arrives or the timeout fires.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -816,29 +816,36 @@
   },
   {
     "name": "claws_pipeline_create",
-    "description": "Create a named pipeline with an ordered list of steps. Each step is an object with a cmd field and optional arguments. Returns the pipelineId and full pipeline record.",
+    "description": "Create a named pipeline with an ordered list of step definitions on the Claws server. Each step can be a string (shell command) or a structured object. Returns a pipelineId.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "name": {
           "type": "string",
-          "description": "Human-readable pipeline name. Defaults to 'pipeline'."
+          "description": "Human-readable pipeline name."
         },
         "steps": {
-          "description": "Ordered array of pipeline step objects (each with a cmd field), or a JSON string encoding such an array.",
-          "oneOf": [
-            { "type": "array" },
-            { "type": "string" }
-          ]
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {}
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Ordered pipeline steps. Each step may be a shell-command string or a structured step object. Pass a JSON string if the client cannot send a raw array."
         }
       },
-      "required": ["steps"],
+      "required": [
+        "steps"
+      ],
       "additionalProperties": false
     }
   },
   {
     "name": "claws_pipeline_list",
-    "description": "List all active pipelines on the server. Returns an array of pipeline records with id, name, and step status.",
+    "description": "List all pipelines currently registered on the Claws server.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -847,43 +854,49 @@
   },
   {
     "name": "claws_pipeline_close",
-    "description": "Close and remove a pipeline by its ID. Returns { ok: true, pipelineId } on success.",
+    "description": "Close and remove a pipeline from the Claws server by pipelineId.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "pipelineId": {
           "type": "string",
-          "description": "Pipeline ID returned by claws_pipeline_create."
+          "description": "Pipeline ID as returned by claws_pipeline_create."
         }
       },
-      "required": ["pipelineId"],
+      "required": [
+        "pipelineId"
+      ],
       "additionalProperties": false
     }
   },
   {
     "name": "claws_dispatch_subworker",
-    "description": "Spawn a sub-worker Claude Code terminal for the given wave, boot it through the trust prompt, and deliver a mission prompt. Returns { terminal_id, waveId, role, name }. Used by the Wave LEAD to deploy tester/reviewer/auditor/bench/doc sub-workers.",
+    "description": "Spawn a wrapped terminal for a wave sub-worker, launch Claude Code with --dangerously-skip-permissions, wait for the trust prompt, confirm bypass, and send the mission prompt. Returns terminalId and bootOk status. Use inside a wave after claws_wave_create.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "waveId": {
           "type": "string",
-          "description": "Wave ID (from claws_wave_create) that this sub-worker belongs to."
+          "description": "Wave identifier (from claws_wave_create) this sub-worker belongs to."
         },
         "role": {
           "type": "string",
-          "description": "Sub-worker role: tester, reviewer, auditor, bench, or doc."
+          "description": "Sub-worker role label (e.g. \"tester\", \"reviewer\"). Used to name the terminal and register the heartbeat slot."
         },
         "mission": {
           "type": "string",
-          "description": "Mission prompt text to deliver to the sub-worker after it boots."
+          "description": "Mission prompt sent to Claude Code after boot. Include your completion marker."
         },
         "cwd": {
           "type": "string",
-          "description": "Working directory for the sub-worker terminal (absolute path). Defaults to the current project root."
+          "description": "Working directory for the spawned terminal (absolute path)."
         }
       },
-      "required": ["waveId", "role", "mission"],
+      "required": [
+        "waveId",
+        "role",
+        "mission"
+      ],
       "additionalProperties": false
     }
   }
