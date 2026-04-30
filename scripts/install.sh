@@ -703,6 +703,13 @@ _install_via_vsix() {
         # ([ "$stale" = "$kept_dir" ]) never matches and the loop would delete
         # every installed version. Skip and warn instead of destroying all installs.
         local kept_dir="$ext_dir/neunaha.claws-$EXT_VERSION"
+        # FINDING-B-4: VS Code extracts VSIX asynchronously — poll up to 1s
+        # (5×200ms) for kept_dir to appear before deciding it's absent.
+        for _poll in 1 2 3 4 5; do
+          [ -d "$kept_dir" ] && break
+          sleep 0.2
+        done
+        unset _poll
         if [ -d "$kept_dir" ]; then
           for stale in "$ext_dir"/neunaha.claws-*; do
             [ -d "$stale" ] || continue
