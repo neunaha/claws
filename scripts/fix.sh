@@ -321,6 +321,11 @@ if [ -f "$PROJECT_MCP" ] && grep -q '"claws"' "$PROJECT_MCP" 2>/dev/null; then
   ok "claws registered in project"
 else
   fix "not registered — adding claws to $PROJECT_MCP"
+  # FINDING-B-2 (fix.sh mirror): guard against dangling symlinks before mkdir -p
+  if [ -L "$PROJECT_ROOT/.claws-bin" ]; then
+    warn ".claws-bin is a symlink — removing before mkdir"
+    rm -f "$PROJECT_ROOT/.claws-bin"
+  fi
   mkdir -p "$PROJECT_ROOT/.claws-bin"
   cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js"
   chmod +x "$PROJECT_ROOT/.claws-bin/mcp_server.js"

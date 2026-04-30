@@ -815,6 +815,14 @@ if [ "${CLAWS_SKIP_MCP:-0}" = "1" ]; then
   warn "CLAWS_SKIP_MCP=1 — skipping MCP registration"
 else
   if [ "$PROJECT_INSTALL" = "1" ]; then
+    # FINDING-B-2: guard against dangling / loop / unexpected symlinks at .claws-bin
+    # before mkdir -p, which would silently create files at the symlink target.
+    if [ -L "$PROJECT_ROOT/.claws-bin" ]; then
+      [ -e "$PROJECT_ROOT/.claws-bin" ] \
+        && warn ".claws-bin is a symlink → $(readlink "$PROJECT_ROOT/.claws-bin") — removing and replacing with directory" \
+        || warn ".claws-bin is a dangling symlink — removing"
+      rm -f "$PROJECT_ROOT/.claws-bin"
+    fi
     mkdir -p "$PROJECT_ROOT/.claws-bin"
     cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js"
     chmod +x "$PROJECT_ROOT/.claws-bin/mcp_server.js"
