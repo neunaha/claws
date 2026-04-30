@@ -1192,16 +1192,19 @@ export class ClawsServer {
       const peerId = ctx.getPeerId()!;
       const cfg = this.getConfig();
 
-      // L14: Per-peer rate limiter — checked BEFORE admission control so that
-      // high-frequency publishers get the semantically correct error code.
-      const nowMs = Date.now();
-      const bucket = this.publishRateTracker.get(peerId) ?? { count: 0, windowStart: nowMs };
-      if (nowMs - bucket.windowStart >= 1000) { bucket.count = 0; bucket.windowStart = nowMs; }
-      bucket.count++;
-      this.publishRateTracker.set(peerId, bucket);
-      if (bucket.count > cfg.maxPublishRateHz) {
-        this.peerRateLimitHits.set(peerId, (this.peerRateLimitHits.get(peerId) ?? 0) + 1);
-        return { ok: false, error: 'rate-limit-exceeded' };
+      // L14: Per-peer rate limiter — orchestrators are exempt so management
+      // commands are never self-rate-limited during high-volume waves.
+      const peerRole = this.peers.get(peerId)?.role;
+      if (peerRole !== 'orchestrator') {
+        const nowMs = Date.now();
+        const bucket = this.publishRateTracker.get(peerId) ?? { count: 0, windowStart: nowMs };
+        if (nowMs - bucket.windowStart >= 1000) { bucket.count = 0; bucket.windowStart = nowMs; }
+        bucket.count++;
+        this.publishRateTracker.set(peerId, bucket);
+        if (bucket.count > cfg.maxPublishRateHz) {
+          this.peerRateLimitHits.set(peerId, (this.peerRateLimitHits.get(peerId) ?? 0) + 1);
+          return { ok: false, error: 'rate-limit-exceeded' };
+        }
       }
 
       // L14: Queue-depth admission control — serverInFlight is incremented
