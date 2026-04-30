@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed (v0.7.7-bulletproof)
 
+- **P1-1** `scripts/inject-settings-hooks.js` — legacy array hooks (early Claude Code) now migrated to object format before remove+add. Previously, adding named properties to a JS array caused new hooks to be silently dropped by `JSON.stringify`. Both `--update` and add-only paths now migrate array→object first.
 - **D-1** `schemas/mcp-tools.json` — registered 5 missing MCP tools: `claws_drain_events`, `claws_pipeline_create`, `claws_pipeline_list`, `claws_pipeline_close`, `claws_dispatch_subworker`. These handlers existed in `mcp_server.js` but were invisible to AI orchestrators because `tools/list` reads from the schema file.
 
 ### Added

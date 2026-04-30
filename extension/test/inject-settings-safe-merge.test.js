@@ -186,6 +186,41 @@ function runInject(clawsBin, { home, extraArgs = [] } = {}) {
     }
   });
 
+  // 6b. legacy array hooks → migrated to object format + Claws hooks added (FINDING-B-1)
+  await check('legacy array hooks → migrated to object format + Claws hooks added (--update)', () => {
+    const tmp = makeTmpDir();
+    try {
+      const claudeDir = path.join(tmp, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      const settingsPath = path.join(claudeDir, 'settings.json');
+      // Legacy format: hooks is a flat array with an event field per entry
+      const legacy = JSON.stringify({
+        hooks: [
+          { event: 'SessionStart', matcher: '*', _source: 'other-tool',
+            hooks: [{ type: 'command', command: '/other/hook.sh' }] },
+        ],
+      });
+      fs.writeFileSync(settingsPath, legacy, 'utf8');
+
+      const r = runInject(CLAWS_BIN, { home: tmp, extraArgs: ['--update'] });
+      assert.strictEqual(r.status, 0, `Expected exit 0 after migrating legacy array hooks. stderr: ${r.stderr}`);
+
+      const result = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      // After migration, hooks MUST be an object keyed by event name
+      assert.ok(!Array.isArray(result.hooks), 'hooks must be migrated to object format (not array)');
+      assert.strictEqual(typeof result.hooks, 'object', 'hooks must be an object after migration');
+      // Claws SessionStart hook must be present
+      const sessionHooks = result.hooks.SessionStart || [];
+      const clawsHook = sessionHooks.find(e => e._source === 'claws');
+      assert.ok(clawsHook, `Claws SessionStart hook must be present after legacy array migration; hooks: ${JSON.stringify(result.hooks)}`);
+      // Non-claws legacy array entry must be preserved
+      const otherHook = sessionHooks.find(e => e._source === 'other-tool');
+      assert.ok(otherHook, 'Non-claws legacy hook must survive array→object migration');
+    } finally {
+      cleanTmpDir(tmp);
+    }
+  });
+
   // 6. --remove with malformed JSON → backup + non-zero exit + original unchanged
   await check('--remove on malformed JSON → backup created + non-zero exit', () => {
     const tmp = makeTmpDir();

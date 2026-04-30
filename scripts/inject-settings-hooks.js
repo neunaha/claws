@@ -186,6 +186,20 @@ function makeHookEntry(matcher, scriptName) {
     let removed = 0;
     let changed = 0;
     const result = await withLock(() => mergeIntoFile(SETTINGS_PATH, (cfg) => {
+      // FINDING-B-1: migrate legacy flat-array hooks format → object-keyed format.
+      // Early Claude Code versions stored hooks as [{event:"SessionStart",...}, ...].
+      // JSON.stringify of a named-property-on-array drops the new hooks silently.
+      if (Array.isArray(cfg.hooks)) {
+        const legacyArr = cfg.hooks;
+        cfg.hooks = {};
+        for (const entry of legacyArr) {
+          if (!entry.event) continue;
+          if (entry._source === SOURCE_TAG) { removed++; continue; } // drop old claws hooks
+          if (!cfg.hooks[entry.event]) cfg.hooks[entry.event] = [];
+          const { event: _ev, ...rest } = entry;
+          cfg.hooks[entry.event].push(rest);
+        }
+      }
       if (!cfg.hooks) cfg.hooks = {};
       // Step 1: remove all existing Claws hooks
       for (const [event, arr] of Object.entries(cfg.hooks)) {
@@ -216,6 +230,17 @@ function makeHookEntry(matcher, scriptName) {
   // Add/update hooks
   let changed = 0;
   const result = await withLock(() => mergeIntoFile(SETTINGS_PATH, (cfg) => {
+    // FINDING-B-1: migrate legacy flat-array format before add/dedup logic.
+    if (Array.isArray(cfg.hooks)) {
+      const legacyArr = cfg.hooks;
+      cfg.hooks = {};
+      for (const entry of legacyArr) {
+        if (!entry.event) continue;
+        if (!cfg.hooks[entry.event]) cfg.hooks[entry.event] = [];
+        const { event: _ev, ...rest } = entry;
+        cfg.hooks[entry.event].push(rest);
+      }
+    }
     if (!cfg.hooks) cfg.hooks = {};
     for (const { event, scriptName, entry } of HOOKS_TO_ADD) {
       if (!cfg.hooks[event]) cfg.hooks[event] = [];
