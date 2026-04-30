@@ -153,11 +153,13 @@ const _pconn = {
 // orchestrator can drain them via claws_drain_events without needing an active
 // subscription loop.
 const _eventBuffer = {
-  ring: [],          // { absoluteIndex, topic, from, payload, sentAt, sequence }
-  maxSize: 1000,     // evict oldest when full
-  totalReceived: 0,  // monotonically increasing; used as cursor by callers
-  waiters: [],       // { resolve, timer } registered by drain with wait_ms > 0
-  subscribed: false, // true once we've sent hello + subscribe("**") on _pconn
+  ring: [],             // { absoluteIndex, topic, from, payload, sentAt, sequence }
+  maxSize: 1000,        // evict oldest when full
+  totalReceived: 0,     // monotonically increasing; used as cursor by callers
+  waiters: [],          // { resolve, timer } registered by drain with wait_ms > 0
+  maxWaiters: 10,       // cap: reject new wait_ms requests beyond this
+  subscribed: false,    // true once we've sent hello + subscribe("**") on _pconn
+  _overflowPending: false, // guards single system.bus.ring-overflow per eviction batch
 };
 
 let _pconnConnecting = null; // Promise | null — guards concurrent connect attempts
@@ -197,7 +199,25 @@ function _pconnHandleData(data) {
           sequence: msg.sequence != null ? msg.sequence : null,
         };
         _eventBuffer.ring.push(entry);
-        if (_eventBuffer.ring.length > _eventBuffer.maxSize) _eventBuffer.ring.shift();
+        if (_eventBuffer.ring.length > _eventBuffer.maxSize) {
+          _eventBuffer.ring.shift();
+          // Emit ring-overflow once per eviction so callers know events were dropped.
+          if (!_eventBuffer._overflowPending) {
+            _eventBuffer._overflowPending = true;
+            setImmediate(() => {
+              _eventBuffer._overflowPending = false;
+              const overflowEntry = {
+                absoluteIndex: ++_eventBuffer.totalReceived,
+                topic: 'system.bus.ring-overflow',
+                from: 'mcp-server',
+                payload: { droppedAt: new Date().toISOString(), ringSize: _eventBuffer.maxSize },
+                sentAt: new Date().toISOString(),
+                sequence: null,
+              };
+              _eventBuffer.ring.push(overflowEntry);
+            });
+          }
+        }
         const woke = _eventBuffer.waiters.splice(0);
         for (const w of woke) { clearTimeout(w.timer); w.resolve(); }
       }
@@ -905,8 +925,12 @@ async function handleTool(name, args) {
     }
 
     // If wait_ms > 0 and no new events yet, register a waiter.
+    // Cap waiters at maxWaiters to prevent unbounded accumulation.
     const hasNew = () => _eventBuffer.ring.some(e => e.absoluteIndex > sinceIndex);
     if (waitMs > 0 && !hasNew()) {
+      if (_eventBuffer.waiters.length >= _eventBuffer.maxWaiters) {
+        return toolError('ERROR: drain waiter queue full (max 10 concurrent wait_ms requests)');
+      }
       await new Promise((resolve) => {
         const timer = setTimeout(resolve, waitMs);
         _eventBuffer.waiters.push({ resolve, timer });
