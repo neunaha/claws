@@ -1,6 +1,6 @@
 ---
 name: claws-fix
-description: Auto-diagnose and repair Claws connection issues. Runs ~/.claws-src/scripts/fix.sh — which checks every piece of the install chain, auto-repairs what it can (missing symlinks, missing project .mcp.json, stale sockets), and reports what still needs a VS Code reload or Claude Code restart. All diagnostic logic is in the script so new checks added to fix.sh activate automatically on the next git pull.
+description: Auto-diagnose and repair Claws connection issues. Runs $CLAWS_DIR/scripts/fix.sh (default ~/.claws-src) — which checks every piece of the install chain, auto-repairs what it can (missing symlinks, missing project .mcp.json, stale sockets), and reports what still needs a VS Code reload or Claude Code restart. All diagnostic logic is in the script so new checks added to fix.sh activate automatically on the next git pull.
 ---
 
 # /claws-fix
@@ -8,14 +8,15 @@ description: Auto-diagnose and repair Claws connection issues. Runs ~/.claws-src
 Run this when `claws_*` tools aren't available or something about Claws isn't working.
 
 ```bash
-bash ~/.claws-src/scripts/fix.sh "$(pwd)"
+CLAWS_DIR="${CLAWS_DIR:-$HOME/.claws-src}"
+bash "$CLAWS_DIR/scripts/fix.sh" "$(pwd)"
 ```
 
 ONE bash call. Do NOT break into multiple steps. Do NOT interleave commentary. The script prints a `[check]` line per item with `✓ / → / ✗` markers; let it speak.
 
 ## What the script checks and fixes
 
-All logic lives in `~/.claws-src/scripts/fix.sh` — updated automatically via `git pull`. The current checks:
+All logic lives in `$CLAWS_DIR/scripts/fix.sh` — updated automatically via `git pull`. The current checks:
 
 1. **Source clone** at `~/.claws-src` exists (if not: tell the user to run the installer).
 2. **Extension bundle** `dist/extension.js` present — auto-rebuilds via `npm` if missing; falls back to legacy JS if rebuild fails.

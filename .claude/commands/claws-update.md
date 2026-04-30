@@ -1,14 +1,15 @@
 ---
 name: claws-update
-description: Update Claws to the latest version. Pulls the source, then delegates all update logic to ~/.claws-src/scripts/update.sh — so new steps added to that script are picked up automatically on the next update, without ever needing to re-install the slash command itself.
+description: Update Claws to the latest version. Pulls the source, then delegates all update logic to $CLAWS_DIR/scripts/update.sh (default ~/.claws-src) — so new steps added to that script are picked up automatically on the next update, without ever needing to re-install the slash command itself.
 ---
 
 # /claws-update
 
-**Run from the project root.** This command is a thin dispatcher — all the real work lives in `~/.claws-src/scripts/update.sh`, which is refreshed by `git pull` on every run. That means when we add new update steps (migrations, cleanup, notifications), they activate automatically on the next update.
+**Run from the project root.** This command is a thin dispatcher — all the real work lives in `$CLAWS_DIR/scripts/update.sh`, which is refreshed by `git pull` on every run. That means when we add new update steps (migrations, cleanup, notifications), they activate automatically on the next update.
 
 ```bash
-bash ~/.claws-src/scripts/update.sh "$(pwd)"
+CLAWS_DIR="${CLAWS_DIR:-$HOME/.claws-src}"
+bash "$CLAWS_DIR/scripts/update.sh" "$(pwd)"
 ```
 
 Equivalent via curl URL (no local clone assumed):

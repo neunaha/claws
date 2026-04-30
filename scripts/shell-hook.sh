@@ -4,6 +4,21 @@
 # It displays a startup banner and adds claws shell functions.
 # ═══════════════════════════════════════════════════════════════
 
+# Export CLAWS_DIR so slash commands (/claws-fix, /claws-update) can locate scripts
+# without hardcoding ~/.claws-src. Shell-hook.sh lives at $INSTALL_DIR/scripts/,
+# so we walk up one level to get the repo root.
+if [ -z "${CLAWS_DIR:-}" ]; then
+  _hook_dir=""
+  [ -n "${BASH_SOURCE[0]:-}" ] && _hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
+  [ -z "$_hook_dir" ] && [ -n "${ZSH_SCRIPT:-}" ] && _hook_dir="$(cd "$(dirname "$ZSH_SCRIPT")" 2>/dev/null && pwd -P)"
+  if [ -n "$_hook_dir" ]; then
+    export CLAWS_DIR="${_hook_dir%/scripts}"
+  else
+    export CLAWS_DIR="$HOME/.claws-src"
+  fi
+  unset _hook_dir
+fi
+
 # Only show banner in interactive shells
 if [[ $- == *i* ]] && [[ -z "${CLAWS_BANNER_SHOWN:-}" ]]; then
   export CLAWS_BANNER_SHOWN=1
@@ -48,9 +63,9 @@ process.stdout.write('?.?.?');
   # ── Colors (ANSI-C quoting — expand cleanly in printf) ──
   if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     _GRN=$'\033[32m'; _AMB=$'\033[33m'
-    _BLD=$'\033[1;37m'; _DIM=$'\033[2m'; _RST=$'\033[0m'
+    _ORG=$'\033[38;5;208m'; _BLD=$'\033[1;37m'; _DIM=$'\033[2m'; _RST=$'\033[0m'
   else
-    _GRN=''; _AMB=''; _BLD=''; _DIM=''; _RST=''
+    _GRN=''; _AMB=''; _ORG=''; _BLD=''; _DIM=''; _RST=''
   fi
 
   # ── Bridge status ──
@@ -60,13 +75,15 @@ process.stdout.write('?.?.?');
     _CLAWS_TERMS=$(node -e "
 const net=require('net');
 const s=net.createConnection('$CLAWS_SOCK');
+let done=false;
+const finish=(out)=>{if(done)return;done=true;process.stdout.write(out);try{s.destroy()}catch(e){};process.exit(0)};
 s.on('connect',()=>s.write(JSON.stringify({id:0,cmd:'list'})+'\n'));
 let b='';
 s.on('data',d=>{b+=d;if(b.includes('\n')){
-  try{process.stdout.write(String(JSON.parse(b.split('\n')[0]).terminals.length))}
-  catch(e){process.stdout.write('?')};s.destroy()}});
-s.on('error',()=>{process.stdout.write('?');s.destroy()});
-setTimeout(()=>{process.stdout.write('?');s.destroy()},2000);
+  try{finish(String(JSON.parse(b.split('\n')[0]).terminals.length))}
+  catch(e){finish('?')}}});
+s.on('error',()=>finish('?'));
+setTimeout(()=>finish('?'),2000);
 " 2>/dev/null || echo "?")
   else
     _bstxt="○ socket not found"
@@ -88,45 +105,24 @@ setTimeout(()=>{process.stdout.write('?');s.destroy()},2000);
     _wransi="${_DIM}○ unwrapped${_RST}"
   fi
 
-  # ── Banner — inner content width = 60 chars between the two ║ ──
-  _W=60
-  # 60 × ═  (box top/bottom border)
-  _BDR="════════════════════════════════════════════════════════════"
-
-  # Center plain text within _W chars → (left_pad, right_pad)
-  _t="CLAWS"
-  _tl=$(( (_W - ${#_t}) / 2 )); _tr=$(( _W - ${#_t} - _tl ))
-
-  _s="Terminal Control Bridge  v${_CLAWS_VERSION}"
-  _sl=$(( (_W - ${#_s}) / 2 )); _sr=$(( _W - ${#_s} - _sl ))
-  # Guard against oversized version strings
-  [ "$_sl" -lt 0 ] && _sl=0; [ "$_sr" -lt 0 ] && _sr=0
-
-  # Status rows: prefix = 3 (lead) + 9 (label) + 2 (gap) = 14 visible chars
-  # trailing = _W - 14 - visible_status_len
-  _b1=$(( _W - 14 - ${#_bstxt} ))
-  _b2=$(( _W - 14 - ${#_CLAWS_TERMS} - 7 ))   # " active" = 7 chars
-  _b3=$(( _W - 14 - ${#_wrtxt} ))
-  [ "$_b1" -lt 0 ] && _b1=0
-  [ "$_b2" -lt 0 ] && _b2=0
-  [ "$_b3" -lt 0 ] && _b3=0
-
+  # ── Banner — orange CLAWS ASCII, no border ──
   printf "\n"
-  printf "  ╔%s╗\n"                                 "$_BDR"
-  printf "  ║%${_W}s║\n"                            ""
-  printf "  ║%${_tl}s${_BLD}%s${_RST}%${_tr}s║\n"  "" "$_t" ""
-  printf "  ║%${_sl}s${_DIM}%s${_RST}%${_sr}s║\n"  "" "$_s" ""
-  printf "  ║%${_W}s║\n"                            ""
-  printf "  ║   %-9s  %s%${_b1}s║\n"               "Bridge"    "$_bsansi" ""
-  printf "  ║   %-9s  %s active%${_b2}s║\n"        "Terminals" "$_CLAWS_TERMS" ""
-  printf "  ║   %-9s  %s%${_b3}s║\n"               "This term" "$_wransi" ""
-  printf "  ║%${_W}s║\n"                            ""
-  printf "  ╚%s╝\n"                                 "$_BDR"
+  printf "  ${_ORG} ██████╗██╗      █████╗ ██╗    ██╗███████╗${_RST}\n"
+  printf "  ${_ORG}██╔════╝██║     ██╔══██╗██║    ██║██╔════╝${_RST}\n"
+  printf "  ${_ORG}██║     ██║     ███████║██║ █╗ ██║███████╗${_RST}\n"
+  printf "  ${_ORG}██║     ██║     ██╔══██║██║███╗██║╚════██║${_RST}\n"
+  printf "  ${_ORG}╚██████╗███████╗██║  ██║╚███╔███╔╝███████║${_RST}\n"
+  printf "  ${_ORG} ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝${_RST}\n"
+  printf "\n"
+  printf "  ${_DIM}Terminal Control Bridge  v%s${_RST}\n" "$_CLAWS_VERSION"
+  printf "\n"
+  printf "  %-11s %s\n"          "Bridge"    "$_bsansi"
+  printf "  %-11s %s active\n"   "Terminals" "$_CLAWS_TERMS"
+  printf "  %-11s %s\n"          "This term" "$_wransi"
   printf "\n"
 
-  unset _GRN _AMB _BLD _DIM _RST
+  unset _GRN _AMB _ORG _BLD _DIM _RST
   unset _bstxt _bsansi _CLAWS_TERMS _wrtxt _wransi
-  unset _t _tl _tr _s _sl _sr _b1 _b2 _b3 _W _BDR
   unset CLAWS_SOCK _CLAWS_VERSION
 fi
 
