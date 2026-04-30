@@ -397,6 +397,32 @@ if [ -f "$HOME/.claude/settings.json" ] && grep -q '"claws"' "$HOME/.claude/sett
   fi
 fi
 
+# ─── 7b. ~/.claude/settings.json JSON validity (FINDING-C-7, P0) ─────────────
+# A malformed settings.json causes EVERY Claude Code hook (SessionStart,
+# PreToolUse, Stop) to fail silently on every tool call. Detect and repair
+# before the stale-paths check below, so check 8 can assume valid JSON.
+check "~/.claude/settings.json is valid JSON"
+if [ -f "$HOME/.claude/settings.json" ]; then
+  if ! node --no-deprecation -e "
+    const fs=require('fs');
+    JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
+  " "$HOME/.claude/settings.json" 2>/dev/null; then
+    fail "settings.json is malformed JSON — ALL claude hooks will fail silently"
+    fix "backing up and re-injecting Claws hooks via inject-settings-hooks.js"
+    cp "$HOME/.claude/settings.json" "$HOME/.claude/settings.json.bak.$(date +%s)" 2>/dev/null || true
+    if node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" --remove >/dev/null 2>&1 \
+       && node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/scripts" >/dev/null 2>&1; then
+      ok "hooks re-written into repaired settings.json"
+      FIXED=$((FIXED+1))
+    else
+      fail "automatic repair failed — manually edit $HOME/.claude/settings.json (backup saved)"
+      ISSUES=$((ISSUES+1))
+    fi
+  else
+    ok "settings.json is valid JSON"
+  fi
+fi
+
 # ─── 8. Stale Claws hook script paths in ~/.claude/settings.json (v0.7.3) ──
 # Detects the "SessionStart:startup hook error / non-blocking status code"
 # class of failure: registered hook commands point at a path that no longer
