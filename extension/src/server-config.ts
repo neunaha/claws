@@ -75,7 +75,7 @@ export type ServerConfigProvider = () => ServerConfig;
 
 export const DEFAULT_EXEC_TIMEOUT_MS = 180_000;
 export const DEFAULT_POLL_LIMIT = 100;
-export const DEFAULT_STRICT_EVENT_VALIDATION = false;
+export const DEFAULT_STRICT_EVENT_VALIDATION = true;
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000;
 export const DEFAULT_EVENT_LOG_RETENTION_DAYS = 7;
 export const DEFAULT_EVENT_LOG_COMPACT = true;
