@@ -5,6 +5,19 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+### v0.7.7 features (cherry-picked from v075-bus-hardening)
+- Wave-registry extended: `parentWave`, `subWorkerTerminals`, harvest on wave.complete (lifecycle army hardening)
+- Auto-harvest of orphan sub-worker terminals when wave.complete fires
+- WaveHarvestedV1 schema + topic registrations (`wave.*.harvested`, `wave.*.violation`)
+- Lead-violation detection: silent LEAD with active sub-workers fires `wave.<id>.violation`
+- claws_wave_status MCP tool returns nested tree (lead + subWorkerTerminals)
+- Dev-discipline hooks: 5 SessionStart/PostToolUse/Stop hook scripts in scripts/dev-hooks/
+- inject-dev-hooks.js — registers hooks into project .claude/settings.json
+- shell-hook.sh: runtime version read from package.json (no more drift)
+- shell-hook.sh: clean banner — orange ASCII CLAWS, no border, no command list
+- Tests: claws-wave-lifecycle-army.test.js, dev-hook-misfire.test.sh
+
 ## [0.7.7] - 2026-04-30 — Bug-fix patch (8 P0/P1 code + 2 hot-fixes)
 
 ### Fixed
