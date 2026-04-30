@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **P0-2** `extension/src/server.ts` — orchestrator peers exempt from per-peer publish rate limit; orchestrator management commands can no longer be self-rate-limited during high-volume waves. Peer role looked up via `this.peers.get(peerId)?.role` before the bucket check.
 - **P1-1** `extension/src/server-config.ts` — `strictEventValidation` default flipped `false` → `true`; unregistered topics pass through unchecked, registered-schema topics are now validated by default.
 - **P1-2** `mcp_server.js` — `_eventBuffer` drain waiters capped at 10; excess `wait_ms` requests rejected immediately; `system.bus.ring-overflow` event emitted once per eviction batch.
-- **P1-5/P1-6** `scripts/install.sh` — copy blocks added for `claws-wave-lead`, `claws-wave-subworker`, `dev-protocol-piafeur` skills and `claws-wave-lead.md`, `claws-army.md` commands; `claws-update` on existing projects now picks up these assets.
+- **P1-5/P1-6** `scripts/install.sh` — copy blocks added for `claws-wave-lead`, `claws-wave-subworker`, `dev-protocol-piafeur` skills; existing `claws*.md` glob already covers `claws-wave-lead.md` and `claws-army.md` commands; `claws-update` on existing projects now picks up all three skills.
 - **P1-7** `schemas/mcp-tools.json` — added `claws_task_assign`, `claws_task_update`, `claws_task_complete`, `claws_task_cancel`, `claws_task_list` tool definitions; `claws_schema_get` no longer returns not-found for these 5 tools.
 - **P1-8** `scripts/shell-hook.sh:66` — banner version updated `v0.6.1` → `v0.7.6`.
 - **HOT-FIX A** — ran `inject-claude-md.js` against `/Users/ANISH.NEUNAHA/Desktop/Claws`; `CLAWS:BEGIN` block now present.
