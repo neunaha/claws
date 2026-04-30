@@ -18,6 +18,18 @@
 
 set -eo pipefail
 
+# FINDING-B-5: --dry-run flag — show what would change without applying it.
+DRY_RUN=0
+_update_args=()
+for _arg in "$@"; do
+  case "$_arg" in
+    --dry-run) DRY_RUN=1 ;;
+    *) _update_args+=("$_arg") ;;
+  esac
+done
+set -- "${_update_args[@]+"${_update_args[@]}"}"
+unset _update_args _arg
+
 INSTALL_DIR="${CLAWS_DIR:-$HOME/.claws-src}"
 # PROJECT_PWD is set by the slash command; fall back to $1, then $PWD.
 PROJECT_ROOT="${1:-${PROJECT_PWD:-$(pwd)}}"
@@ -93,7 +105,13 @@ cp "$INSTALL_DIR/CHANGELOG.md" "$INSTALL_DIR/extension/CHANGELOG.md" 2>/dev/null
 # injection, shell hook, verification, banner, install log. Anything new we
 # want the update flow to do — add it to install.sh, not here.
 header "Running installer"
-( cd "$PROJECT_ROOT" && bash "$INSTALL_DIR/scripts/install.sh" )
+if [ "$DRY_RUN" = "1" ]; then
+  note "--dry-run: skipping installer. Pending git diff from $INSTALL_DIR:"
+  ( cd "$INSTALL_DIR" && git log --oneline origin/main..HEAD 2>/dev/null || true )
+  ( cd "$INSTALL_DIR" && git diff --stat origin/main 2>/dev/null || true )
+else
+  ( cd "$PROJECT_ROOT" && bash "$INSTALL_DIR/scripts/install.sh" )
+fi
 
 # ─── Step 3: Print the newest CHANGELOG entry ──────────────────────────────
 header "What's new"
