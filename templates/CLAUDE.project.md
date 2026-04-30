@@ -67,4 +67,17 @@ LEAD sub-worker additionally:
 - Publishes `wave.<waveId>.lead.boot` (WaveLeadBootV1) and `wave.<waveId>.lead.complete` (WaveLeadCompleteV1).
 - Owns the final `git commit`; may not commit until tester confirms green.
 
+
+## Development Discipline (enforced by hooks)
+
+These practices are enforced by dev-hooks in `scripts/dev-hooks/`. Violations are logged to `/tmp/claws-dev-hooks.log`; hooks exit 0 (warn only, never block).
+
+- **Always pull `origin/main` before starting edits** — `check-stale-main` warns if your local main is behind remote; stale base causes avoidable merge conflicts.
+- **Verify semver compliance for version bumps** — version strings must be 3-part `MAJOR.MINOR.PATCH` only; suffixes like `-patch` are invalid (`check-tag-vs-main` and `check-tag-pushed` catch drift between tags and HEAD).
+- **Never delete extension dirs while VS Code extension host is running** — `check-extension-dirs` warns if `extension/` is missing or the extension host is active; reload VS Code first to avoid a broken host state.
+- **After ship-restoration or worktree switch, re-run `inject-claude-md.js`** — the `CLAWS:BEGIN` block in `CLAUDE.md` is not preserved across worktree switches; re-injection ensures the correct tool list and protocol version are active.
+- **Match branch HEAD to `origin` before opening a PR** — `check-tag-vs-main` warns on drift between the local branch tip and its upstream; push or rebase before creating the PR to avoid CI surprises.
+- **Tag every release; push tags with `--tags`** — `check-tag-pushed` verifies the version tag exists on the remote; untagged releases cannot be referenced by the installer or changelog links.
+- **Use `claws_create` + `claws_send` for long-lived processes, never raw Bash** — `check-open-claws-terminals` audits for stale terminals left open after a session; the Claws terminal policy (see rules above) applies to all workers.
+
 <!-- CLAWS:END -->

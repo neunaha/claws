@@ -13,7 +13,7 @@ const crypto = require('crypto');
 const path   = require('path');
 const fs     = require('fs');
 
-const VERSION = '0.7.6.1';
+const VERSION = '0.7.7';
 
 // ── Socket discovery ──────────────────────────────────────────────────────────
 

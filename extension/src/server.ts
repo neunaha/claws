@@ -179,14 +179,24 @@ export class ClawsServer {
 
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
-    this.waveRegistry = new WaveRegistry((waveId, role, silentMs) => {
-      void this.emitSystemEvent(`wave.${waveId}.violation`, {
-        waveId,
-        subWorker: role,
-        silentMs,
-        ts: new Date().toISOString(),
-      });
-    });
+    this.waveRegistry = new WaveRegistry(
+      (waveId, role, silentMs) => {
+        void this.emitSystemEvent(`wave.${waveId}.violation`, {
+          waveId,
+          subWorker: role,
+          silentMs,
+          ts: new Date().toISOString(),
+        });
+      },
+      (waveId, subWorkerCount) => {
+        void this.emitSystemEvent(`wave.${waveId}.violation`, {
+          waveId,
+          kind: 'silent_lead_with_active_subs',
+          subWorkerCount,
+          ts: new Date().toISOString(),
+        });
+      },
+    );
     opts.terminalManager.setStateChangeCallback((id, from, to) => {
       const payload = { terminalId: id, from, to, ts: new Date().toISOString() };
       void this.emitSystemEvent(`vehicle.${id}.state`, payload);
@@ -836,11 +846,19 @@ export class ClawsServer {
         name?: string; cwd?: string; wrapped?: boolean; shellPath?: string;
         env?: Record<string, string>; show?: boolean; preserveFocus?: boolean;
       };
+      // Wave affiliation from the calling peer's stored waveId (registered via hello).
+      const callerPeerId3 = ctx.getPeerId();
+      const callerPeer3 = callerPeerId3 ? this.peers.get(callerPeerId3) : undefined;
+      const callerWaveId = callerPeer3?.waveId;
+      const callerRole = callerPeer3?.subWorkerRole as SubWorkerRole | undefined;
+
       if (r.wrapped === true) {
         const { id } = tm.createWrapped(r);
+        if (callerWaveId) this.waveRegistry.trackTerminal(callerWaveId, String(id), callerRole);
         return { ok: true, id, logPath: null, wrapped: true };
       }
       const { id } = tm.createStandard(r);
+      if (callerWaveId) this.waveRegistry.trackTerminal(callerWaveId, String(id), callerRole);
       return { ok: true, id, wrapped: false };
     }
 
@@ -1088,6 +1106,8 @@ export class ClawsServer {
         terminalId: r.terminalId,
         capabilities,
         socket: ctx.socket,
+        waveId: r.waveId,
+        subWorkerRole: r.subWorkerRole,
         subscriptions,
         lastSeen: Date.now(),
         connectedAt: Date.now(),
@@ -1549,18 +1569,37 @@ export class ClawsServer {
       if (!r.waveId) return { ok: false, error: 'wave.status:missing-waveId' };
       const wave = this.waveRegistry.getWave(r.waveId);
       if (!wave) return { ok: false, error: `wave.status:not-found:${r.waveId}` };
-      const subWorkers = [...wave.subWorkers.entries()].map(([role, entry]) => ({
-        role,
-        peerId: entry.peerId ?? null,
-        lastHeartbeatMs: entry.lastHeartbeatMs,
-        complete: entry.complete,
-      }));
+      const subWorkers = [...wave.subWorkers.entries()].map(([role, entry]) => {
+        const peerConn = entry.peerId ? this.peers.get(entry.peerId) : undefined;
+        return {
+          role,
+          peerId: entry.peerId ?? null,
+          peerName: peerConn?.peerName ?? null,
+          terminalId: entry.terminalId ?? peerConn?.terminalId ?? null,
+          lastHeartbeatMs: entry.lastHeartbeatMs,
+          complete: entry.complete,
+        };
+      });
+      const leadPeer = this.peers.get(wave.leadPeerId);
       return {
         ok: true,
         waveId: wave.waveId,
         layers: wave.layers,
         leadPeerId: wave.leadPeerId,
+        leadPeerName: leadPeer?.peerName ?? null,
+        leadTerminalId: leadPeer?.terminalId ?? null,
+        // Nested lead tree (mission: claws_wave_status nested tree format)
+        lead: {
+          peerId: wave.leadPeerId,
+          peerName: leadPeer?.peerName ?? null,
+          terminalId: leadPeer?.terminalId ?? null,
+          status: wave.complete ? 'complete' : 'active',
+          lastSeenMs: leadPeer?.lastSeen ?? null,
+        },
         subWorkers,
+        subWorkerTerminals: wave.subWorkerTerminals,
+        orphanedTerminals: wave.orphanedTerminals,
+        harvestedAt: wave.harvestedAt ?? null,
         complete: wave.complete,
         createdAt: wave.createdAt,
         completedAt: wave.completedAt ?? null,
@@ -1592,7 +1631,25 @@ export class ClawsServer {
         commits: r.commits ?? [],
         regression_clean: r.regressionClean ?? false,
       });
-      return { ok: true, waveId: r.waveId, completedAt: completed.completedAt };
+
+      // HARVEST: close any sub-worker terminals registered to this wave
+      const terminalIdsToClose = this.waveRegistry.harvestWave(r.waveId);
+      const closedTerminals: string[] = [];
+      const alreadyClosed: string[] = [];
+      for (const tid of terminalIdsToClose) {
+        const closed = tm.close(tid);
+        if (closed) { closedTerminals.push(tid); } else { alreadyClosed.push(tid); }
+      }
+      // Always emit harvested so orchestrators can confirm lifecycle closed.
+      void this.emitSystemEvent(`wave.${r.waveId}.harvested`, {
+        waveId: r.waveId,
+        orphaned_count: terminalIdsToClose.length,
+        closed_terminals: closedTerminals,
+        already_closed: alreadyClosed,
+        ts: new Date().toISOString(),
+      });
+
+      return { ok: true, waveId: r.waveId, completedAt: completed.completedAt, harvested: closedTerminals.length };
     }
 
     if (cmd === 'deliver-cmd') {

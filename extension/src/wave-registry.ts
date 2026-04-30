@@ -2,7 +2,7 @@ import { SubWorkerRole } from './protocol';
 
 export interface WaveSubWorkerEntry {
   role: SubWorkerRole;
-  /** peerId of the sub-worker terminal, if registered via hello with waveId. */
+  /** peerId of the sub-worker peer, set on hello with waveId+subWorkerRole. */
   peerId?: string;
   /** Epoch ms of last observed heartbeat from this sub-worker. */
   lastHeartbeatMs: number;
@@ -10,6 +10,8 @@ export interface WaveSubWorkerEntry {
   complete: boolean;
   /** NodeJS timer handle for the violation detector. */
   violationTimer?: ReturnType<typeof setTimeout>;
+  /** Terminal ID created by this sub-worker (set by server create handler). */
+  terminalId?: string;
 }
 
 export interface WaveRecord {
@@ -26,6 +28,16 @@ export interface WaveRecord {
   commits?: string[];
   regressionClean?: boolean;
   complete: boolean;
+  /** Optional parent wave ID when this wave was spawned by another wave's LEAD. */
+  parentWave?: string;
+  /** Terminal IDs spawned by sub-worker peers affiliated with this wave. */
+  subWorkerTerminals: string[];
+  /** Epoch ms when auto-harvest ran (wave.complete triggered terminal closures). */
+  harvestedAt?: number;
+  /** Terminal IDs that were still open at harvest time and were force-closed. */
+  orphanedTerminals: string[];
+  /** Lead-silence violation timer. Fires when LEAD is silent AND has active sub-worker terminals. */
+  leadViolationTimer?: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -35,14 +47,22 @@ export interface WaveRecord {
  */
 export type ViolationCallback = (waveId: string, role: SubWorkerRole, silentMs: number) => void;
 
+/**
+ * Callback invoked when a LEAD has been silent for VIOLATION_THRESHOLD_MS
+ * while the wave still has un-harvested sub-worker terminals.
+ */
+export type LeadViolationCallback = (waveId: string, subWorkerCount: number) => void;
+
 const VIOLATION_THRESHOLD_MS = 25_000;
 
 export class WaveRegistry {
   private readonly waves = new Map<string, WaveRecord>();
   private readonly onViolation: ViolationCallback;
+  private readonly onLeadViolation?: LeadViolationCallback;
 
-  constructor(onViolation: ViolationCallback) {
+  constructor(onViolation: ViolationCallback, onLeadViolation?: LeadViolationCallback) {
     this.onViolation = onViolation;
+    this.onLeadViolation = onLeadViolation;
   }
 
   /** Create a new wave. Idempotent — returns existing wave if waveId already registered. */
@@ -51,6 +71,7 @@ export class WaveRegistry {
     layers: string[],
     manifest: SubWorkerRole[],
     leadPeerId: string,
+    parentWave?: string,
   ): WaveRecord {
     const existing = this.waves.get(waveId);
     if (existing) return existing;
@@ -73,7 +94,15 @@ export class WaveRegistry {
       leadPeerId,
       createdAt: now,
       complete: false,
+      parentWave,
+      subWorkerTerminals: [],
+      orphanedTerminals: [],
     };
+
+    if (this.onLeadViolation) {
+      record.leadViolationTimer = this._scheduleLeadViolation(waveId);
+    }
+
     this.waves.set(waveId, record);
     return record;
   }
@@ -96,6 +125,19 @@ export class WaveRegistry {
     }
   }
 
+  /**
+   * Record a heartbeat from the LEAD peer, resetting the lead-violation timer.
+   * Called by the server whenever the LEAD peer issues any command.
+   */
+  recordLeadHeartbeat(waveId: string): void {
+    const wave = this.waves.get(waveId);
+    if (!wave || wave.complete) return;
+    if (wave.leadViolationTimer !== undefined) clearTimeout(wave.leadViolationTimer);
+    if (this.onLeadViolation) {
+      wave.leadViolationTimer = this._scheduleLeadViolation(waveId);
+    }
+  }
+
   /** Mark a sub-worker as complete and cancel its violation timer. */
   markSubWorkerComplete(waveId: string, role: SubWorkerRole): void {
     const wave = this.waves.get(waveId);
@@ -111,7 +153,39 @@ export class WaveRegistry {
   }
 
   /**
-   * Mark the wave as complete. Clears all sub-worker violation timers.
+   * Track a terminal ID spawned by a sub-worker peer affiliated with this wave.
+   * Optionally associates the TID with a specific sub-worker role entry.
+   * Silently ignored if wave doesn't exist or is already complete.
+   */
+  trackTerminal(waveId: string, terminalId: string, role?: SubWorkerRole): void {
+    const wave = this.waves.get(waveId);
+    if (!wave || wave.complete) return;
+    if (!wave.subWorkerTerminals.includes(terminalId)) {
+      wave.subWorkerTerminals.push(terminalId);
+    }
+    if (role) {
+      const entry = wave.subWorkers.get(role);
+      if (entry && !entry.terminalId) entry.terminalId = terminalId;
+    }
+  }
+
+  /**
+   * Harvest a wave: collect all un-closed sub-worker terminals, mark them as
+   * orphaned, set harvestedAt. Returns the terminal ID list so the server can
+   * call terminalManager.close() on each. Only valid once per wave.
+   */
+  harvestWave(waveId: string): string[] {
+    const wave = this.waves.get(waveId);
+    if (!wave || wave.harvestedAt) return [];
+    wave.harvestedAt = Date.now();
+    wave.orphanedTerminals = [...wave.subWorkerTerminals];
+    return wave.orphanedTerminals;
+  }
+
+  /**
+   * Mark the wave as complete. Clears all sub-worker violation timers and the
+   * lead violation timer. Returns the wave record (including subWorkerTerminals
+   * for harvest) or null if the wave was already complete.
    * Only the LEAD should call this.
    */
   completeWave(
@@ -128,6 +202,10 @@ export class WaveRegistry {
         clearTimeout(entry.violationTimer);
         entry.violationTimer = undefined;
       }
+    }
+    if (wave.leadViolationTimer !== undefined) {
+      clearTimeout(wave.leadViolationTimer);
+      wave.leadViolationTimer = undefined;
     }
     wave.complete = true;
     wave.completedAt = Date.now();
@@ -166,8 +244,26 @@ export class WaveRegistry {
       for (const entry of wave.subWorkers.values()) {
         if (entry.violationTimer !== undefined) clearTimeout(entry.violationTimer);
       }
+      if (wave.leadViolationTimer !== undefined) clearTimeout(wave.leadViolationTimer);
     }
     this.waves.clear();
+  }
+
+  private _scheduleLeadViolation(waveId: string): ReturnType<typeof setTimeout> {
+    return setTimeout(() => {
+      this._checkLeadViolation(waveId);
+    }, VIOLATION_THRESHOLD_MS);
+  }
+
+  private _checkLeadViolation(waveId: string): void {
+    const wave = this.waves.get(waveId);
+    if (!wave || wave.complete || wave.harvestedAt) return;
+    const activeCount = wave.subWorkerTerminals.length;
+    if (activeCount > 0 && this.onLeadViolation) {
+      this.onLeadViolation(waveId, activeCount);
+      // Reschedule so violations keep firing until resolved.
+      wave.leadViolationTimer = this._scheduleLeadViolation(waveId);
+    }
   }
 
   private _checkViolation(waveId: string, role: SubWorkerRole): void {

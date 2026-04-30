@@ -33,6 +33,10 @@ export interface PeerConnection {
   terminalId?: string;
   /** Capability strings the peer advertised. May be empty. */
   capabilities: string[];
+  /** Wave ID this peer belongs to (set when hello includes waveId). */
+  waveId?: string;
+  /** Sub-worker role within the wave (set when hello includes subWorkerRole). */
+  subWorkerRole?: string;
   /** Live socket — used exclusively by the server for push frames. */
   socket: net.Socket;
   /** subscriptionId → topicPattern. Patterns may contain `*` / `**`. */

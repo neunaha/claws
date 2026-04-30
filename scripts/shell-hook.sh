@@ -8,9 +8,30 @@
 if [[ $- == *i* ]] && [[ -z "${CLAWS_BANNER_SHOWN:-}" ]]; then
   export CLAWS_BANNER_SHOWN=1
 
-  # Detect if Claws socket is active.
-  # Walk up from $PWD — the extension creates the socket at
-  # <workspace-root>/.claws/claws.sock, not relative to $PWD.
+  # ── Version: CLAWS_VERSION env > nearest package.json from script dir ──
+  if [ -n "${CLAWS_VERSION:-}" ]; then
+    _CLAWS_VERSION="$CLAWS_VERSION"
+  elif command -v node >/dev/null 2>&1; then
+    # BASH_SOURCE[0] in bash; ZSH_SCRIPT (zsh 5.3+) in zsh; fallback to common install path
+    _csd=""
+    [ -n "${BASH_SOURCE[0]:-}" ] && _csd="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
+    [ -z "$_csd" ] && [ -n "${ZSH_SCRIPT:-}" ] && _csd="$(cd "$(dirname "$ZSH_SCRIPT")" 2>/dev/null && pwd -P)"
+    [ -z "$_csd" ] && _csd="$HOME/.claws-src/scripts"
+    _CLAWS_VERSION=$(node -e "
+const path=require('path'),fs=require('fs');
+let d=path.resolve('$_csd');
+for(let i=0;i<8&&d&&d!=='/';i++,d=path.dirname(d)){
+  try{const v=JSON.parse(fs.readFileSync(path.join(d,'package.json'),'utf8')).version;
+      if(v){process.stdout.write(v);process.exit(0)}}catch(e){}
+}
+process.stdout.write('?.?.?');
+" 2>/dev/null || echo "?.?.?")
+    unset _csd
+  else
+    _CLAWS_VERSION="?.?.?"
+  fi
+
+  # ── Socket detection ──
   CLAWS_SOCK="${CLAWS_SOCKET:-}"
   if [ -z "$CLAWS_SOCK" ]; then
     _walk="$PWD"
@@ -23,62 +44,90 @@ if [[ $- == *i* ]] && [[ -z "${CLAWS_BANNER_SHOWN:-}" ]]; then
     done
     unset _walk
   fi
-  if [ -S "$CLAWS_SOCK" ] 2>/dev/null; then
-    _CLAWS_STATUS="\033[32m● connected\033[0m"
+
+  # ── Colors (ANSI-C quoting — expand cleanly in printf) ──
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    _GRN=$'\033[32m'; _AMB=$'\033[33m'
+    _BLD=$'\033[1;37m'; _DIM=$'\033[2m'; _RST=$'\033[0m'
+  else
+    _GRN=''; _AMB=''; _BLD=''; _DIM=''; _RST=''
+  fi
+
+  # ── Bridge status ──
+  if [ -S "${CLAWS_SOCK:-}" ] 2>/dev/null; then
+    _bstxt="● connected"
+    _bsansi="${_GRN}● connected${_RST}"
     _CLAWS_TERMS=$(node -e "
 const net=require('net');
 const s=net.createConnection('$CLAWS_SOCK');
 s.on('connect',()=>s.write(JSON.stringify({id:0,cmd:'list'})+'\n'));
 let b='';
-s.on('data',d=>{b+=d;if(b.includes('\n')){try{console.log(JSON.parse(b.split('\n')[0]).terminals.length)}catch(e){console.log('?')};s.destroy()}});
-s.on('error',()=>{console.log('?');s.destroy()});
-setTimeout(()=>{console.log('?');s.destroy()},2000);
+s.on('data',d=>{b+=d;if(b.includes('\n')){
+  try{process.stdout.write(String(JSON.parse(b.split('\n')[0]).terminals.length))}
+  catch(e){process.stdout.write('?')};s.destroy()}});
+s.on('error',()=>{process.stdout.write('?');s.destroy()});
+setTimeout(()=>{process.stdout.write('?');s.destroy()},2000);
 " 2>/dev/null || echo "?")
   else
-    _CLAWS_STATUS="\033[33m○ socket not found\033[0m"
+    _bstxt="○ socket not found"
+    _bsansi="${_AMB}○ socket not found${_RST}"
     _CLAWS_TERMS="-"
   fi
 
-  # Detect if wrapped
+  # ── Wrap / pipe-mode state ──
   if [ "${CLAWS_WRAPPED:-}" = "1" ]; then
-    _CLAWS_WRAP="\033[32m● wrapped\033[0m (pty logged)"
+    if [ "${CLAWS_PIPE_MODE:-}" = "1" ]; then
+      _wrtxt="◑ pipe-mode (degraded)"
+      _wransi="${_AMB}◑ pipe-mode (degraded)${_RST}"
+    else
+      _wrtxt="● wrapped (pty logged)"
+      _wransi="${_GRN}● wrapped (pty logged)${_RST}"
+    fi
   else
-    _CLAWS_WRAP="\033[90m○ unwrapped\033[0m"
+    _wrtxt="○ unwrapped"
+    _wransi="${_DIM}○ unwrapped${_RST}"
   fi
 
-  # Banner — ASCII art CLAWS logo matching the install-flow image
-  _T="\033[38;2;200;90;62m"  # terracotta
-  _W="\033[1;37m"             # bold white
-  _G="\033[32m"               # green
-  _D="\033[90m"               # dim
-  _R="\033[0m"                # reset
+  # ── Banner — inner content width = 60 chars between the two ║ ──
+  _W=60
+  # 60 × ═  (box top/bottom border)
+  _BDR="════════════════════════════════════════════════════════════"
+
+  # Center plain text within _W chars → (left_pad, right_pad)
+  _t="CLAWS"
+  _tl=$(( (_W - ${#_t}) / 2 )); _tr=$(( _W - ${#_t} - _tl ))
+
+  _s="Terminal Control Bridge  v${_CLAWS_VERSION}"
+  _sl=$(( (_W - ${#_s}) / 2 )); _sr=$(( _W - ${#_s} - _sl ))
+  # Guard against oversized version strings
+  [ "$_sl" -lt 0 ] && _sl=0; [ "$_sr" -lt 0 ] && _sr=0
+
+  # Status rows: prefix = 3 (lead) + 9 (label) + 2 (gap) = 14 visible chars
+  # trailing = _W - 14 - visible_status_len
+  _b1=$(( _W - 14 - ${#_bstxt} ))
+  _b2=$(( _W - 14 - ${#_CLAWS_TERMS} - 7 ))   # " active" = 7 chars
+  _b3=$(( _W - 14 - ${#_wrtxt} ))
+  [ "$_b1" -lt 0 ] && _b1=0
+  [ "$_b2" -lt 0 ] && _b2=0
+  [ "$_b3" -lt 0 ] && _b3=0
 
   printf "\n"
-  printf "  ${_T}╔══════════════════════════════════════════════════════════════════╗${_R}\n"
-  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_T} ██████╗██╗      █████╗ ██╗    ██╗███████╗${_R} ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_T}██╔════╝██║     ██╔══██╗██║    ██║██╔════╝${_R} ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_T}██║     ██║     ███████║██║ █╗ ██║███████╗${_R} ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_T}██║     ██║     ██╔══██║██║███╗██║╚════██║${_R} ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_T}╚██████╗███████╗██║  ██║╚███╔███╔╝███████║${_R} ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_T} ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝${_R} ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_D}Terminal Control Bridge  v0.7.6${_R}            ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_D}VS Code Extension${_R}                          ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   Bridge:    $_CLAWS_STATUS                            ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   Terminals: ${_W}${_CLAWS_TERMS}${_R} active          ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   This term: $_CLAWS_WRAP                              ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_D}claws-ls${_R}    list terminals                 ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_D}claws-new${_R}   create wrapped terminal        ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_D}claws-run${_R}   exec command in terminal       ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}   ${_D}claws-log${_R}   read wrapped terminal log      ${_T}║${_R}\n"
-  printf "  ${_T}║${_R}                                                        ${_T}║${_R}\n"
-  printf "  ${_T}╚══════════════════════════════════════════════════════════════════╝${_R}\n"
+  printf "  ╔%s╗\n"                                 "$_BDR"
+  printf "  ║%${_W}s║\n"                            ""
+  printf "  ║%${_tl}s${_BLD}%s${_RST}%${_tr}s║\n"  "" "$_t" ""
+  printf "  ║%${_sl}s${_DIM}%s${_RST}%${_sr}s║\n"  "" "$_s" ""
+  printf "  ║%${_W}s║\n"                            ""
+  printf "  ║   %-9s  %s%${_b1}s║\n"               "Bridge"    "$_bsansi" ""
+  printf "  ║   %-9s  %s active%${_b2}s║\n"        "Terminals" "$_CLAWS_TERMS" ""
+  printf "  ║   %-9s  %s%${_b3}s║\n"               "This term" "$_wransi" ""
+  printf "  ║%${_W}s║\n"                            ""
+  printf "  ╚%s╝\n"                                 "$_BDR"
   printf "\n"
 
-  unset _CLAWS_STATUS _CLAWS_TERMS _CLAWS_WRAP
+  unset _GRN _AMB _BLD _DIM _RST
+  unset _bstxt _bsansi _CLAWS_TERMS _wrtxt _wransi
+  unset _t _tl _tr _s _sl _sr _b1 _b2 _b3 _W _BDR
+  unset CLAWS_SOCK _CLAWS_VERSION
 fi
 
 # ═══════════════════════════════════════════════════════════════

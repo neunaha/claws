@@ -1196,6 +1196,30 @@ if [ "${CLAWS_GLOBAL_CONFIG:-0}" = "1" ]; then
   install_capabilities_into "$HOME" "global (~/.claude)"
 fi
 
+# ─── Step 6b: Dev-discipline hooks ──────────────────────────────────────────
+# Copies scripts/dev-hooks/*.js into <project>/.claws-bin/dev-hooks/ and
+# registers them in <project>/.claude/settings.json via inject-dev-hooks.js.
+# Idempotent: safe to re-run on every update.
+if [ "$PROJECT_INSTALL" = "1" ] && [ -d "$INSTALL_DIR/scripts/dev-hooks" ]; then
+  step "Installing dev-discipline hooks"
+  DEV_HOOKS_DST="$PROJECT_ROOT/.claws-bin/dev-hooks"
+  mkdir -p "$DEV_HOOKS_DST"
+  _dh_count=0
+  for _dh in "$INSTALL_DIR/scripts/dev-hooks"/*.js; do
+    [ -f "$_dh" ] || continue
+    cp "$_dh" "$DEV_HOOKS_DST/" && _dh_count=$((_dh_count+1))
+  done
+  ok "copied $_dh_count dev-hook scripts → $DEV_HOOKS_DST"
+
+  if [ -f "$INSTALL_DIR/scripts/inject-dev-hooks.js" ]; then
+    node --no-deprecation "$INSTALL_DIR/scripts/inject-dev-hooks.js" "$PROJECT_ROOT" 2>&1 | sed 's/^/  /' \
+      || warn "inject-dev-hooks.js failed — dev hooks not registered"
+  else
+    warn "inject-dev-hooks.js not found — dev hooks not registered"
+  fi
+  unset _dh _dh_count
+fi
+
 # ─── Step 7: Shell hook ────────────────────────────────────────────────────
 step "Injecting shell hook"
 HOOK_SOURCE="source \"$INSTALL_DIR/scripts/shell-hook.sh\""

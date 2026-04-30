@@ -314,6 +314,15 @@ export const WaveDocCompleteV1 = z.object({
 });
 export type WaveDocComplete = z.infer<typeof WaveDocCompleteV1>;
 
+export const WaveHarvestedV1 = z.object({
+  waveId:           z.string().min(1),
+  orphaned_count:   z.number().int().nonnegative(),
+  closed_terminals: z.array(z.string()),
+  already_closed:   z.array(z.string()),
+  ts:               z.string().datetime(),
+});
+export type WaveHarvested = z.infer<typeof WaveHarvestedV1>;
+
 // ── Structured control schemas (L10 deliver-cmd / cmd.ack) ───────────────────
 
 export const CmdDeliverV1 = z.object({
@@ -404,4 +413,5 @@ export const SCHEMA_BY_NAME: Record<string, z.ZodTypeAny> = {
   'pipeline-step-v1':              PipelineStepV1,
   'rpc-request-v1':                RpcRequestV1,
   'rpc-response-v1':               RpcResponseV1,
+  'wave-harvested-v1':             WaveHarvestedV1,
 };
