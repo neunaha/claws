@@ -120,7 +120,7 @@ function check(name, fn) {
   check('--version prints semver string', () => {
     const r = spawnSync(process.execPath, [SDK, '--version'], { encoding: 'utf8' });
     assert.strictEqual(r.status, 0, `--version exited ${r.status}`);
-    assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/, `unexpected version: "${r.stdout.trim()}"`);
+    assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+(\.\d+)?$/, `unexpected version: "${r.stdout.trim()}"`);
   });
 
   check('publish without CLAWS_PEER_ID exits non-zero with clear error', () => {
