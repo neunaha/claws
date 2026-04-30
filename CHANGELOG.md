@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **P1-4** `scripts/fix.sh` — added unconditional `.claws-bin` integrity check (check 4c), independent of the `.mcp.json` registration gate. Detects missing directory, missing `mcp_server.js`, and dangling symlinks, then auto-repairs by copying from `$INSTALL_DIR`. Previously, a broken `.claws-bin` was only repaired when `.mcp.json` was also missing.
 - **P1-3** `scripts/fix.sh` — replaced `ls … | head -1` with a full `for inst` loop over all `neunaha.claws-*` entries per editor dir. Added post-scan duplicate detection that warns when multiple copies exist in the same editor, preventing silent load-order conflicts.
 - **D-1** `schemas/mcp-tools.json` — registered 5 missing MCP tools: `claws_drain_events`, `claws_pipeline_create`, `claws_pipeline_list`, `claws_pipeline_close`, `claws_dispatch_subworker`. These handlers existed in `mcp_server.js` but were invisible to AI orchestrators because `tools/list` reads from the schema file.
+- **A-5** `scripts/install.sh` — `STEP_TOTAL` bumped from 8 to 9 to match actual step count (cosmetic — install used to render `9/8 Verifying`).
 
 ### Added
 

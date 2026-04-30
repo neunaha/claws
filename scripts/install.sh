@@ -48,7 +48,7 @@ else
 fi
 
 STEP_NUM=0
-STEP_TOTAL=8
+STEP_TOTAL=9
 step()   { STEP_NUM=$((STEP_NUM+1)); printf "\n${C_BOLD}${C_BLUE}[%d/%d]${C_RESET} %s\n" "$STEP_NUM" "$STEP_TOTAL" "$*"; }
 ok()     { printf "  ${C_GREEN}✓${C_RESET} %s\n" "$*"; }
 warn()   { printf "  ${C_YELLOW}!${C_RESET} %s\n" "$*"; }
