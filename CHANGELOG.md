@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.7] - 2026-04-30 — Development Discipline Hooks
 
+### Fixed (v0.7.7-bulletproof)
+
+- **D-1** `schemas/mcp-tools.json` — registered 5 missing MCP tools: `claws_drain_events`, `claws_pipeline_create`, `claws_pipeline_list`, `claws_pipeline_close`, `claws_dispatch_subworker`. These handlers existed in `mcp_server.js` but were invisible to AI orchestrators because `tools/list` reads from the schema file.
+
 ### Added
 
 - **Five dev-hook scripts** in `scripts/dev-hooks/`: `check-stale-main`, `check-tag-pushed`, `check-tag-vs-main`, `check-open-claws-terminals`, `check-extension-dirs` — each exits 0 (warn-only, never blocks), logs to `/tmp/claws-dev-hooks.log`.

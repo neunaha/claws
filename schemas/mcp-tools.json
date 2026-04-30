@@ -791,5 +791,100 @@
       },
       "additionalProperties": false
     }
+  },
+  {
+    "name": "claws_drain_events",
+    "description": "Drain buffered push-frame events from the persistent socket. On first call auto-subscribes to all topics ('**'). Returns events received since since_index with a dropped count for aged-out events. Set wait_ms > 0 to block until at least one new event arrives or the timeout fires.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "since_index": {
+          "type": "integer",
+          "description": "Return only events with absoluteIndex greater than this value. Default 0 (return all buffered events)."
+        },
+        "wait_ms": {
+          "type": "integer",
+          "description": "Block up to this many milliseconds for at least one new event. Default 0 (return immediately)."
+        },
+        "max": {
+          "type": "integer",
+          "description": "Maximum number of events to return. Default 100."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_pipeline_create",
+    "description": "Create a named pipeline with an ordered list of steps. Each step is an object with a cmd field and optional arguments. Returns the pipelineId and full pipeline record.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Human-readable pipeline name. Defaults to 'pipeline'."
+        },
+        "steps": {
+          "description": "Ordered array of pipeline step objects (each with a cmd field), or a JSON string encoding such an array.",
+          "oneOf": [
+            { "type": "array" },
+            { "type": "string" }
+          ]
+        }
+      },
+      "required": ["steps"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_pipeline_list",
+    "description": "List all active pipelines on the server. Returns an array of pipeline records with id, name, and step status.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_pipeline_close",
+    "description": "Close and remove a pipeline by its ID. Returns { ok: true, pipelineId } on success.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pipelineId": {
+          "type": "string",
+          "description": "Pipeline ID returned by claws_pipeline_create."
+        }
+      },
+      "required": ["pipelineId"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_dispatch_subworker",
+    "description": "Spawn a sub-worker Claude Code terminal for the given wave, boot it through the trust prompt, and deliver a mission prompt. Returns { terminal_id, waveId, role, name }. Used by the Wave LEAD to deploy tester/reviewer/auditor/bench/doc sub-workers.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "description": "Wave ID (from claws_wave_create) that this sub-worker belongs to."
+        },
+        "role": {
+          "type": "string",
+          "description": "Sub-worker role: tester, reviewer, auditor, bench, or doc."
+        },
+        "mission": {
+          "type": "string",
+          "description": "Mission prompt text to deliver to the sub-worker after it boots."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for the sub-worker terminal (absolute path). Defaults to the current project root."
+        }
+      },
+      "required": ["waveId", "role", "mission"],
+      "additionalProperties": false
+    }
   }
 ]
