@@ -5,11 +5,18 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.7.1] - 2026-04-30 — Worker spawn fix + install.sh hardening
+
+### Fixed
+
+- **Worker spawn cwd + model defaults** `mcp_server.js` `runBlockingWorker` — `claws_worker` now passes `cwd` to the create RPC (defaulting to the MCP server's `process.cwd()` so workers land in the project root, not `$HOME`) and launches Claude Code with `--model claude-sonnet-4-6` by default. Both overridable via new `cwd` and `model` args. Previously, workers landed in `$HOME`, hit the trust dialog, failed the project MCP socket walk-up, and booted whichever model the user's shell defaulted to (often Opus xhigh). Schema regenerated; codegen test still passes (36 tools).
+- **GAP-3** `scripts/install.sh` — when update.sh's `--ff-only` pull diverged and exported `GIT_PULL_OK=0`, install.sh's own `git reset --hard origin/main` would succeed, leaving the source fresh but with the stale `GIT_PULL_OK=0` flag still gating CLAUDE.md re-injection. install.sh now flips `GIT_PULL_OK=1` after a successful force-reset so the new template + tool list lands. Affects users with modified `~/.claws-src` clones (untracked files, applied hotfixes, etc.).
+- **GAP-1** `scripts/install.sh:559` — `EXPECTED_MIN_VERSION` bumped from `"0.7.4"` to `"0.7.7"`. The version-floor check now correctly rejects pre-0.7.7 clones (theoretical safety, force-reset already keeps source fresh in practice).
+- **GAP-2** `scripts/install.sh:1182-1185` — corrected misleading comment about hook bin path. Code was already correct (passes `$INSTALL_DIR/scripts` to `inject-settings-hooks.js`); the comment claimed `$PROJECT_ROOT/.claws-bin`. No behavioral change, documentation only.
+
 ## [0.7.7] - 2026-04-30 — Development Discipline Hooks
 
 ### Fixed (v0.7.7-bulletproof)
-
-- **Worker spawn cwd + model defaults** `mcp_server.js` `runBlockingWorker` — `claws_worker` now passes `cwd` to the create RPC (defaulting to the MCP server's `process.cwd()` so workers land in the project root, not `$HOME`) and launches Claude Code with `--model claude-sonnet-4-6` by default. Both are overridable via new `cwd` and `model` args. Previously, workers landed in `$HOME`, hit the trust dialog, failed the project MCP socket walk-up, and booted whichever model the user's shell defaulted to (often Opus xhigh). Schema regenerated; codegen test still passes (36 tools).
 
 - **P0-1** `scripts/fix.sh` — added explicit `~/.claude/settings.json` JSON validity check (check 7b). Malformed settings caused ALL hooks to fail silently per session. Fix.sh now detects the issue, backs up the file, and re-injects Claws hooks via `inject-settings-hooks.js`.
 - **P1-2** `scripts/inject-dev-hooks.js` — replaced raw `JSON.parse` + `writeFileSync` with `json-safe.mjs` `mergeIntoFile` (JSONC-tolerant, atomic, abort-on-malformed). Previously, a comment in `.claude/settings.json` caused silent parse failure, `{}` fallback, and full overwrite — destroying all pre-existing project hooks.

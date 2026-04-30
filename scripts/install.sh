@@ -248,6 +248,15 @@ if [ -d "$INSTALL_DIR/.git" ]; then
     else
       ok "updated ${PREV_SHA:0:7} → ${NEW_SHA:0:7}"
     fi
+    # GAP-3 (v0.7.7.1): if update.sh's --ff-only pull diverged and set GIT_PULL_OK=0,
+    # but our force-reset above succeeded, the source is now fresh — flip the flag back
+    # so CLAUDE.md re-injection (gated on GIT_PULL_OK) runs. Without this, users with a
+    # modified ~/.claws-src clone get fresh source but stale CLAUDE.md tool lists.
+    if [ "${GIT_PULL_OK:-1}" = "0" ]; then
+      info "force-reset succeeded after ff-only divergence — re-enabling CLAUDE.md injection"
+      GIT_PULL_OK=1
+      export GIT_PULL_OK
+    fi
     git -C "$INSTALL_DIR" fsck --no-dangling 2>/dev/null || warn "clone integrity check failed — consider: rm -rf $INSTALL_DIR && re-run installer"
   else
     bad "failed to update $INSTALL_DIR (network error or corrupted clone)."
@@ -547,7 +556,7 @@ fi
 # read from the clone at runtime. If the clone is behind EXPECTED_MIN_VERSION,
 # the working tree is stale and the installer aborts — that was the v0.5.1 bug
 # where users saw "v0.4.0 — installed" because their ~/.claws-src/ was stale.
-EXPECTED_MIN_VERSION="0.7.4"
+EXPECTED_MIN_VERSION="0.7.7"
 EXT_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.0.0')}" 2>/dev/null || echo "0.0.0")
 
 # Flag stale clones loudly so users don't silently run on an old version.
@@ -1178,9 +1187,11 @@ CLAWSCMD
       node --no-deprecation "$INSTALL_DIR/scripts/inject-global-claude-md.js" 2>&1 | sed 's/^/  /' || warn "global CLAUDE.md injector failed"
     fi
     # Hook registration in ~/.claude/settings.json (SessionStart / PreToolUse / Stop).
-    # Bin path passed to the injector must be $PROJECT_ROOT/.claws-bin (where the
-    # hook copies actually live), NOT $INSTALL_DIR/.claws-bin (the source clone,
-    # whose .claws-bin/hooks/ is gitignored and missing).
+    # Bin path passed to the injector is $INSTALL_DIR/scripts — hooks register pointing
+    # to the source clone's committed scripts/hooks/ directory (NOT gitignored, kept
+    # current by git pull). Using the shared INSTALL_DIR path is correct because
+    # ~/.claude/settings.json is a per-user global file, not per-project.
+    # NOT $INSTALL_DIR/.claws-bin — that directory IS gitignored and missing on fresh clones.
     # CLAWS_NO_GLOBAL_HOOKS=1 skips this step entirely — useful for testing
     # an isolated install without touching the user's global Claude Code config.
     if [ -f "$INSTALL_DIR/scripts/inject-settings-hooks.js" ]; then
