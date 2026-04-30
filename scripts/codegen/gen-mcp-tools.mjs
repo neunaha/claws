@@ -63,6 +63,16 @@ const DESC = {
     "Return a simplified JSON representation of one registered Zod schema by name (e.g. 'worker-boot-v1', 'rpc-request-v1'). Use claws_schema_list to discover valid names.",
   claws_rpc_call:
     'Issue a typed RPC call to a target peer. The server routes the call to rpc.<targetPeerId>.request and waits for the worker to publish a response to rpc.response.<callerPeerId>.<requestId>. Returns the result or a timeout error.',
+  claws_task_assign:
+    "Orchestrator-only: assign a task to a worker peer. The worker receives a task.assigned.<peerId> push event. Use deliver='inject' to also write the prompt directly into the worker's terminal.",
+  claws_task_update:
+    'Worker-only: update the status or progress of an assigned task. Emits a task.status push event so orchestrators can track progress.',
+  claws_task_complete:
+    'Worker-only: mark a task as succeeded, failed, or skipped. Idempotent — calling again on an already-completed task is safe. Emits a task.completed push event.',
+  claws_task_cancel:
+    'Orchestrator-only: request cancellation of an active task. Emits task.cancel_requested.<assignee> so the worker can react. Does not forcibly terminate the worker.',
+  claws_task_list:
+    'List tasks in the server registry. Optionally filter by assignee peerId, status, or last-updated timestamp. Available to all peers.',
 };
 
 export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
@@ -120,7 +130,7 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
       command:           z.string().describe('Alternative to mission: raw shell command sent to a wrapped terminal. Implies launch_claude=false.').optional(),
       launch_claude:     z.boolean().describe('Launch claude --dangerously-skip-permissions before sending mission (default: true if mission present, false if command present)').optional(),
       detach:            z.boolean().describe('Return immediately after spawning (legacy behavior, default false).').optional(),
-      timeout_ms:        z.number().int().describe('Max wait for completion in ms (default 1800000 = 30 min).').optional(),
+      timeout_ms:        z.number().int().describe('Max wait for completion in ms (default 300000 = 5 min).').optional(),
       boot_wait_ms:      z.number().int().describe('Max wait for Claude Code boot before sending mission (default 8000).').optional(),
       boot_marker:       z.string().describe('Substring that indicates Claude booted (default "Claude Code").').optional(),
       complete_marker:   z.string().describe('Substring that signals success (default "MISSION_COMPLETE").').optional(),
@@ -213,6 +223,39 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
       method:       z.string().describe("RPC method name (e.g. 'introspect', 'status')."),
       params:       z.record(z.unknown()).describe('Optional method parameters.').optional(),
       timeoutMs:    z.number().int().min(100).max(30000).describe('Milliseconds before the call times out. Default: 5000.').optional(),
+    })),
+
+    tool('claws_task_assign', z.object({
+      title:     z.string().describe('Short human-readable task title.'),
+      assignee:  z.string().describe('peerId of the worker peer to assign the task to.'),
+      prompt:    z.string().describe('Full task instructions delivered to the worker.'),
+      timeoutMs: z.number().int().describe('Optional deadline in milliseconds from now.').optional(),
+      deliver:   z.enum(['publish', 'inject', 'both']).describe("How to deliver the prompt: publish (bus only), inject (terminal only), both (default: publish).").optional(),
+    })),
+
+    tool('claws_task_update', z.object({
+      taskId:      z.string().describe("Task ID as returned by claws_task_assign (e.g. 't_000001')."),
+      status:      z.enum(['pending', 'in_progress', 'blocked']).describe('New task status.'),
+      progressPct: z.number().min(0).max(100).describe('Optional progress percentage (0–100).').optional(),
+      note:        z.string().describe('Optional human-readable progress note.').optional(),
+    })),
+
+    tool('claws_task_complete', z.object({
+      taskId:    z.string().describe('Task ID as returned by claws_task_assign.'),
+      status:    z.enum(['succeeded', 'failed', 'skipped']).describe('Final task outcome.'),
+      result:    z.string().describe('Optional human-readable result summary.').optional(),
+      artifacts: z.array(z.string()).describe('Optional list of output artifact paths or identifiers.').optional(),
+    })),
+
+    tool('claws_task_cancel', z.object({
+      taskId: z.string().describe('Task ID to cancel.'),
+      reason: z.string().describe('Optional human-readable cancellation reason.').optional(),
+    })),
+
+    tool('claws_task_list', z.object({
+      assignee: z.string().describe('Filter by assignee peerId.').optional(),
+      status:   z.enum(['pending', 'in_progress', 'blocked', 'succeeded', 'failed', 'skipped']).describe('Filter by task status.').optional(),
+      since:    z.number().int().describe('Return only tasks updated at or after this epoch-ms timestamp.').optional(),
     })),
   ];
 

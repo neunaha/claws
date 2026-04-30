@@ -165,7 +165,7 @@
         },
         "timeout_ms": {
           "type": "integer",
-          "description": "Max wait for completion in ms (default 1800000 = 30 min)."
+          "description": "Max wait for completion in ms (default 300000 = 5 min)."
         },
         "boot_wait_ms": {
           "type": "integer",
@@ -623,6 +623,172 @@
         "targetPeerId",
         "method"
       ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_task_assign",
+    "description": "Orchestrator-only: assign a task to a worker peer. The worker receives a task.assigned.<peerId> push event. Use deliver='inject' to also write the prompt directly into the worker's terminal.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Short human-readable task title."
+        },
+        "assignee": {
+          "type": "string",
+          "description": "peerId of the worker peer to assign the task to."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Full task instructions delivered to the worker."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "description": "Optional deadline in milliseconds from now."
+        },
+        "deliver": {
+          "type": "string",
+          "enum": [
+            "publish",
+            "inject",
+            "both"
+          ],
+          "description": "How to deliver the prompt: publish (bus only), inject (terminal only), both (default: publish)."
+        }
+      },
+      "required": [
+        "title",
+        "assignee",
+        "prompt"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_task_update",
+    "description": "Worker-only: update the status or progress of an assigned task. Emits a task.status push event so orchestrators can track progress.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "description": "Task ID as returned by claws_task_assign (e.g. 't_000001')."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "in_progress",
+            "blocked"
+          ],
+          "description": "New task status."
+        },
+        "progressPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Optional progress percentage (0–100)."
+        },
+        "note": {
+          "type": "string",
+          "description": "Optional human-readable progress note."
+        }
+      },
+      "required": [
+        "taskId",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_task_complete",
+    "description": "Worker-only: mark a task as succeeded, failed, or skipped. Idempotent — calling again on an already-completed task is safe. Emits a task.completed push event.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "description": "Task ID as returned by claws_task_assign."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "succeeded",
+            "failed",
+            "skipped"
+          ],
+          "description": "Final task outcome."
+        },
+        "result": {
+          "type": "string",
+          "description": "Optional human-readable result summary."
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional list of output artifact paths or identifiers."
+        }
+      },
+      "required": [
+        "taskId",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_task_cancel",
+    "description": "Orchestrator-only: request cancellation of an active task. Emits task.cancel_requested.<assignee> so the worker can react. Does not forcibly terminate the worker.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "description": "Task ID to cancel."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional human-readable cancellation reason."
+        }
+      },
+      "required": [
+        "taskId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_task_list",
+    "description": "List tasks in the server registry. Optionally filter by assignee peerId, status, or last-updated timestamp. Available to all peers.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "assignee": {
+          "type": "string",
+          "description": "Filter by assignee peerId."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "in_progress",
+            "blocked",
+            "succeeded",
+            "failed",
+            "skipped"
+          ],
+          "description": "Filter by task status."
+        },
+        "since": {
+          "type": "integer",
+          "description": "Return only tasks updated at or after this epoch-ms timestamp."
+        }
+      },
       "additionalProperties": false
     }
   }
