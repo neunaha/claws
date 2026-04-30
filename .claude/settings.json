@@ -11,39 +11,62 @@
       "Grep"
     ]
   },
-  "hooks": [
-    {
-      "_source": "claws-dev-hooks",
-      "type": "SessionStart",
-      "command": "node \"/Users/ANISH.NEUNAHA/Desktop/Claws-bus-hardening/.claws-bin/dev-hooks/check-stale-main.js\""
-    },
-    {
-      "_source": "claws-dev-hooks",
-      "type": "PostToolUse",
-      "command": "node \"/Users/ANISH.NEUNAHA/Desktop/Claws-bus-hardening/.claws-bin/dev-hooks/check-tag-pushed.js\"",
-      "matcher": {
-        "tool": "Bash",
-        "pattern": "git push"
+  "hooks": {
+    "SessionStart": [
+      {
+        "_source": "claws-dev-hooks",
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/ANISH.NEUNAHA/Desktop/Claws/.claws-bin/dev-hooks/check-stale-main.js\""
+          }
+        ]
+      },
+      {
+        "_source": "claws-dev-hooks",
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/ANISH.NEUNAHA/Desktop/Claws/.claws-bin/dev-hooks/check-extension-dirs.js\""
+          }
+        ]
       }
-    },
-    {
-      "_source": "claws-dev-hooks",
-      "type": "PostToolUse",
-      "command": "node \"/Users/ANISH.NEUNAHA/Desktop/Claws-bus-hardening/.claws-bin/dev-hooks/check-tag-vs-main.js\"",
-      "matcher": {
-        "tool": "Bash",
-        "pattern": "git commit"
+    ],
+    "PostToolUse": [
+      {
+        "_source": "claws-dev-hooks",
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/ANISH.NEUNAHA/Desktop/Claws/.claws-bin/dev-hooks/check-tag-pushed.js\""
+          }
+        ]
+      },
+      {
+        "_source": "claws-dev-hooks",
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/ANISH.NEUNAHA/Desktop/Claws/.claws-bin/dev-hooks/check-tag-vs-main.js\""
+          }
+        ]
       }
-    },
-    {
-      "_source": "claws-dev-hooks",
-      "type": "Stop",
-      "command": "node \"/Users/ANISH.NEUNAHA/Desktop/Claws-bus-hardening/.claws-bin/dev-hooks/check-open-claws-terminals.js\""
-    },
-    {
-      "_source": "claws-dev-hooks",
-      "type": "SessionStart",
-      "command": "node \"/Users/ANISH.NEUNAHA/Desktop/Claws-bus-hardening/.claws-bin/dev-hooks/check-extension-dirs.js\""
-    }
-  ]
+    ],
+    "Stop": [
+      {
+        "_source": "claws-dev-hooks",
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/ANISH.NEUNAHA/Desktop/Claws/.claws-bin/dev-hooks/check-open-claws-terminals.js\""
+          }
+        ]
+      }
+    ]
+  }
 }
