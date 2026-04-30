@@ -1,8 +1,18 @@
-// v0.7.9 worker reliability fixes — regression suite.
+// v0.7.9 worker reliability — regression suite.
 //
-// Static-analysis smoke tests over mcp_server.js to catch accidental reverts of
-// the four worker fixes. A full behavioral integration test (booting a real
-// claws server + simulating pty streams) is deferred to v0.7.10.
+// Static-analysis smoke tests over mcp_server.js + scripts/install.sh that
+// catch accidental reverts of the small set of correctness fixes that ship
+// in v0.7.9. The worker behavior is otherwise the v0.7.4 contract: the
+// mission goes directly into Claude Code's input as a normal user prompt.
+//
+// EXPLICIT NON-FIXES (do not add tests asserting these — they were tried and
+// rejected by the project owner):
+//   - file-referrer pattern (mission written to /tmp + "Read <file>..." sent)
+//   - boot_retries (typed `claude ...` into already-booted TUI as user input)
+//   - run_token / mission_file return-value fields
+//
+// If a future contributor reintroduces any of those, this file has no opinion
+// — but the rule is "missions are user prompts, period."
 
 const fs = require('fs');
 const path = require('path');
@@ -11,137 +21,97 @@ const MCP = fs.readFileSync(
   path.join(__dirname, '..', '..', 'mcp_server.js'),
   'utf8',
 );
-
-const checks = [];
-
-function check(name, ok, detail) {
-  checks.push({ name, ok: !!ok, detail: detail || '' });
-}
-
-// Fix 4 — boot_marker default must be the Claude Code v2.x bypass-mode footer
-// substring. The legacy 'Claude Code' (with space) never matched the
-// ANSI-stripped "ClaudeCodev2.1.123" banner, so every spawn burned its full
-// boot_wait_ms.
-check(
-  'boot_marker default is "bypass permissions" (Fix 4)',
-  /boot_marker:\s*'bypass permissions'/.test(MCP),
-);
-
-// Fix 1 — marker scan offset. The poll loop must scan `scanText` (a slice of
-// the pty buffer starting at markerScanFrom), NOT the full `text`. Otherwise
-// the marker substring matches on the input echo of the mission and the
-// worker false-completes within 1-2 polls.
-check(
-  'markerScanFrom variable declared (Fix 1)',
-  /\bmarkerScanFrom\b/.test(MCP),
-);
-check(
-  'poll loop uses scanText slice, not raw text, for completion marker (Fix 1)',
-  /scanText\s*=\s*text\.length\s*>\s*markerScanFrom\s*\?\s*text\.slice\(markerScanFrom\)/.test(MCP) &&
-  /scanText\.includes\(effectiveCompleteMarker\)/.test(MCP),
-);
-check(
-  'effectiveCompleteMarker variable declared (Fix 1+2)',
-  /\beffectiveCompleteMarker\b/.test(MCP),
-);
-
-// Fix 2 — file-referrer pattern for Claude Code missions. When launching
-// Claude Code with the default marker, mission body is written to a tmp file
-// with a per-spawn random run-token; worker sends a single-line referrer to
-// avoid Claude Code v2.x's auto-paste-collapse and the marker-collision bug.
-check(
-  'run_token uses "CLAWS_DONE_" prefix for uniqueness (Fix 2)',
-  /CLAWS_DONE_/.test(MCP) && /runToken/.test(MCP),
-);
-check(
-  'mission file path uses os.tmpdir() for cross-platform safety (Fix 2)',
-  /path\.join\(\s*os\.tmpdir\(\)/.test(MCP) && /claws-mission-/.test(MCP),
-);
-check(
-  'useFileReferrer guard skips when user explicitly sets complete_marker (Fix 2 — backwards compat)',
-  /useFileReferrer\s*=\s*launchClaude\s*&&\s*hasMission\s*&&\s*!userExplicitMarker/.test(MCP),
-);
-check(
-  'mission file is cleaned up via fs.unlinkSync after worker close (Fix 2 — hygiene)',
-  /if\s*\(\s*missionFile\s*\)\s*{\s*try\s*{\s*fs\.unlinkSync\(missionFile\)/.test(MCP),
-);
-check(
-  'file-write failure falls back to direct send (Fix 2 — graceful degradation)',
-  /falling back to direct send/.test(MCP),
-);
-
-// Fix 5 — boot retry. If the first boot attempt times out without seeing
-// boot_marker, the worker re-sends the launch command up to boot_retries times.
-check(
-  'boot_retries default in DEFAULTS (Fix 5)',
-  /boot_retries:\s*2/.test(MCP),
-);
-check(
-  'boot loop iterates over maxAttempts with retry log (Fix 5)',
-  /boot attempt \$\{attempt\}\/\$\{maxAttempts\} timed out/.test(MCP),
-);
-
-// Worker return value surfaces new fields for debugging.
-check(
-  'worker return value includes mission_file (v0.7.9 introspection)',
-  /mission_file:\s*missionFile/.test(MCP),
-);
-check(
-  'worker return value includes run_token (v0.7.9 introspection)',
-  /run_token:\s*runToken/.test(MCP),
-);
-
-// Backwards-compat — userExplicitMarker is checked, not coerced.
-check(
-  'userExplicitMarker detected via args.complete_marker presence (backwards compat)',
-  /userExplicitMarker\s*=\s*typeof\s+args\.complete_marker\s*===\s*'string'/.test(MCP),
-);
-
-// v0.7.9 follow-up Fix B — file-nonce / run-token decouple.
-// The initial v0.7.9 fix embedded runToken in the mission file path → the path
-// was in the input echo → marker false-matched on echo. New behavior keeps
-// runToken only inside the file content; path uses an independent fileNonce.
-check(
-  'fileNonce variable declared, separate from runToken (v0.7.9 Fix B)',
-  /\bfileNonce\b/.test(MCP) &&
-  /const\s+fileNonce\s*=\s*Math\.random/.test(MCP),
-);
-check(
-  'mission file path uses fileNonce (NOT runToken) so the run-token never appears in the input echo (v0.7.9 Fix B)',
-  /claws-mission-\$\{termId\}-\$\{fileNonce\}\.md/.test(MCP) &&
-  // sanity: ensure the OLD (buggy) pattern is gone
-  !/claws-mission-\$\{termId\}-\$\{runToken\}\.md/.test(MCP),
-);
-
-// install.sh Fix A — skill-loop self-collision guard. When TARGET == INSTALL_DIR
-// (e.g. ~/.claws-src symlinked to project root), the skill-copy loop's rm -rf
-// would delete the source before cp could read it. The -ef test (same-inode)
-// makes the loop skip the rm+cp pair when source and dest resolve to the same
-// path.
 const INSTALL_SH = fs.readFileSync(
   path.join(__dirname, '..', '..', 'scripts', 'install.sh'),
   'utf8',
 );
+
+const checks = [];
+function check(name, ok, detail) {
+  checks.push({ name, ok: !!ok, detail: detail || '' });
+}
+
+// ─── runBlockingWorker correctness ───────────────────────────────────────────
+
+// boot_marker default must match the Claude Code v2.x bypass-mode footer.
+// Legacy 'Claude Code' (with space) never matched the ANSI-stripped banner,
+// so every spawn burned its full boot_wait_ms before falling through.
 check(
-  'install.sh skill loop has -ef self-collision guard (v0.7.9 Fix A)',
+  "boot_marker default is 'bypass permissions'",
+  /boot_marker:\s*'bypass permissions'/.test(MCP),
+);
+
+// Marker scan offset — the poll loop must scan a slice of pty bytes that
+// EXCLUDES the input echo of the mission text. Otherwise any complete_marker
+// substring in the user's mission triggers a false-complete in 1-2 polls.
+check(
+  'markerScanFrom variable declared',
+  /\bmarkerScanFrom\b/.test(MCP),
+);
+check(
+  'markerScanFrom is captured AFTER the payload send (so the mission echo is excluded from the scan)',
+  // The capture block must appear AFTER the `if (payload)` send block. We
+  // match this structurally: there's a "send" call wrapped in `if (payload)`,
+  // then a sleep, then `markerScanFrom = initSnap.bytes.length`.
+  /if\s*\(\s*payload\s*\)[\s\S]*?cmd:\s*'send'[\s\S]*?await\s+sleep\s*\(\s*\d+\s*\)[\s\S]*?markerScanFrom\s*=\s*initSnap\.bytes\.length/.test(MCP),
+);
+check(
+  'poll loop scans scanText slice for completion marker (NOT the full text)',
+  /scanText\s*=\s*text\.length\s*>\s*markerScanFrom\s*\?\s*text\.slice\(markerScanFrom\)/.test(MCP) &&
+  /scanText\.includes\(opt\.complete_marker\)/.test(MCP),
+);
+
+// Mission must be sent as a direct user prompt to Claude Code's input. No
+// file abstractions. The payload assignment chain is plain: hasMission -> mission,
+// hasCommand -> command. The single-line mission goes through `claws_send`
+// which auto-wraps multi-line in bracketed paste; trailing CR is sent
+// separately after a sleep so Claude Code v2.x's paste-detect window closes.
+check(
+  'mission is sent directly as user prompt (no file referrer)',
+  /const\s+payload\s*=\s*hasMission\s*\?\s*args\.mission/.test(MCP),
+);
+check(
+  'NO file-referrer pattern in mcp_server.js (forbidden by project owner)',
+  !/claws-mission-/.test(MCP) &&
+  !/Read\s+\$\{missionFile\}/.test(MCP) &&
+  !/Read\s+\$\{[a-zA-Z_]*[Ff]ile\}\s+and\s+follow/.test(MCP),
+);
+
+// Single boot attempt — never send the launch command twice. Sending it a
+// second time would type `claude ...` into an already-booted Claude Code TUI
+// as a user prompt, which is harmful and confusing. v0.7.4 contract.
+check(
+  'NO boot retry loop (single attempt, best-effort)',
+  !/\bboot_retries\b/.test(MCP) &&
+  !/maxAttempts/.test(MCP),
+);
+
+// ─── install.sh correctness ─────────────────────────────────────────────────
+
+// Self-collision guard. When TARGET == INSTALL_DIR (e.g. ~/.claws-src
+// symlinked to project root), the skill-copy loop's `rm -rf` deleted the
+// source before `cp -r` could read it, aborting install.sh at step 6.
+// `-ef` (same-inode) test makes the loop skip the rm+cp pair when src == dest.
+check(
+  'install.sh skill loop has -ef self-collision guard',
   /if\s*\[\s*"\$_skill_src"\s*-ef\s*"\$TARGET\/\.claude\/skills\/\$_skill_name"\s*\];\s*then\s*continue;\s*fi/.test(INSTALL_SH),
 );
 check(
-  'install.sh prompt-templates rename has -ef self-collision guard (v0.7.9 Fix A)',
+  'install.sh prompt-templates rename has -ef self-collision guard',
   /-ef\s*"\$TARGET\/\.claude\/skills\/claws-prompt-templates"/.test(INSTALL_SH),
 );
 
-// install.sh Fix C — uncommitted-work guard before git reset --hard. install.sh
-// Step 1 forces $INSTALL_DIR to origin/main, which silently destroys local edits
-// when INSTALL_DIR is a contributor's working repo (via symlink). The guard
-// detects dirty tree and refuses to reset unless CLAWS_FORCE_RESET=1.
+// Uncommitted-work guard before git reset --hard. install.sh Step 1 used to
+// silently destroy local edits when INSTALL_DIR is a contributor's working
+// repo. The guard refuses to reset on a dirty tree unless CLAWS_FORCE_RESET=1.
 check(
-  'install.sh has uncommitted-work guard before git reset --hard (v0.7.9 Fix C)',
+  'install.sh has uncommitted-work guard before git reset --hard',
   /CLAWS_FORCE_RESET/.test(INSTALL_SH) &&
   /uncommitted changes — refusing to git reset/.test(INSTALL_SH),
 );
 
-// Final report
+// ─── Final report ────────────────────────────────────────────────────────────
+
 let pass = 0;
 let fail = 0;
 for (const c of checks) {

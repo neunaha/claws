@@ -431,9 +431,6 @@ async function runBlockingWorker(sock, args) {
     harvest_lines: 200,
     close_on_complete: true,
     model: 'claude-sonnet-4-6',
-    // v0.7.9: number of attempts to boot Claude Code before giving up.
-    // First attempt failures (network blip, race) get one retry by default.
-    boot_retries: 2,
   };
   const opt = { ...DEFAULTS, ...args };
   const hasMission = typeof args.mission === 'string' && args.mission.length > 0;
@@ -447,11 +444,6 @@ async function runBlockingWorker(sock, args) {
   const workerCwd = typeof args.cwd === 'string' && args.cwd.length > 0
     ? args.cwd
     : process.cwd();
-  // v0.7.9 — explicit-marker detection. If the caller passed complete_marker
-  // explicitly, respect it as-is. Otherwise (default "MISSION_COMPLETE") we'll
-  // switch Claude-Code missions to the file-referrer pattern below, which uses
-  // a per-spawn random token to avoid the input-echo false-match.
-  const userExplicitMarker = typeof args.complete_marker === 'string' && args.complete_marker.length > 0;
 
   // 1. Create wrapped terminal
   const cr = await clawsRpc(sock, {
@@ -475,136 +467,76 @@ async function runBlockingWorker(sock, args) {
   // 2. Give shell a moment to emit prompt
   await sleep(400);
 
-  // 3. Optional claude boot + detection (with retry — v0.7.9)
+  // 3. Optional claude boot + detection — single attempt, best-effort.
+  // Sends the launch command ONCE, polls for the boot marker for up to
+  // boot_wait_ms, then proceeds whether or not the marker matched. There is
+  // intentionally no retry: if the boot marker isn't found, sending the launch
+  // command a second time would type "claude ..." into an already-booted
+  // Claude Code TUI as a user prompt, which is harmful and confusing.
   let booted = !launchClaude;
   if (launchClaude) {
-    const maxAttempts = Math.max(1, opt.boot_retries | 0);
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      await clawsRpc(sock, {
-        cmd: 'send', id: termId,
-        text: `claude --dangerously-skip-permissions --model ${opt.model}`, newline: true,
+    await clawsRpc(sock, {
+      cmd: 'send', id: termId,
+      text: `claude --dangerously-skip-permissions --model ${opt.model}`, newline: true,
+    });
+    const bootDeadline = Date.now() + opt.boot_wait_ms;
+    while (Date.now() < bootDeadline) {
+      const snap = await clawsRpc(sock, {
+        cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024,
       });
-      const bootDeadline = Date.now() + opt.boot_wait_ms;
-      while (Date.now() < bootDeadline) {
-        const snap = await clawsRpc(sock, {
-          cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024,
-        });
-        if (snap.ok && typeof snap.bytes === 'string' && snap.bytes.includes(opt.boot_marker)) {
-          booted = true;
-          break;
-        }
-        await sleep(400);
+      if (snap.ok && typeof snap.bytes === 'string' && snap.bytes.includes(opt.boot_marker)) {
+        booted = true;
+        break;
       }
-      if (booted) break;
-      if (attempt < maxAttempts) {
-        log(`worker boot attempt ${attempt}/${maxAttempts} timed out — retrying launch command`);
-        await sleep(800);
-      }
+      await sleep(400);
     }
-    // Proceed even if all retries missed the marker — best-effort. Some users may
-    // have customized the Claude Code TUI banner; the actual launch may have worked.
+    // Proceed even if marker missed — best-effort. Some users may have
+    // customized the Claude Code TUI banner; the actual launch may have worked.
     await sleep(500);
   }
 
-  // 4. Build payload — v0.7.9 file-referrer for Claude Code missions.
+  // 4. Send the mission AS A USER PROMPT — direct, the way it works in v0.7.4.
   // ──────────────────────────────────────────────────────────────────────────
-  // The legacy path sent the mission text directly into the pty. For multi-line
-  // missions, Claude Code v2.x auto-detects the burst as a paste and collapses
-  // it to "[Pasted text #N +M lines]" — the trailing CR sent below does not
-  // escape that collapsed state, so the mission never executes. AND because the
-  // mission text was echoed to the pty log, any complete_marker substring in
-  // the mission triggered an immediate false-match in the poll loop.
+  // No file abstractions. The user's mission text becomes Claude Code's input
+  // exactly as if a human typed it, because that's what users expect.
   //
-  // Fix: when we're launching Claude Code AND the user accepted the default
-  // marker, write the mission to a /tmp file with a per-spawn random token,
-  // and send a SHORT single-line referrer. Claude reads the file and prints
-  // the token only after work is done. Single-line means no paste-collapse.
-  // Random token is never in the input echo so no false-match possible.
-  let effectiveCompleteMarker = opt.complete_marker;
-  let payload = '';
-  let missionFile = null;
-  let runToken = null;
-
-  const useFileReferrer = launchClaude && hasMission && !userExplicitMarker;
-  if (useFileReferrer) {
-    // FILE-NONCE / RUN-TOKEN DECOUPLE (v0.7.9 follow-up):
-    // The initial v0.7.9 implementation embedded `runToken` directly in the
-    // mission file path. The path was then in the single-line referrer payload,
-    // which gets echoed into the pty log on send. The poll loop scanned `text`
-    // from BEFORE the send, so the slice (everything after the old length)
-    // STILL included the input echo of the path — and the runToken substring
-    // matched immediately on the first poll, false-completing the worker in
-    // 1-2 polls before Claude could read the file.
-    //
-    // Fix: use TWO independent random strings. `fileNonce` is short and only
-    // used to make the temp-file path unique. `runToken` is the completion
-    // marker, lives ONLY inside the file content (which Claude reads via its
-    // Read tool — never appears in the pty stream). The payload sent into the
-    // pty is `Read <path-with-fileNonce> and follow it precisely.` — does NOT
-    // contain `runToken`. Marker can only match when Claude prints it after
-    // actually reading the file and doing the work.
-    const fileNonce = Math.random().toString(36).slice(2, 10);
-    runToken = `CLAWS_DONE_${Date.now()}_${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
-    try {
-      missionFile = path.join(os.tmpdir(), `claws-mission-${termId}-${fileNonce}.md`);
-      const missionContent =
-        args.mission +
-        '\n\n---\n' +
-        'When the work above is fully complete, print the following token on a line by itself, exactly:\n\n' +
-        runToken + '\n';
-      fs.writeFileSync(missionFile, missionContent, 'utf8');
-      effectiveCompleteMarker = runToken;
-      payload = `Read ${missionFile} and follow it precisely.`;
-    } catch (e) {
-      // Fallback: file write failed (rare — /tmp readonly). Send mission directly.
-      // This degrades to legacy v0.7.8 behavior, which has the marker-collision
-      // and paste-collapse bugs but at least matches the prior contract.
-      log(`worker mission-file write failed (${e.message}) — falling back to direct send`);
-      missionFile = null;
-      runToken = null;
-      payload = args.mission;
-    }
-  } else if (hasCommand) {
-    payload = args.command;
-  } else if (hasMission) {
-    // Either launch_claude=false (mission goes straight to shell) or user
-    // explicitly set complete_marker (they know what they're doing).
-    payload = args.mission;
-  }
-
-  // v0.7.9 Bug 1 fix — capture pty length BEFORE sending payload. The poll loop
-  // only scans bytes added AFTER this point for the completion marker. Without
-  // this, the marker substring matches on the input echo of the payload itself
-  // and the worker false-completes within 1-2 polls.
-  let markerScanFrom = 0;
-  try {
-    const initSnap = await clawsRpc(sock, {
-      cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024,
-    });
-    if (initSnap.ok && typeof initSnap.bytes === 'string') {
-      // Note: readLog returns at most `limit` tail bytes. If the actual log grew
-      // past 64KB by mission-send time, our offset under-counts and we may still
-      // re-match the input echo. In practice the log is well under 64KB at this
-      // point (banner + a few prompt lines). For longer pre-mission output, the
-      // file-referrer pattern's random token avoids the issue regardless.
-      markerScanFrom = initSnap.bytes.length;
-    }
-  } catch (e) { /* keep markerScanFrom=0; degraded but not fatal */ }
+  // DO NOT add a file-referrer pattern here. If a future contributor is tempted
+  // to write the mission to /tmp and send a "Read <file>..." referrer to dodge
+  // some pty quirk, the answer is NO. The mission is a user prompt. Period.
+  const payload = hasMission ? args.mission
+                : hasCommand ? args.command
+                : '';
 
   if (payload) {
     await clawsRpc(sock, {
       cmd: 'send', id: termId, text: payload, newline: true,
     });
     if (launchClaude) {
-      // Claude Code TUI sometimes needs an extra Enter to submit. The 300ms
-      // window also lets Claude's paste-detect timer expire so the CR registers
-      // as Enter on the prompt rather than a keystroke inside a collapsed paste.
-      await sleep(300);
+      // Claude Code TUI sometimes needs an extra Enter to submit. The 800ms
+      // window lets Claude's paste-detect timer (auto-collapse for multi-line
+      // bursts in v2.x) close so the CR registers as Enter on the prompt
+      // rather than a keystroke inside a still-open paste buffer.
+      await sleep(800);
       await clawsRpc(sock, {
         cmd: 'send', id: termId, text: '\r', newline: false,
       });
     }
   }
+
+  // Capture pty length AFTER the payload has been sent and echoed. The poll
+  // loop scans only bytes added past this offset, so the user's mission text
+  // (which was just echoed by the shell/TUI) does not false-match the
+  // completion marker. Sleep first to let the echo land in the wrapped log.
+  await sleep(400);
+  let markerScanFrom = 0;
+  try {
+    const initSnap = await clawsRpc(sock, {
+      cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024,
+    });
+    if (initSnap.ok && typeof initSnap.bytes === 'string') {
+      markerScanFrom = initSnap.bytes.length;
+    }
+  } catch (e) { /* keep markerScanFrom=0; degraded but not fatal */ }
 
   // 5. Detach shortcut
   if (args.detach === true) {
@@ -613,8 +545,6 @@ async function runBlockingWorker(sock, args) {
       terminal_id: termId,
       booted,
       duration_ms: Date.now() - startedAt,
-      mission_file: missionFile,
-      run_token: runToken,
     };
   }
 
@@ -629,7 +559,9 @@ async function runBlockingWorker(sock, args) {
     });
     const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
 
-    // v0.7.9 — only scan bytes produced AFTER the payload send for the marker.
+    // Only scan bytes produced AFTER the payload was sent + echoed. This
+    // prevents the marker substring from false-matching on the input echo
+    // of the user's mission text.
     const scanText = text.length > markerScanFrom ? text.slice(markerScanFrom) : '';
 
     // Scan lines added since the last poll tick for [CLAWS_PUB] publish markers.
@@ -639,9 +571,9 @@ async function runBlockingWorker(sock, args) {
     }
     pubScanOffset = text.length;
 
-    if (scanText.includes(effectiveCompleteMarker)) {
+    if (scanText.includes(opt.complete_marker)) {
       status = 'completed';
-      markerLine = findMarkerLine(scanText, effectiveCompleteMarker);
+      markerLine = findMarkerLine(scanText, opt.complete_marker);
       break;
     }
     let failed = false;
@@ -682,12 +614,6 @@ async function runBlockingWorker(sock, args) {
     cleanedUp = !!cl.ok;
   }
 
-  // v0.7.9 — clean up mission file written by the file-referrer pattern.
-  // Best-effort: if unlink fails, the file ages out via /tmp cleanup.
-  if (missionFile) {
-    try { fs.unlinkSync(missionFile); } catch (e) { /* ignore */ }
-  }
-
   return {
     status,
     terminal_id: termId,
@@ -696,8 +622,6 @@ async function runBlockingWorker(sock, args) {
     marker_line: markerLine,
     cleaned_up: cleanedUp,
     harvest,
-    mission_file: missionFile, // null if not used (legacy path or non-Claude)
-    run_token: runToken,        // null if not used
   };
 }
 

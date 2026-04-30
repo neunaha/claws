@@ -5,6 +5,35 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.10] - 2026-05-01 — Direct-prompt missions (revert v0.7.9 file-referrer + boot retry)
+
+v0.7.10 deletes the two new abstractions v0.7.9 introduced (file-referrer mission delivery and boot retry) and returns to the v0.7.4 contract: **the mission text becomes Claude Code's input as if a human typed it.** No /tmp file. No "Read /tmp/.../mission.md and follow it precisely." prompt. The v0.7.9 marker false-match is still fixed, but via a much simpler mechanism: capture the pty scan offset *after* the payload + echo settle, so the user's mission text never re-matches the completion marker.
+
+### Removed (rolled back from v0.7.9)
+
+- **File-referrer pattern.** No mission file in `/tmp`. No `runToken`. No `fileNonce`. No `mission_file` / `run_token` worker return-value fields. Mission goes directly to Claude Code's input prompt.
+- **Boot retry** (`boot_retries`). Sending the launch command a second time was harmful — it typed `claude ...` into an already-booted Claude Code TUI as a user prompt, which the user saw as a confusing "second claude command". Now: single launch attempt, proceed best-effort if `boot_marker` isn't seen within `boot_wait_ms`.
+
+### Kept (the only correctness fix that survived from v0.7.9)
+
+- **Marker scan offset** — `markerScanFrom` is captured **after** the payload is sent and the echo lands (400ms sleep), so the poll loop only scans bytes produced by Claude *after* the mission was submitted. The user's mission text (now echoed in the pty log) cannot false-match the completion marker.
+- **`boot_marker` default** — `'bypass permissions'` (matches the Claude Code v2.x bypass-mode footer; legacy `'Claude Code'` never matched the ANSI-stripped banner).
+- **`scripts/install.sh` skill-loop self-collision guard** — `-ef` (same-inode) test prevents the loop from `rm`-ing the source when `TARGET == INSTALL_DIR` on dev machines.
+- **`scripts/install.sh` uncommitted-work guard** — Step 1's `git reset --hard origin/main` refuses to run on a dirty tree unless `CLAWS_FORCE_RESET=1` is set, so contributor edits are no longer silently destroyed.
+
+### Tests
+
+`extension/test/worker-fixes-v079.test.js` rewritten to lock down v0.7.10's contract: 10 static-analysis checks covering the three correctness fixes plus **explicit assertions that the file-referrer pattern and boot-retry loop are NOT present**. Future contributors who try to reintroduce them will fail this test.
+
+### Added — single-source-of-truth version
+
+- **`scripts/bump-version.sh <X.Y.Z>`** — the only blessed way to change the project version. Updates root `package.json`, `extension/package.json`, and `extension/package-lock.json` (root + nested `packages[""]`) atomically. Validates SemVer 2.0 strictness (rejects four-segment versions like `0.7.7.1` that VS Code's manifest validator can't parse).
+- **`extension/test/version-drift.test.js`** — fails the suite if any of the four version fields disagree, or if the version isn't SemVer 2.0 compliant. Wired into `npm test`. Catches the class of bug that left `extension/package-lock.json` stale at `0.7.5` for three releases without anyone noticing.
+
+### Backwards compatibility
+
+`claws_worker(name, mission)` API is unchanged. All call patterns from v0.7.4 onward continue to work as they did pre-v0.7.9. The worker return value drops `mission_file` and `run_token` (those fields were introduced in v0.7.9 and are gone with the file-referrer they belonged to).
+
 ## [0.7.9] - 2026-04-30 — claws_worker reliability overhaul
 
 **`claws_worker` v0.7.8 was effectively unusable** for any caller passing a multi-line `mission` to Claude Code: workers either false-completed in 1–2 seconds (marker collision on input echo) or sat forever in collapsed-paste limbo (Claude Code v2.x auto-detects multi-line bursts as paste). The only working pattern was hand-rolling a single-line file referrer with a token never present in the mission text. v0.7.9 makes that pattern automatic, and adds boot retry + a correct boot marker.
