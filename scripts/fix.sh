@@ -354,6 +354,35 @@ else
   fi
 fi
 
+# ─── 4c. .claws-bin integrity (unconditional, independent of .mcp.json) ──────
+check ".claws-bin integrity"
+CLAWS_BIN="$PROJECT_ROOT/.claws-bin"
+CLAWS_BIN_SERVER="$CLAWS_BIN/mcp_server.js"
+BIN_OK=1
+if [ ! -d "$CLAWS_BIN" ]; then
+  fix ".claws-bin directory missing — creating and deploying mcp_server.js"
+  mkdir -p "$CLAWS_BIN"
+  BIN_OK=0
+elif [ -L "$CLAWS_BIN_SERVER" ] && [ ! -e "$CLAWS_BIN_SERVER" ]; then
+  fix ".claws-bin/mcp_server.js is a dangling symlink — removing"
+  rm -f "$CLAWS_BIN_SERVER"
+  BIN_OK=0
+elif [ ! -f "$CLAWS_BIN_SERVER" ]; then
+  fix ".claws-bin/mcp_server.js missing"
+  BIN_OK=0
+fi
+if [ "$BIN_OK" -eq 0 ]; then
+  if cp "$INSTALL_DIR/mcp_server.js" "$CLAWS_BIN_SERVER" 2>/dev/null && chmod +x "$CLAWS_BIN_SERVER"; then
+    ok ".claws-bin/mcp_server.js restored from $INSTALL_DIR"
+    FIXED=$((FIXED+1))
+  else
+    fail "could not copy mcp_server.js to $CLAWS_BIN — check permissions"
+    ISSUES=$((ISSUES+1))
+  fi
+else
+  ok ".claws-bin/mcp_server.js present"
+fi
+
 # ─── 5. MCP server handshake ───────────────────────────────────────────────
 check "MCP server handshake"
 MCP_PATH="$INSTALL_DIR/mcp_server.js"
