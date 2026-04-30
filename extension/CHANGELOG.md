@@ -13,8 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Run `/claws-update` again — install.sh will deploy the v0.7.8 VSIX over the disabled v0.7.7.1 entry. Reload VS Code (Developer: Reload Window) and the extension activates again. No manual cleanup needed.
 
-### Fixed (same as v0.7.7.1)
+### Fixed
 
+- **Banner suppression bug** `scripts/shell-hook.sh:24` — dropped `export` from `CLAWS_BANNER_SHOWN=1`. The variable was meant to scope to the current shell only (suppress re-paint on `source`), but `export` made it leak into every child process. When VS Code was launched from a banner-painted shell, every terminal it spawned inherited `CLAWS_BANNER_SHOWN=1` pre-set and the banner never painted. With `export` removed, each new interactive shell starts with no flag, paints once, and child processes get a clean slate. Verified: banner paints reliably with `v0.7.8` in fresh terminals.
 - **Worker spawn cwd + model defaults** `mcp_server.js` `runBlockingWorker` — `claws_worker` now passes `cwd` to the create RPC (defaulting to the MCP server's `process.cwd()` so workers land in the project root, not `$HOME`) and launches Claude Code with `--model claude-sonnet-4-6` by default. Both overridable via new `cwd` and `model` args. Previously, workers landed in `$HOME`, hit the trust dialog, failed the project MCP socket walk-up, and booted whichever model the user's shell defaulted to (often Opus xhigh). Schema regenerated; codegen test still passes (36 tools).
 - **GAP-3** `scripts/install.sh` — when update.sh's `--ff-only` pull diverged and exported `GIT_PULL_OK=0`, install.sh's own `git reset --hard origin/main` would succeed, leaving the source fresh but with the stale `GIT_PULL_OK=0` flag still gating CLAUDE.md re-injection. install.sh now flips `GIT_PULL_OK=1` after a successful force-reset so the new template + tool list lands.
 - **GAP-1** `scripts/install.sh:559` — `EXPECTED_MIN_VERSION` bumped from `"0.7.4"` to `"0.7.7"`.

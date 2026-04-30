@@ -21,7 +21,13 @@ fi
 
 # Only show banner in interactive shells
 if [[ $- == *i* ]] && [[ -z "${CLAWS_BANNER_SHOWN:-}" ]]; then
-  export CLAWS_BANNER_SHOWN=1
+  # NOTE: do NOT export — the flag must scope to the current shell only.
+  # Exporting leaks into every child process (including VS Code itself if
+  # VS Code was launched from a banner-painted shell), and every terminal
+  # VS Code spawns inherits the flag pre-set, suppressing the banner
+  # forever in that window. Plain shell variable: child processes start
+  # fresh and paint their own banner once.
+  CLAWS_BANNER_SHOWN=1
 
   # ── Version: CLAWS_VERSION env > nearest package.json from script dir ──
   if [ -n "${CLAWS_VERSION:-}" ]; then
