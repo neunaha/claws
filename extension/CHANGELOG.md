@@ -5,6 +5,38 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.9] - 2026-04-30 — claws_worker reliability overhaul
+
+**`claws_worker` v0.7.8 was effectively unusable** for any caller passing a multi-line `mission` to Claude Code: workers either false-completed in 1–2 seconds (marker collision on input echo) or sat forever in collapsed-paste limbo (Claude Code v2.x auto-detects multi-line bursts as paste). The only working pattern was hand-rolling a single-line file referrer with a token never present in the mission text. v0.7.9 makes that pattern automatic, and adds boot retry + a correct boot marker.
+
+**No API change.** Existing `claws_worker(name, mission)` calls just work. Existing `command:` / `launch_claude=false` / explicit `complete_marker` paths preserve v0.7.8 behavior exactly.
+
+### Fixed
+
+- **Bug 1 — Marker false-match on input echo (`mcp_server.js:531`)** The poll loop did `text.includes(complete_marker)` over the entire pty buffer including the echo of the mission text the worker just sent. Any marker substring referenced in the mission triggered immediate false-completion. v0.7.9 captures `markerScanFrom = pty_log_length` after the payload is sent and only scans bytes added *after* that point.
+- **Bug 2 — Bracketed-paste mission never submits in Claude Code v2.x** Claude Code auto-detects multi-line bursts as paste and collapses to `[Pasted text #N +M lines] paste again to expand`. The trailing CR `runBlockingWorker` sent did not escape that collapsed state, so the mission never ran. v0.7.9 introduces a **file-referrer pattern** for Claude Code missions: the mission body is written to a temp file with a per-spawn random run-token, and the worker sends a single-line referrer (`Read /tmp/claws-mission-…md and follow it precisely.`) that fits on one line and bypasses paste detection entirely. Mission file is cleaned up on auto-close.
+- **Bug 4 — Boot marker default never matched** `boot_marker` defaulted to `'Claude Code'` (with a space), but the ANSI-stripped Claude Code v2.x banner renders as `ClaudeCodev2.1.123` — no space. Worker burned the full 8s `boot_wait_ms` on every spawn before falling through. New default: `'bypass permissions'`, which matches the bypass-mode footer reliably.
+
+### Added
+
+- **Boot retry** (`boot_retries`, default 2) — if the first boot attempt times out without seeing the boot marker, `runBlockingWorker` re-sends the launch command and waits another `boot_wait_ms`. Caps at the configured retry count, then proceeds best-effort.
+- **`mission_file` and `run_token` in the worker return value** — surfaces the file path and per-spawn token used by the file-referrer pattern, for debugging and inspection. Both are `null` when the legacy path is used (explicit marker, `command:` mode, or `launch_claude=false`).
+
+### Compatibility
+
+The file-referrer pattern is **opt-out, not opt-in**:
+- Default for `claws_worker(name, mission)` with `launch_claude=true` (the common case).
+- **Skipped** when the caller passes an explicit `complete_marker` — the user signalled they want their own marker semantics; v0.7.9 just adds the scan-offset fix to make that marker bulletproof against echo-match.
+- **Skipped** for `command:` mode (shell workers, no Claude Code). Scan-offset still applies.
+- **Skipped** when `launch_claude=false`. Mission goes directly to whatever shell or REPL is running.
+- File-write failure (e.g. `/tmp` readonly) falls back to the v0.7.8 direct-send path — degraded but matches prior contract.
+
+### Out-of-scope (deferred to v0.7.10)
+
+- **Bug 3 — `claws_send` first-character duplication** (cosmetic: `cclaude`, `eecho`). Visual artifact in pty echo only; bytes arriving at the shell are correct. Needs byte-level pty trace to root-cause.
+- Send-retry on stuck paste (would require activity-detection heuristic).
+- `[Pasted text]` detection + auto-recovery (re-send as single-line with file referrer).
+
 ## [0.7.8] - 2026-04-30 — Re-release of v0.7.7.1 with semver-compliant version
 
 **Hot-fix replacing v0.7.7.1.** v0.7.7.1 used a four-segment version (`MAJOR.MINOR.PATCH.BUILD`) which is not valid per the [SemVer 2.0 spec](https://semver.org/spec/v2.0.0.html) — only `MAJOR.MINOR.PATCH` is allowed. VS Code's extension manifest validator rejected the `0.7.7.1` extension with "Extension version is not semver compatible" and disabled it for users who updated. v0.7.8 contains the same fixes as v0.7.7.1 with a properly-incremented PATCH segment so VS Code accepts and enables the extension.

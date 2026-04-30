@@ -1,6 +1,6 @@
 {
   "name": "claws-cli",
-  "version": "0.7.8",
+  "version": "0.7.9",
   "description": "Claws \u2014 Terminal Control Bridge for VS Code. One command to install.",
   "bin": {
     "claws": "./cli.js",
