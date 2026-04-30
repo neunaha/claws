@@ -1133,6 +1133,18 @@ CLAWSCMD
     rm -rf "$TARGET/.claude/skills/claws-prompt-templates" 2>/dev/null || true
     cp -r "$INSTALL_DIR/.claude/skills/prompt-templates" "$TARGET/.claude/skills/claws-prompt-templates"
   fi
+  if [ -d "$INSTALL_DIR/.claude/skills/claws-wave-lead" ]; then
+    rm -rf "$TARGET/.claude/skills/claws-wave-lead" 2>/dev/null || true
+    cp -r "$INSTALL_DIR/.claude/skills/claws-wave-lead" "$TARGET/.claude/skills/"
+  fi
+  if [ -d "$INSTALL_DIR/.claude/skills/claws-wave-subworker" ]; then
+    rm -rf "$TARGET/.claude/skills/claws-wave-subworker" 2>/dev/null || true
+    cp -r "$INSTALL_DIR/.claude/skills/claws-wave-subworker" "$TARGET/.claude/skills/"
+  fi
+  if [ -d "$INSTALL_DIR/.claude/skills/dev-protocol-piafeur" ]; then
+    rm -rf "$TARGET/.claude/skills/dev-protocol-piafeur" 2>/dev/null || true
+    cp -r "$INSTALL_DIR/.claude/skills/dev-protocol-piafeur" "$TARGET/.claude/skills/"
+  fi
 
   # CLAUDE.md injection (project scope only — never inside $HOME)
   # M-21: GIT_PULL_OK=0 means git pull failed in update.sh — skip re-injection to
