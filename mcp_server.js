@@ -1124,6 +1124,64 @@ async function handleTool(name, args) {
     return { content: [{ type: 'text', text: JSON.stringify({ requestId: resp.requestId, result: resp.result }, null, 2) }] };
   }
 
+  if (name === 'claws_task_assign') {
+    const resp = await clawsRpcStateful(sock, {
+      cmd: 'task.assign', protocol: 'claws/2',
+      title: args.title,
+      assignee: args.assignee,
+      prompt: args.prompt,
+      ...(args.timeoutMs != null ? { timeoutMs: args.timeoutMs } : {}),
+      ...(args.deliver ? { deliver: args.deliver } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error || 'task.assign failed'}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ taskId: resp.taskId, assignedAt: resp.assignedAt }, null, 2) }] };
+  }
+
+  if (name === 'claws_task_update') {
+    const resp = await clawsRpcStateful(sock, {
+      cmd: 'task.update', protocol: 'claws/2',
+      taskId: args.taskId,
+      status: args.status,
+      ...(args.progressPct != null ? { progressPct: args.progressPct } : {}),
+      ...(args.note != null ? { note: args.note } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error || 'task.update failed'}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true }, null, 2) }] };
+  }
+
+  if (name === 'claws_task_complete') {
+    const resp = await clawsRpcStateful(sock, {
+      cmd: 'task.complete', protocol: 'claws/2',
+      taskId: args.taskId,
+      status: args.status,
+      ...(args.result != null ? { result: args.result } : {}),
+      ...(args.artifacts != null ? { artifacts: args.artifacts } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error || 'task.complete failed'}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true }, null, 2) }] };
+  }
+
+  if (name === 'claws_task_cancel') {
+    const resp = await clawsRpcStateful(sock, {
+      cmd: 'task.cancel', protocol: 'claws/2',
+      taskId: args.taskId,
+      ...(args.reason != null ? { reason: args.reason } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error || 'task.cancel failed'}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true }, null, 2) }] };
+  }
+
+  if (name === 'claws_task_list') {
+    const resp = await clawsRpcStateful(sock, {
+      cmd: 'task.list', protocol: 'claws/2',
+      ...(args.assignee ? { assignee: args.assignee } : {}),
+      ...(args.status ? { status: args.status } : {}),
+      ...(args.since != null ? { since: args.since } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error || 'task.list failed'}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ tasks: resp.tasks || [] }, null, 2) }] };
+  }
+
   return toolError(`unknown tool: ${name}`);
 }
 
