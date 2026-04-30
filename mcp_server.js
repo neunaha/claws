@@ -998,7 +998,22 @@ async function handleTool(name, args) {
   if (name === 'claws_wave_status') {
     const resp = await clawsRpc(sock, { cmd: 'wave.status', waveId: args.waveId });
     if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
-    return { content: [{ type: 'text', text: JSON.stringify(resp.wave, null, 2) }] };
+    const tree = {
+      waveId:              resp.waveId,
+      complete:            resp.complete,
+      lead:                resp.lead,
+      subWorkers:          resp.subWorkers,
+      subWorkerTerminals:  resp.subWorkerTerminals,
+      orphanedTerminals:   resp.orphanedTerminals,
+      harvestedAt:         resp.harvestedAt,
+      layers:              resp.layers,
+      createdAt:           resp.createdAt,
+      completedAt:         resp.completedAt,
+      summary:             resp.summary,
+      commits:             resp.commits,
+      regressionClean:     resp.regressionClean,
+    };
+    return { content: [{ type: 'text', text: JSON.stringify(tree, null, 2) }] };
   }
 
   if (name === 'claws_wave_complete') {
