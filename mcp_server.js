@@ -426,6 +426,7 @@ async function runBlockingWorker(sock, args) {
     poll_interval_ms: 1500,
     harvest_lines: 200,
     close_on_complete: true,
+    model: 'claude-sonnet-4-6',
   };
   const opt = { ...DEFAULTS, ...args };
   const hasMission = typeof args.mission === 'string' && args.mission.length > 0;
@@ -433,10 +434,17 @@ async function runBlockingWorker(sock, args) {
   const launchClaude = args.launch_claude !== undefined
     ? !!args.launch_claude
     : hasMission;
+  // Default cwd to the MCP server's working directory (project root) so workers
+  // never land in $HOME — which would trigger the trust dialog and break the
+  // project MCP socket walk-up. Caller may override.
+  const workerCwd = typeof args.cwd === 'string' && args.cwd.length > 0
+    ? args.cwd
+    : process.cwd();
 
   // 1. Create wrapped terminal
   const cr = await clawsRpc(sock, {
     cmd: 'create', name: args.name || 'claws-worker', wrapped: true, show: true,
+    cwd: workerCwd,
   });
   if (!cr.ok) return { status: 'error', error: `create failed: ${cr.error}` };
   const termId = cr.id;
@@ -460,7 +468,7 @@ async function runBlockingWorker(sock, args) {
   if (launchClaude) {
     await clawsRpc(sock, {
       cmd: 'send', id: termId,
-      text: 'claude --dangerously-skip-permissions', newline: true,
+      text: `claude --dangerously-skip-permissions --model ${opt.model}`, newline: true,
     });
     const bootDeadline = Date.now() + opt.boot_wait_ms;
     while (Date.now() < bootDeadline) {

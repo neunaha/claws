@@ -155,6 +155,14 @@
           "type": "string",
           "description": "Alternative to mission: raw shell command sent to a wrapped terminal. Implies launch_claude=false."
         },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for the worker terminal. Defaults to the MCP server cwd (project root) so the worker lands in a trusted folder with the project MCP socket reachable."
+        },
+        "model": {
+          "type": "string",
+          "description": "Claude Code model flag value. Defaults to \"claude-sonnet-4-6\" — Sonnet is mandatory for workers per project policy."
+        },
         "launch_claude": {
           "type": "boolean",
           "description": "Launch claude --dangerously-skip-permissions before sending mission (default: true if mission present, false if command present)"

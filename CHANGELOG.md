@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed (v0.7.7-bulletproof)
 
+- **Worker spawn cwd + model defaults** `mcp_server.js` `runBlockingWorker` — `claws_worker` now passes `cwd` to the create RPC (defaulting to the MCP server's `process.cwd()` so workers land in the project root, not `$HOME`) and launches Claude Code with `--model claude-sonnet-4-6` by default. Both are overridable via new `cwd` and `model` args. Previously, workers landed in `$HOME`, hit the trust dialog, failed the project MCP socket walk-up, and booted whichever model the user's shell defaulted to (often Opus xhigh). Schema regenerated; codegen test still passes (36 tools).
+
 - **P0-1** `scripts/fix.sh` — added explicit `~/.claude/settings.json` JSON validity check (check 7b). Malformed settings caused ALL hooks to fail silently per session. Fix.sh now detects the issue, backs up the file, and re-injects Claws hooks via `inject-settings-hooks.js`.
 - **P1-2** `scripts/inject-dev-hooks.js` — replaced raw `JSON.parse` + `writeFileSync` with `json-safe.mjs` `mergeIntoFile` (JSONC-tolerant, atomic, abort-on-malformed). Previously, a comment in `.claude/settings.json` caused silent parse failure, `{}` fallback, and full overwrite — destroying all pre-existing project hooks.
 - **P1-1** `scripts/inject-settings-hooks.js` — legacy array hooks (early Claude Code) now migrated to object format before remove+add. Previously, adding named properties to a JS array caused new hooks to be silently dropped by `JSON.stringify`. Both `--update` and add-only paths now migrate array→object first.
