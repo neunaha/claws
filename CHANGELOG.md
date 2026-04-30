@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.6] - 2026-04-30 — Claws TCP — full architectural release (10 waves + embedder)
 
+### Fixed — Ship restoration
+
+- `extension/scripts/deploy-dev.mjs`: deploy loop now copies `README.md`, `CHANGELOG.md`, `icon.png` alongside `dist/` and `native/` — these were previously skipped, causing blank display in the VS Code Extensions panel.
+- `extension/CHANGELOG.md`: synced from root CHANGELOG (was stale at v0.5.3, now complete through v0.7.6).
+- `scripts/inject-claude-md.js`: `TOOLS_V2` expanded with all v0.7.6 MCP tools — `claws_lifecycle_{plan,advance,snapshot,reflect}`, `claws_wave_{create,status,complete}`, `claws_deliver_cmd`, `claws_cmd_ack`, `claws_schema_{list,get}`, `claws_rpc_call`.
+
 ### Added — W10/L18+L19 Token Auth + WebSocket Transport (Wave 10 — FINAL)
 
 - `extension/src/server-config.ts` — `AuthConfig` (`enabled`, `tokenPath`), `WebSocketConfig` (`enabled`, `port`, `certPath`, `keyPath`) sub-configs added to `ServerConfig`; `defaultServerConfig` defaults to both disabled.
