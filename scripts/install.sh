@@ -248,7 +248,7 @@ if [ -d "$INSTALL_DIR/.git" ]; then
     else
       ok "updated ${PREV_SHA:0:7} → ${NEW_SHA:0:7}"
     fi
-    # GAP-3 (v0.7.7.1): if update.sh's --ff-only pull diverged and set GIT_PULL_OK=0,
+    # GAP-3 (v0.7.8): if update.sh's --ff-only pull diverged and set GIT_PULL_OK=0,
     # but our force-reset above succeeded, the source is now fresh — flip the flag back
     # so CLAUDE.md re-injection (gated on GIT_PULL_OK) runs. Without this, users with a
     # modified ~/.claws-src clone get fresh source but stale CLAUDE.md tool lists.

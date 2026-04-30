@@ -5,14 +5,24 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.7.1] - 2026-04-30 — Worker spawn fix + install.sh hardening
+## [0.7.8] - 2026-04-30 — Re-release of v0.7.7.1 with semver-compliant version
 
-### Fixed
+**Hot-fix replacing v0.7.7.1.** v0.7.7.1 used a four-segment version (`MAJOR.MINOR.PATCH.BUILD`) which is not valid per the [SemVer 2.0 spec](https://semver.org/spec/v2.0.0.html) — only `MAJOR.MINOR.PATCH` is allowed. VS Code's extension manifest validator rejected the `0.7.7.1` extension with "Extension version is not semver compatible" and disabled it for users who updated. v0.7.8 contains the same fixes as v0.7.7.1 with a properly-incremented PATCH segment so VS Code accepts and enables the extension.
+
+### Action required for users hit by 0.7.7.1
+
+Run `/claws-update` again — install.sh will deploy the v0.7.8 VSIX over the disabled v0.7.7.1 entry. Reload VS Code (Developer: Reload Window) and the extension activates again. No manual cleanup needed.
+
+### Fixed (same as v0.7.7.1)
 
 - **Worker spawn cwd + model defaults** `mcp_server.js` `runBlockingWorker` — `claws_worker` now passes `cwd` to the create RPC (defaulting to the MCP server's `process.cwd()` so workers land in the project root, not `$HOME`) and launches Claude Code with `--model claude-sonnet-4-6` by default. Both overridable via new `cwd` and `model` args. Previously, workers landed in `$HOME`, hit the trust dialog, failed the project MCP socket walk-up, and booted whichever model the user's shell defaulted to (often Opus xhigh). Schema regenerated; codegen test still passes (36 tools).
-- **GAP-3** `scripts/install.sh` — when update.sh's `--ff-only` pull diverged and exported `GIT_PULL_OK=0`, install.sh's own `git reset --hard origin/main` would succeed, leaving the source fresh but with the stale `GIT_PULL_OK=0` flag still gating CLAUDE.md re-injection. install.sh now flips `GIT_PULL_OK=1` after a successful force-reset so the new template + tool list lands. Affects users with modified `~/.claws-src` clones (untracked files, applied hotfixes, etc.).
-- **GAP-1** `scripts/install.sh:559` — `EXPECTED_MIN_VERSION` bumped from `"0.7.4"` to `"0.7.7"`. The version-floor check now correctly rejects pre-0.7.7 clones (theoretical safety, force-reset already keeps source fresh in practice).
-- **GAP-2** `scripts/install.sh:1182-1185` — corrected misleading comment about hook bin path. Code was already correct (passes `$INSTALL_DIR/scripts` to `inject-settings-hooks.js`); the comment claimed `$PROJECT_ROOT/.claws-bin`. No behavioral change, documentation only.
+- **GAP-3** `scripts/install.sh` — when update.sh's `--ff-only` pull diverged and exported `GIT_PULL_OK=0`, install.sh's own `git reset --hard origin/main` would succeed, leaving the source fresh but with the stale `GIT_PULL_OK=0` flag still gating CLAUDE.md re-injection. install.sh now flips `GIT_PULL_OK=1` after a successful force-reset so the new template + tool list lands.
+- **GAP-1** `scripts/install.sh:559` — `EXPECTED_MIN_VERSION` bumped from `"0.7.4"` to `"0.7.7"`.
+- **GAP-2** `scripts/install.sh:1182-1185` — corrected misleading comment about hook bin path. Documentation only.
+
+## [0.7.7.1] - 2026-04-30 — WITHDRAWN (invalid semver)
+
+This version was published with a four-segment string (`0.7.7.1`) which is not valid per [SemVer 2.0](https://semver.org/spec/v2.0.0.html). VS Code disabled the extension. **Use [v0.7.8](#078---2026-04-30--re-release-of-v0771-with-semver-compliant-version) instead** — same fixes, valid version.
 
 ## [0.7.7] - 2026-04-30 — Development Discipline Hooks
 

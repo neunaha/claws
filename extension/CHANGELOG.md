@@ -5,7 +5,96 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.8] - 2026-04-30 — Re-release of v0.7.7.1 with semver-compliant version
+
+**Hot-fix replacing v0.7.7.1.** v0.7.7.1 used a four-segment version (`MAJOR.MINOR.PATCH.BUILD`) which is not valid per the [SemVer 2.0 spec](https://semver.org/spec/v2.0.0.html) — only `MAJOR.MINOR.PATCH` is allowed. VS Code's extension manifest validator rejected the `0.7.7.1` extension with "Extension version is not semver compatible" and disabled it for users who updated. v0.7.8 contains the same fixes as v0.7.7.1 with a properly-incremented PATCH segment so VS Code accepts and enables the extension.
+
+### Action required for users hit by 0.7.7.1
+
+Run `/claws-update` again — install.sh will deploy the v0.7.8 VSIX over the disabled v0.7.7.1 entry. Reload VS Code (Developer: Reload Window) and the extension activates again. No manual cleanup needed.
+
+### Fixed (same as v0.7.7.1)
+
+- **Worker spawn cwd + model defaults** `mcp_server.js` `runBlockingWorker` — `claws_worker` now passes `cwd` to the create RPC (defaulting to the MCP server's `process.cwd()` so workers land in the project root, not `$HOME`) and launches Claude Code with `--model claude-sonnet-4-6` by default. Both overridable via new `cwd` and `model` args. Previously, workers landed in `$HOME`, hit the trust dialog, failed the project MCP socket walk-up, and booted whichever model the user's shell defaulted to (often Opus xhigh). Schema regenerated; codegen test still passes (36 tools).
+- **GAP-3** `scripts/install.sh` — when update.sh's `--ff-only` pull diverged and exported `GIT_PULL_OK=0`, install.sh's own `git reset --hard origin/main` would succeed, leaving the source fresh but with the stale `GIT_PULL_OK=0` flag still gating CLAUDE.md re-injection. install.sh now flips `GIT_PULL_OK=1` after a successful force-reset so the new template + tool list lands.
+- **GAP-1** `scripts/install.sh:559` — `EXPECTED_MIN_VERSION` bumped from `"0.7.4"` to `"0.7.7"`.
+- **GAP-2** `scripts/install.sh:1182-1185` — corrected misleading comment about hook bin path. Documentation only.
+
+## [0.7.7.1] - 2026-04-30 — WITHDRAWN (invalid semver)
+
+This version was published with a four-segment string (`0.7.7.1`) which is not valid per [SemVer 2.0](https://semver.org/spec/v2.0.0.html). VS Code disabled the extension. **Use [v0.7.8](#078---2026-04-30--re-release-of-v0771-with-semver-compliant-version) instead** — same fixes, valid version.
+
+## [0.7.7] - 2026-04-30 — Development Discipline Hooks
+
+### Fixed (v0.7.7-bulletproof)
+
+- **P0-1** `scripts/fix.sh` — added explicit `~/.claude/settings.json` JSON validity check (check 7b). Malformed settings caused ALL hooks to fail silently per session. Fix.sh now detects the issue, backs up the file, and re-injects Claws hooks via `inject-settings-hooks.js`.
+- **P1-2** `scripts/inject-dev-hooks.js` — replaced raw `JSON.parse` + `writeFileSync` with `json-safe.mjs` `mergeIntoFile` (JSONC-tolerant, atomic, abort-on-malformed). Previously, a comment in `.claude/settings.json` caused silent parse failure, `{}` fallback, and full overwrite — destroying all pre-existing project hooks.
+- **P1-1** `scripts/inject-settings-hooks.js` — legacy array hooks (early Claude Code) now migrated to object format before remove+add. Previously, adding named properties to a JS array caused new hooks to be silently dropped by `JSON.stringify`. Both `--update` and add-only paths now migrate array→object first.
+- **D-2** `.claude/settings.json` (dev-box) — migrated dev-hook command paths from `scripts/dev-hooks/` (source path) to `.claws-bin/dev-hooks/` (canonical production path). Removed legacy inner-`_source` format entries that the inject script could not update automatically due to format mismatch.
+- **P3-6** `scripts/update.sh` — added `--dry-run` flag. When passed, skips the installer step and instead prints the git diff stat from `origin/main` plus pending local commits — useful for previewing what an update would change before applying it.
+- **P3-5** `scripts/install.sh` — VSIX post-install stale cleanup now polls up to 1s (5×200ms) for the extracted extension directory to appear before deciding it's absent. Previously, VS Code's async VSIX extraction could cause the cleanup to skip and warn on every install.
+- **P3-1/2/3** `scripts/install.sh` — three hygiene fixes: (1) deploy `schemas/client-types.d.ts` to `.claws-bin/schemas/` for typed SDK consumers; (2) replace 5 hardcoded `if [ -d .claude/skills/<name> ]` blocks with a `for _skill_src in .claude/skills/claws-* dev-protocol-*` loop so new skills are picked up automatically; (3) emit `warn` when `claws-sdk.js` is absent instead of silently skipping.
+- **P2-4** `scripts/fix.sh` — when the socket is LIVE, now probes terminal list for wrapped terminals with missing `logPath` (indicates `script(1)` failed at pty allocation time). On Linux, also checks `command -v script` and suggests `bsdutils` install if absent.
+- **P2-3** `scripts/fix.sh` — MCP handshake failure now triggers auto-recovery: copies `mcp_server.js` from `$INSTALL_DIR` to `.claws-bin/` and re-probes the handshake once. Previously the script reported the failure and stopped.
+- **P2-1** `scripts/shell-hook.sh` — now exports `CLAWS_DIR` at source time (detected from script location, falls back to `~/.claws-src`). Updated `/claws-fix` and `/claws-update` slash commands to use `${CLAWS_DIR:-$HOME/.claws-src}` instead of hardcoded `~/.claws-src`, so a `CLAWS_DIR` override is honored end-to-end.
+- **P2-2** `scripts/install.sh` and `scripts/fix.sh` — added `.claws-bin` symlink guard before `mkdir -p`. Detects and removes dangling or unexpected symlinks at `$PROJECT_ROOT/.claws-bin` before creating the directory, preventing silent deployment to the wrong target path.
+- **P1-5** `scripts/fix.sh` — added shell-hook sourcing check (check 6b). Greps `.zshrc` / `.bashrc` for a `shell-hook.sh` source line; if absent, appends one automatically so `claws-ls`, `claws-new`, `claws-run`, and `claws-log` functions are available in new terminals.
+- **P1-4** `scripts/fix.sh` — added unconditional `.claws-bin` integrity check (check 4c), independent of the `.mcp.json` registration gate. Detects missing directory, missing `mcp_server.js`, and dangling symlinks, then auto-repairs by copying from `$INSTALL_DIR`. Previously, a broken `.claws-bin` was only repaired when `.mcp.json` was also missing.
+- **P1-3** `scripts/fix.sh` — replaced `ls … | head -1` with a full `for inst` loop over all `neunaha.claws-*` entries per editor dir. Added post-scan duplicate detection that warns when multiple copies exist in the same editor, preventing silent load-order conflicts.
+- **D-1** `schemas/mcp-tools.json` — registered 5 missing MCP tools: `claws_drain_events`, `claws_pipeline_create`, `claws_pipeline_list`, `claws_pipeline_close`, `claws_dispatch_subworker`. These handlers existed in `mcp_server.js` but were invisible to AI orchestrators because `tools/list` reads from the schema file.
+- **A-5** `scripts/install.sh` — `STEP_TOTAL` bumped from 8 to 9 to match actual step count (cosmetic — install used to render `9/8 Verifying`).
+
+### Added
+
+- **Five dev-hook scripts** in `scripts/dev-hooks/`: `check-stale-main`, `check-tag-pushed`, `check-tag-vs-main`, `check-open-claws-terminals`, `check-extension-dirs` — each exits 0 (warn-only, never blocks), logs to `/tmp/claws-dev-hooks.log`.
+- **`scripts/inject-dev-hooks.js`** — idempotent safe-merge hook registration; tags all entries with `_source:"claws-dev-hooks"` for clean removal; skips re-registration if hook already present.
+- **`install.sh` and `update.sh`** — now deploy dev hooks to `<project>/.claws-bin/dev-hooks/` and register them via `inject-dev-hooks.js` on both fresh install and update paths.
+- **`scripts/shell-hook.sh` runtime version** — banner version is now read at runtime from `CLAWS_VERSION` env var or nearest `package.json` (walks up from CWD); no more hardcoded `v0.x.y` that drifts across releases. Banner also detects pipe-mode (non-interactive) and suppresses the command list in that context.
+- **`templates/CLAUDE.project.md`** — new "Development Discipline (enforced by hooks)" section with 7 best-practice bullets covering stale-main pulls, semver compliance, extension-dir safety, CLAUDE.md re-injection, pre-PR drift check, tag discipline, and Claws terminal policy.
+- **WaveRegistry lifecycle hardening** — wave lifecycle state machine enforces valid transitions (PLANNED→RUNNING→COMPLETE/FAILED); stale wave entries GC'd after configurable TTL; `claws_wave_status` now returns `phase` + `elapsedMs`.
+- **Army-style nested wave harvest** (`extension/src/wave-registry.ts`, `server.ts`) — `WaveRecord` gains `parentWave?`, `subWorkerTerminals[]`, `harvestedAt?`, `orphanedTerminals[]`; `WaveRegistry.trackTerminal()` records TIDs spawned by wave-affiliated peers; `harvestWave()` returns orphaned TIDs for auto-close on `wave.complete`; lead-silence violation timer fires `wave.<id>.violation {kind:"silent_lead_with_active_subs"}` when LEAD goes quiet with active sub-worker terminals.
+- **`WaveHarvestedV1` schema** (`event-schemas.ts`) — typed schema for `wave.*.harvested` events; registered in `SCHEMA_BY_NAME` and `TOPIC_REGISTRY`.
+- **`claws_wave_status` nested tree** (`mcp_server.js`) — response now includes `lead: {peerId, peerName, terminalId, status, lastSeenMs}` and `subWorkers[].terminalId`; `subWorkerTerminals` flat array exposed.
+- **`PeerConnection`** (`peer-registry.ts`) — gains `waveId?` and `subWorkerRole?` to persist wave affiliation from `hello` across subsequent commands.
+
+### Fixed (carries all v0.7.6.1 patch fixes)
+
+- **P0-1** `mcp_server.js` — `claws_worker` circuit breaker: skips reconnect if last failure < 30 s ago; `_scanAndPublishCLAWSPUB` trips `scanDisabled` after 3 consecutive socket errors; default `timeout_ms` reduced 1 800 000 → 300 000 ms.
+- **P0-2** `extension/src/server.ts` — orchestrator peers exempt from per-peer publish rate limit; no self-deadlock during high-volume waves.
+- **P1-1** `extension/src/server-config.ts` — `DEFAULT_STRICT_EVENT_VALIDATION` flipped `false` → `true`; W4 validation active by default.
+- **P1-2** `mcp_server.js` — `_eventBuffer.maxWaiters=10` cap; excess `wait_ms` requests return error immediately; `system.bus.ring-overflow` event emitted once per eviction batch.
+- **P1-5/P1-6** `scripts/install.sh` — deploy blocks for `claws-wave-lead`, `claws-wave-subworker`, `dev-protocol-piafeur` skills.
+- **P1-7** `schemas/mcp-tools.json` + `mcp_server.js` — all 5 `claws_task_*` tools (`claws_task_assign`, `claws_task_update`, `claws_task_complete`, `claws_task_cancel`, `claws_task_list`) registered in schemas and MCP handlers.
+- **P1-8** `scripts/shell-hook.sh` — banner version no longer drifts across releases (see Added above).
+
+### Known Issues
+
+- `auto-subscribe-cmd.test.js` — emits `envelope:invalid` under `strictEventValidation=true`; pre-existing since v0.7.6.1 P1-1 flip. Not introduced by v0.7.7.
+- `claws-v2-rate.test.js` — same `envelope:invalid` root cause. Pre-existing.
+- `claws-v2-typed-rpc.test.js` — `rpc.call` timeout on test teardown; pre-existing race condition unrelated to v0.7.7 changes.
+
+## [0.7.6.1] - 2026-04-30 — Bug-fix patch (8 P0/P1 code + 2 hot-fixes)
+
+### Fixed
+
+- **P0-1/P2-3** `mcp_server.js` — circuit breaker: `_pconnEnsureRegistered` skips reconnect if last failure < 30s ago; `_scanAndPublishCLAWSPUB` trips `scanDisabled` after 3 consecutive socket errors, resumes on explicit reconnect; default `timeout_ms` reduced 1,800,000 → 300,000 ms (5 min).
+- **P0-2** `extension/src/server.ts` — orchestrator peers exempt from per-peer publish rate limit; orchestrator management commands can no longer be self-rate-limited during high-volume waves. Peer role looked up via `this.peers.get(peerId)?.role` before the bucket check.
+- **P1-1** `extension/src/server-config.ts` — `DEFAULT_STRICT_EVENT_VALIDATION` flipped `false` → `true`; the W4 validation guarantee is now active by default; unregistered topics pass through unchecked (the existing `if (dataSchema !== null)` guard in server.ts handles this).
+- **P1-2** `mcp_server.js` — `_eventBuffer.maxWaiters=10` cap; excess `wait_ms` requests return an error immediately; `system.bus.ring-overflow` event emitted once per eviction batch (via `setImmediate` dedup guard `_overflowPending`).
+- **P1-5/P1-6** `scripts/install.sh` — copy blocks added for `claws-wave-lead`, `claws-wave-subworker`, `dev-protocol-piafeur` skills; existing `claws*.md` glob already covers `claws-wave-lead.md` and `claws-army.md` commands; `claws-update` on existing projects now picks up all three skills.
+- **P1-7** `schemas/mcp-tools.json` + `mcp_server.js` — added `claws_task_assign`, `claws_task_update`, `claws_task_complete`, `claws_task_cancel`, `claws_task_list` tool definitions (schemas) and their MCP handler stubs routing to `task.*` protocol commands via the stateful socket; `claws_schema_get` no longer returns not-found for these 5 tools.
+- **P1-8** `scripts/shell-hook.sh:66` — banner version updated `v0.6.1` → `v0.7.6`; was 7 releases stale.
+- **HOT-FIX A** — ran `inject-claude-md.js` against `/Users/ANISH.NEUNAHA/Desktop/Claws`; `CLAWS:BEGIN` block now present.
+- **HOT-FIX B** — removed stale `~/.vscode/extensions/neunaha.claws-0.7.4/` and `neunaha.claws-0.7.5/`; only `neunaha.claws-0.7.6` remains.
+
 ## [0.7.6] - 2026-04-30 — Claws TCP — full architectural release (10 waves + embedder)
+
+### Fixed — Ship restoration
+
+- `extension/scripts/deploy-dev.mjs`: deploy loop now copies `README.md`, `CHANGELOG.md`, `icon.png` alongside `dist/` and `native/` — these were previously skipped, causing blank display in the VS Code Extensions panel.
+- `extension/CHANGELOG.md`: synced from root CHANGELOG (was stale at v0.5.3, now complete through v0.7.6).
+- `scripts/inject-claude-md.js`: `TOOLS_V2` expanded with all v0.7.6 MCP tools — `claws_lifecycle_{plan,advance,snapshot,reflect}`, `claws_wave_{create,status,complete}`, `claws_deliver_cmd`, `claws_cmd_ack`, `claws_schema_{list,get}`, `claws_rpc_call`.
 
 ### Added — W10/L18+L19 Token Auth + WebSocket Transport (Wave 10 — FINAL)
 
