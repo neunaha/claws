@@ -409,5 +409,221 @@
       ],
       "additionalProperties": false
     }
+  },
+  {
+    "name": "claws_wave_create",
+    "description": "Register a new wave on the server, initialising heartbeat tracking for each expected sub-worker role. Call this as LEAD immediately after hello. waveId should be a stable human-readable slug (e.g. 'embedder-v1'). The server fires a 25s violation timer per sub-worker that resets on each heartbeat.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "description": "Stable human-readable wave identifier (e.g. 'embedder-v1', 'bus-hardening-r2')."
+        },
+        "layers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Human-readable layer or goal labels this wave covers (e.g. ['L1-schemas', 'L2-handlers'])."
+        },
+        "manifest": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "lead",
+              "tester",
+              "reviewer",
+              "auditor",
+              "bench",
+              "doc"
+            ]
+          },
+          "description": "Expected sub-worker roles. One violation timer is started per role."
+        }
+      },
+      "required": [
+        "waveId",
+        "manifest"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_wave_status",
+    "description": "Fetch a live snapshot of the wave: sub-worker heartbeat timestamps, completion flags, and wave-level complete/summary fields. Use this to monitor progress or diagnose silent sub-workers.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "description": "Wave identifier to inspect."
+        }
+      },
+      "required": [
+        "waveId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_wave_complete",
+    "description": "Mark the wave as complete on the server. Clears all sub-worker violation timers. Call this after every sub-worker has published its complete event and the LEAD has committed, built, and run the full test suite. Only the peer that created the wave (LEAD) may call this.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "description": "Wave identifier to complete."
+        },
+        "summary": {
+          "type": "string",
+          "description": "One-paragraph retrospective: what shipped, test result, any regressions."
+        },
+        "commits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Git commit SHAs produced during this wave."
+        },
+        "regressionClean": {
+          "type": "boolean",
+          "description": "True if the full test suite passed with no regressions after the wave's changes."
+        }
+      },
+      "required": [
+        "waveId",
+        "summary"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_deliver_cmd",
+    "description": "Deliver a typed command envelope to a specific worker peer over the pub/sub bus. The server validates the payload against the declared schema, allocates a monotonic sequence number, and pushes the command to the worker's auto-subscription. Use idempotencyKey (a UUID) to make retries safe — duplicate keys return {ok:true, duplicate:true} without re-delivering.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "targetPeerId": {
+          "type": "string",
+          "description": "peerId of the worker to receive the command."
+        },
+        "cmdTopic": {
+          "type": "string",
+          "description": "Full topic the server will push on (e.g. cmd.p_000002.abort)."
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "EnvelopeV1 payload: {v:1, id:uuid, schema:string, from_peer, from_name, ts_published, data}."
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Client-generated UUID. Duplicate keys return {ok:true, duplicate:true} without re-delivering."
+        }
+      },
+      "required": [
+        "targetPeerId",
+        "cmdTopic",
+        "payload",
+        "idempotencyKey"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_cmd_ack",
+    "description": "Acknowledge receipt and execution of a delivered command (worker-only). The server fans out a cmd.<workerPeerId>.ack event to all orchestrator subscribers. status must be one of: executed, rejected, duplicate.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Sequence number from the deliver-cmd response."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "executed",
+            "rejected",
+            "duplicate"
+          ],
+          "description": "Execution outcome reported by the worker."
+        },
+        "correlation_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Optional UUID carried through for orchestrator correlation."
+        }
+      },
+      "required": [
+        "seq",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_schema_list",
+    "description": "Return a sorted list of all Zod schema names registered in the Claws schema registry. Use this to discover which schemas are available before calling claws_schema_get.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_schema_get",
+    "description": "Return a simplified JSON representation of one registered Zod schema by name (e.g. 'worker-boot-v1', 'rpc-request-v1'). Use claws_schema_list to discover valid names.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Schema name as returned by claws_schema_list (e.g. 'worker-boot-v1')."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_rpc_call",
+    "description": "Issue a typed RPC call to a target peer. The server routes the call to rpc.<targetPeerId>.request and waits for the worker to publish a response to rpc.response.<callerPeerId>.<requestId>. Returns the result or a timeout error.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "targetPeerId": {
+          "type": "string",
+          "description": "peerId of the peer to call."
+        },
+        "method": {
+          "type": "string",
+          "description": "RPC method name (e.g. 'introspect', 'status')."
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "Optional method parameters."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000,
+          "description": "Milliseconds before the call times out. Default: 5000."
+        }
+      },
+      "required": [
+        "targetPeerId",
+        "method"
+      ],
+      "additionalProperties": false
+    }
   }
 ]

@@ -2,20 +2,25 @@ import * as vscode from 'vscode';
 import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID, createHmac, timingSafeEqual } from 'crypto';
+import { z } from 'zod';
 import { CaptureStore } from './capture-store';
 import { TerminalManager } from './terminal-manager';
-import { ClawsRequest, ClawsResponse, HistoryEvent, PROTOCOL_VERSION, PROTOCOL_VERSION_V2 } from './protocol';
+import { ClawsRequest, ClawsResponse, HistoryEvent, PROTOCOL_VERSION, PROTOCOL_VERSION_V2, SubWorkerRole } from './protocol';
+import { WaveRegistry } from './wave-registry';
 import { stripAnsi } from './ansi-strip';
 import {
   ServerConfigProvider,
   defaultServerConfig,
 } from './server-config';
-import { PeerConnection, ClawsRole, allocPeerId, matchTopic } from './peer-registry';
+import { PeerConnection, DisconnectedPeer, ClawsRole, allocPeerId, fingerprintPeer, matchTopic } from './peer-registry';
 import { TaskRecord, allocTaskId } from './task-registry';
 import { LifecycleStore } from './lifecycle-store';
-import { EnvelopeV1 } from './event-schemas';
+import { EnvelopeV1, SCHEMA_BY_NAME } from './event-schemas';
 import { schemaForTopic } from './topic-registry';
-import { EventLogWriter } from './event-log';
+import { EventLogWriter, EventLogReader, parseCursor } from './event-log';
+import { PipelineRegistry } from './pipeline-registry';
+import { WebSocketTransport } from './websocket-transport';
 
 /**
  * Per-connection context threaded into `handle()`. Holds the raw socket
@@ -33,10 +38,28 @@ interface ConnCtx {
 const MAX_READLOG_BYTES = 512 * 1024;
 const DEFAULT_SOCKET_REL = '.claws/claws.sock';
 const MAX_LINE_BYTES = 1024 * 1024;
+/** L18 AUTH — maximum token age before it is rejected as stale (5 minutes). */
+const AUTH_MAX_TOKEN_AGE_MS = 5 * 60 * 1000;
 // How long to wait for an existing socket to respond before declaring it
 // stale. 250ms is a live-server SLA on localhost — a real server answers in
 // single-digit ms; no answer means nobody's there.
 const STALE_PROBE_TIMEOUT_MS = 250;
+const SHELL_BASENAMES = new Set([
+  'bash', 'zsh', 'fish', 'sh', 'dash', 'tcsh', 'csh', 'ksh', '-bash', '-zsh', '-sh',
+]);
+
+function classifyContentType(basename: string | null): string {
+  if (!basename) return 'unknown';
+  const name = path.basename(basename).toLowerCase();
+  if (SHELL_BASENAMES.has(name) || name.startsWith('bash') || name.startsWith('zsh') || name.startsWith('sh')) return 'shell';
+  if (name.startsWith('python')) return 'python';
+  if (name === 'node' || name === 'nodejs') return 'node';
+  if (name === 'vim' || name === 'nvim' || name === 'vi') return 'vim';
+  if (name === 'htop' || name === 'top') return 'htop';
+  if (name.includes('claude')) return 'claude';
+  return 'unknown';
+}
+
 
 /**
  * Lightweight snapshot of extension state used by the `introspect` command.
@@ -96,18 +119,172 @@ export class ClawsServer {
   private readonly tasks = new Map<string, TaskRecord>();
   /** Monotonic taskId counter (wire id is "t_" + zero-padded 3 digits). */
   private taskSeq = 0;
+  /** Monotonic sequence number stamped into [CLAWS_CMD] broadcast text for idempotency. */
+  private broadcastSeq = 0;
+  /**
+   * Tombstones for fingerprinted peers that have disconnected. Keyed by fingerprint.
+   * On reconnect with the same instanceNonce, subscriptions and tasks are restored
+   * without requiring re-assignment. Cleared on stop().
+   */
+  private readonly disconnectedPeers = new Map<string, DisconnectedPeer>();
+  /** Set of peerIds whose socket is currently under backpressure (write returned false). */
+  private readonly pausedPeers = new Set<string>();
+  /** Dropped push-frame counts per peerId during backpressure windows. */
+  private readonly droppedFrames = new Map<string, number>();
+  /** Per-peer rate-limit bucket: {count, windowStart} reset every 1000ms. */
+  private readonly publishRateTracker = new Map<string, { count: number; windowStart: number }>();
+  /** Accumulated rate-limit rejections per peer since last heartbeat. */
+  private readonly peerRateLimitHits = new Map<string, number>();
+  /** Total publish count since last heartbeat (resets each heartbeat cycle). */
+  private publishCountSinceHeartbeat = 0;
+  /**
+   * Count of publish handlers currently in-flight (passed rate + admission checks
+   * but not yet responded). Incremented synchronously before any await so concurrent
+   * handlers see an accurate backlog count at admission-control check time.
+   */
+  private serverInFlight = 0;
   /** Server-owned lifecycle state. Gate checks and lifecycle.* commands use this. */
   private readonly lifecycleStore: LifecycleStore;
+  /** Wave army registry — tracks active waves, sub-worker heartbeats, and violation detection. */
+  private readonly waveRegistry: WaveRegistry;
+  /** Monotonic sequence counter for deliver-cmd frames. */
+  private cmdSeq = 0;
+  /** Idempotency map: idempotencyKey → {seq, targetPeerId}. Prevents re-delivery on retry. */
+  private readonly cmdIdempotencyMap = new Map<string, { seq: number; targetPeerId: string }>();
+  /** Delivery record: seq → {targetPeerId, from, cmdTopic}. Needed to fan-out cmd.ack to orchestrator. */
+  private readonly cmdDeliveryMap = new Map<number, { targetPeerId: string; from: string; cmdTopic: string }>();
+
+  /**
+   * L16 TYPED-RPC correlation map. Keyed by requestId (UUID). Each entry holds the
+   * resolve callback for the pending `rpc.call` handler and a timeout timer. Entries
+   * are deleted on response receipt or timeout — no unbounded growth.
+   */
+  private readonly rpcPending = new Map<string, {
+    resolve: (res: ClawsResponse) => void;
+    callerPeerId: string;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
   private readonly eventLog = new EventLogWriter();
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  /** L11 Pipeline composition registry. */
+  private readonly pipelineRegistry = new PipelineRegistry();
+  /**
+   * L18 AUTH — consumed nonce set. Nonces are single-use; a second hello
+   * with an already-seen nonce is rejected as a replay attack. Cleared on stop().
+   */
+  private readonly usedNonces = new Set<string>();
+  /** L19 TRANSPORT-X — optional WebSocket transport alongside the Unix socket. */
+  private readonly wsTransport = new WebSocketTransport();
 
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
+    this.waveRegistry = new WaveRegistry((waveId, role, silentMs) => {
+      void this.emitSystemEvent(`wave.${waveId}.violation`, {
+        waveId,
+        subWorker: role,
+        silentMs,
+        ts: new Date().toISOString(),
+      });
+    });
+    opts.terminalManager.setStateChangeCallback((id, from, to) => {
+      const payload = { terminalId: id, from, to, ts: new Date().toISOString() };
+      void this.emitSystemEvent(`vehicle.${id}.state`, payload);
+    });
+    opts.terminalManager.setContentChangeCallback((id, pid, basename) => {
+      const payload = {
+        terminalId:    id,
+        contentType:   classifyContentType(basename),
+        foregroundPid: pid,
+        basename:      basename ?? null,
+        detectedAt:    new Date().toISOString(),
+        confidence:    pid !== null ? ('high' as const) : ('low' as const),
+      };
+      void this.emitSystemEvent(`vehicle.${id}.content`, payload);
+    });
   }
 
   /** Milliseconds since this server instance was constructed. */
   uptimeMs(): number {
     return Date.now() - this.startedAt;
+  }
+
+  /**
+   * L18 AUTH — validate a hello token against the configured shared secret.
+   * Returns null on success, or an error string ('auth:required'|'auth:invalid').
+   *
+   * Token = HMAC-SHA256(secret, `${peerName}:${role}:${nonce}:${timestamp}`).
+   * Checks: token present, timestamp not stale, nonce not reused, HMAC correct.
+   */
+  private validateAuthToken(r: import('./protocol').HelloRequest): string | null {
+    const cfg = this.getConfig().auth;
+    if (!cfg?.enabled) return null;
+
+    if (!r.token || !r.nonce || r.timestamp === undefined) {
+      return 'auth:required';
+    }
+
+    // Reject stale tokens (replay window).
+    const age = Date.now() - r.timestamp;
+    if (age < 0 || age > AUTH_MAX_TOKEN_AGE_MS) {
+      return 'auth:invalid';
+    }
+
+    // Reject replayed nonces.
+    if (this.usedNonces.has(r.nonce)) {
+      return 'auth:invalid';
+    }
+
+    // Load and validate HMAC.
+    let secret: string;
+    try {
+      const tokenPath = path.isAbsolute(cfg.tokenPath)
+        ? cfg.tokenPath
+        : path.join(this.opts.workspaceRoot, cfg.tokenPath);
+      secret = fs.readFileSync(tokenPath, 'utf8').trim();
+    } catch {
+      // Token file missing or unreadable — auth is misconfigured, reject all.
+      return 'auth:invalid';
+    }
+
+    const expected = createHmac('sha256', secret)
+      .update(`${r.peerName}:${r.role}:${r.nonce}:${r.timestamp}`)
+      .digest('hex');
+
+    let valid = false;
+    try {
+      valid = timingSafeEqual(Buffer.from(r.token, 'hex'), Buffer.from(expected, 'hex'));
+    } catch {
+      // Mismatched buffer lengths (malformed token) → not equal.
+      valid = false;
+    }
+
+    if (!valid) return 'auth:invalid';
+
+    // Consume the nonce — prevents replay on a second connection.
+    this.usedNonces.add(r.nonce);
+    return null;
+  }
+
+  /**
+   * Appends an event to the log and fans it out to subscribers. Skips both
+   * steps if the event log is degraded. Errors are swallowed so callers
+   * (heartbeat timer, task handlers) never crash the extension.
+   */
+  private async emitSystemEvent(topic: string, payload: unknown): Promise<void> {
+    if (this.eventLog.isDegraded) return;
+    try {
+      const result = await this.eventLog.append({
+        topic,
+        from: 'server',
+        ts_server: new Date().toISOString(),
+        payload,
+      });
+      const sequence = result.sequence >= 0 ? result.sequence : undefined;
+      this.fanOut(topic, 'server', payload, false, sequence);
+    } catch {
+      // heartbeat failures must never crash the extension
+    }
   }
 
   /**
@@ -132,7 +309,81 @@ export class ClawsServer {
         // Event log is non-fatal: log a warning and continue in degraded mode.
         this.opts.logger(`[claws] event log disabled at startup: ${String(err)}`);
       }))
+      .then(() => {
+        // Startup compaction: merge tiny segments left from previous runs.
+        if (this.getConfig().eventLog.compact) {
+          return this.eventLog.compact().catch(() => { /* non-fatal */ });
+        }
+        return undefined;
+      })
       .then(() => this.bind(this.socketPath!))
+      .then(() => {
+        const intervalMs = this.getConfig().heartbeatIntervalMs;
+        if (intervalMs > 0) {
+          this.heartbeatTimer = setInterval(() => {
+            void this.emitSystemEvent('system.heartbeat', {
+              uptimeMs: this.uptimeMs(),
+              peers: this.peers.size,
+              terminals: this.opts.terminalManager.terminalCount,
+            });
+
+            // L13: emit system.metrics with throughput + queue depth snapshot.
+            const intervalSec = Math.max(1, intervalMs / 1000);
+            const publishRate = this.publishCountSinceHeartbeat / intervalSec;
+            this.publishCountSinceHeartbeat = 0;
+            void this.emitSystemEvent('system.metrics', {
+              publishRate_per_sec: publishRate,
+              queueDepth:          this.serverInFlight,
+              peerCount:           this.peers.size,
+              eventLogLastSeq:     this.eventLog.lastSequence,
+              uptimeMs:            this.uptimeMs(),
+              ts:                  new Date().toISOString(),
+            });
+
+            // L13: emit per-peer metrics for peers with drops or rate-limit hits.
+            for (const peer of this.peers.values()) {
+              const dropped = this.droppedFrames.get(peer.peerId) ?? 0;
+              const rateLimitHits = this.peerRateLimitHits.get(peer.peerId) ?? 0;
+              const bucket = this.publishRateTracker.get(peer.peerId);
+              const publishCount = bucket?.count ?? 0;
+              if (dropped > 0 || rateLimitHits > 0) {
+                void this.emitSystemEvent(`system.peer.metrics.${peer.peerId}`, {
+                  peerId:        peer.peerId,
+                  peerName:      peer.peerName,
+                  droppedFrames: dropped,
+                  rateLimitHits,
+                  publishCount,
+                  ts:            new Date().toISOString(),
+                });
+                this.peerRateLimitHits.delete(peer.peerId);
+              }
+            }
+
+            // Retention: delete segments older than the configured threshold.
+            const retentionDays = this.getConfig().eventLog.retentionDays;
+            if (retentionDays > 0) {
+              void this.eventLog.runRetention(retentionDays).catch(() => { /* non-fatal */ });
+            }
+          }, intervalMs);
+        }
+      })
+      .then(() => {
+        // L19 TRANSPORT-X — start WebSocket server alongside Unix socket if enabled.
+        const wsCfg = this.getConfig().webSocket;
+        if (wsCfg?.enabled) {
+          return this.wsTransport.start({
+            port: wsCfg.port,
+            certPath: wsCfg.certPath || undefined,
+            keyPath: wsCfg.keyPath || undefined,
+            logger: this.opts.logger,
+            onConnection: (socket) => this.handleConnection(socket),
+          }).catch((err: unknown) => {
+            // WebSocket failure is non-fatal — Unix socket still works.
+            this.opts.logger(`[claws/ws] failed to start: ${String(err)}`);
+          });
+        }
+        return undefined;
+      })
       .catch((err) => {
         this.startError = err instanceof Error ? err : new Error(String(err));
         this.opts.logger(`[claws] server start failed: ${this.startError.message}`);
@@ -145,6 +396,13 @@ export class ClawsServer {
   }
 
   stop(): void {
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.waveRegistry.dispose();
+    // L19 TRANSPORT-X — stop WebSocket server if running.
+    this.wsTransport.stop();
     // Best-effort flush: manifest is written synchronously inside close(); the
     // stream.end() drain is async but VS Code deactivation gives it time.
     this.eventLog.close().catch(() => { /* best-effort */ });
@@ -156,6 +414,7 @@ export class ClawsServer {
     this.subSeq = 0;
     this.tasks.clear();
     this.taskSeq = 0;
+    this.usedNonces.clear();
   }
 
   getSocketPath(): string | null { return this.socketPath; }
@@ -304,11 +563,47 @@ export class ClawsServer {
     const peer = this.peers.get(peerId);
     this.peers.delete(peerId);
     if (peer) {
-      for (const pattern of peer.subscriptions.values()) {
-        const set = this.subscriptionIndex.get(pattern);
-        if (set) { set.delete(peerId); if (set.size === 0) this.subscriptionIndex.delete(pattern); }
+      // For fingerprinted peers, save a tombstone so subscriptions and tasks
+      // can be restored on reconnect. For non-fingerprinted peers, clean up
+      // the subscription index immediately.
+      if (peer.fingerprint) {
+        this.disconnectedPeers.set(peer.fingerprint, {
+          peerId: peer.peerId,
+          fingerprint: peer.fingerprint,
+          role: peer.role,
+          peerName: peer.peerName,
+          capabilities: peer.capabilities,
+          subscriptions: new Map(peer.subscriptions),
+          disconnectedAt: Date.now(),
+        });
+        // Remove from subscriptionIndex but keep tasks alive — they can be
+        // re-bound when the peer reconnects with the same nonce.
+        for (const pattern of peer.subscriptions.values()) {
+          const set = this.subscriptionIndex.get(pattern);
+          if (set) { set.delete(peerId); if (set.size === 0) this.subscriptionIndex.delete(pattern); }
+        }
+      } else {
+        for (const pattern of peer.subscriptions.values()) {
+          const set = this.subscriptionIndex.get(pattern);
+          if (set) { set.delete(peerId); if (set.size === 0) this.subscriptionIndex.delete(pattern); }
+        }
+        // Fail tasks only for non-fingerprinted peers. Fingerprinted peers
+        // may reconnect and continue their tasks.
+        const now = Date.now();
+        for (const task of this.tasks.values()) {
+          if (task.assignee === peerId && ['pending', 'running', 'blocked'].includes(task.status)) {
+            task.status = 'failed';
+            task.note = 'assignee disconnected';
+            task.updatedAt = now;
+            this.emitServerEvent('task.completed', {
+              taskId: task.taskId, status: 'failed', result: null,
+            }).catch(() => { /* best-effort — never block disconnect */ });
+          }
+        }
       }
     }
+    // Notify wave registry so it can cancel violation timers for this peer.
+    if (peerId) this.waveRegistry.handlePeerDisconnect(peerId);
     // Close may fire after extension deactivate has torn down the output
     // channel; guard the logger so a teardown log line never crashes node.
     try { this.opts.logger(`[claws/2] peer disconnected: ${peerId}`); } catch { /* ignore */ }
@@ -336,6 +631,11 @@ export class ClawsServer {
   private pushFrame(
     socket: net.Socket, topic: string, from: string, payload: unknown, sequence?: number,
   ): void {
+    const targetPeerId = this.socketToPeer.get(socket);
+    if (targetPeerId && this.pausedPeers.has(targetPeerId)) {
+      this.droppedFrames.set(targetPeerId, (this.droppedFrames.get(targetPeerId) ?? 0) + 1);
+      return;
+    }
     const frame = JSON.stringify({
       push: 'message',
       protocol: PROTOCOL_VERSION_V2,
@@ -346,7 +646,23 @@ export class ClawsServer {
       ...(sequence !== undefined ? { sequence } : {}),
     }) + '\n';
     try {
-      socket.write(frame);
+      const drained = socket.write(frame);
+      if (!drained && targetPeerId && !this.pausedPeers.has(targetPeerId)) {
+        this.pausedPeers.add(targetPeerId);
+        this.opts.logger(`[claws/2] backpressure on push to ${targetPeerId}; pausing`);
+        socket.once('drain', () => {
+          this.pausedPeers.delete(targetPeerId);
+          const dropped = this.droppedFrames.get(targetPeerId) ?? 0;
+          if (dropped > 0) {
+            if (dropped >= 100) {
+              this.opts.logger(`[claws/2] drain for ${targetPeerId}; ${dropped} frames dropped (threshold exceeded)`);
+            } else {
+              this.opts.logger(`[claws/2] drain for ${targetPeerId}; ${dropped} frames dropped`);
+            }
+            this.droppedFrames.delete(targetPeerId);
+          }
+        });
+      }
     } catch (err) {
       this.opts.logger(`[claws/2] push write failed for ${from}: ${err}`);
     }
@@ -371,6 +687,65 @@ export class ClawsServer {
       }
     }
     return count;
+  }
+
+  /**
+   * Durably append a server-originated event to the event log, then fan it out
+   * to subscribers. Mirrors the publish handler's persist-then-fanout contract
+   * for events the server emits on its own behalf (task.*, system.malformed.*).
+   *
+   * Degraded mode (sequence === -1): skips sequence in the push frame.
+   * Real I/O error: falls back to fanOut without sequence so delivery still happens.
+   */
+  private async emitServerEvent(topic: string, payload: unknown): Promise<void> {
+    let sequence: number | undefined;
+    try {
+      const logResult = await this.eventLog.append({
+        topic,
+        from: 'server',
+        ts_server: new Date().toISOString(),
+        payload,
+      });
+      sequence = logResult.sequence >= 0 ? logResult.sequence : undefined;
+    } catch {
+      // Real I/O error — fall through with no sequence so fan-out still fires.
+    }
+    this.fanOut(topic, 'server', payload, false, sequence);
+  }
+
+  private async replayFromCursor(
+    cursor: string,
+    topicPattern: string,
+    subId: string,
+    socket: net.Socket,
+  ): Promise<void> {
+    const reader = new EventLogReader(this.opts.workspaceRoot);
+    let count = 0;
+    try {
+      for await (const record of reader.scanFrom(cursor, topicPattern)) {
+        if (socket.destroyed) return;
+        const frame = JSON.stringify({
+          push: 'message',
+          protocol: PROTOCOL_VERSION_V2,
+          topic: record.topic,
+          from: record.from ?? 'server',
+          payload: record.payload,
+          sentAt: Date.now(),
+          replayed: true,
+          ...(record.sequence !== undefined ? { sequence: record.sequence } : {}),
+        }) + '\n';
+        socket.write(frame);
+        count++;
+      }
+    } catch { /* I/O error during replay — fall through */ }
+    if (socket.destroyed) return;
+    socket.write(JSON.stringify({
+      push: 'caught-up',
+      protocol: PROTOCOL_VERSION_V2,
+      subscriptionId: subId,
+      replayedCount: count,
+      resumeCursor: this.eventLog.currentCursor(),
+    }) + '\n');
   }
 
   private getConfig() {
@@ -420,6 +795,24 @@ export class ClawsServer {
     const peer = this.peers.get(pid);
     if (!peer) return { ok: false, error: 'peer unknown' };
     if (!roles.includes(peer.role)) return { ok: false, error: `requires role: ${roles.join('|')}` };
+    return null;
+  }
+
+  /**
+   * Reject a request if the peer has declared a non-empty capability set that
+   * does not include the required capability. Peers that declared an empty
+   * capability list (or omitted capabilities in hello) are allowed through for
+   * backward compatibility — capability enforcement only kicks in when the peer
+   * has explicitly opted into the negotiation by declaring at least one capability.
+   */
+  private requireCapability(ctx: ConnCtx, capability: string): ClawsResponse | null {
+    const pid = ctx.getPeerId();
+    if (!pid) return { ok: false, error: 'call hello first' };
+    const peer = this.peers.get(pid);
+    if (!peer) return { ok: false, error: 'peer unknown' };
+    if (peer.capabilities.length > 0 && !peer.capabilities.includes(capability)) {
+      return { ok: false, error: 'capability:required', required: capability };
+    }
     return null;
   }
 
@@ -486,12 +879,26 @@ export class ClawsServer {
       const rec = tm.recordById(r.id);
       if (!rec) return { ok: false, error: `unknown terminal id ${r.id}` };
       if (r.show !== false) rec.terminal.show(true);
+      const startedAt = new Date().toISOString();
+      void this.emitSystemEvent(`command.${rec.id}.start`, {
+        terminalId: rec.id,
+        command:    r.command,
+        startedAt,
+      });
       if (!rec.terminal.shellIntegration) {
         if (rec.pty) {
           rec.pty.writeInjected(r.command, true, false);
         } else {
           rec.terminal.sendText(r.command, true);
         }
+        void this.emitSystemEvent(`command.${rec.id}.end`, {
+          terminalId: rec.id,
+          command:    r.command,
+          exitCode:   null,
+          durationMs: 0,
+          degraded:   true,
+          endedAt:    new Date().toISOString(),
+        });
         return {
           ok: true,
           degraded: true,
@@ -517,6 +924,13 @@ export class ClawsServer {
           if (i >= 0) list.splice(i, 1);
           reject(err);
         }
+      });
+      void this.emitSystemEvent(`command.${rec.id}.end`, {
+        terminalId: rec.id,
+        command:    r.command,
+        exitCode:   (event as unknown as { exitCode?: number }).exitCode ?? null,
+        durationMs: Date.now() - new Date(startedAt).getTime(),
+        endedAt:    new Date().toISOString(),
       });
       return { ok: true, event };
     }
@@ -642,32 +1056,88 @@ export class ClawsServer {
     if (cmd === 'hello') {
       const r = req as import('./protocol').HelloRequest;
       if (r.protocol !== 'claws/2') return { ok: false, error: 'hello requires protocol: claws/2' };
+
+      // L18 AUTH — validate token before any other checks.
+      const authErr = this.validateAuthToken(r);
+      if (authErr) return { ok: false, error: authErr };
+
       if (r.role === 'orchestrator' && this.hasOrchestrator()) {
         return { ok: false, error: 'orchestrator already registered' };
       }
-      const peerId = this.allocPeerId();
+
+      // Compute stable fingerprint when instanceNonce is provided.
+      const fingerprint = r.instanceNonce
+        ? fingerprintPeer(r.peerName ?? 'unnamed', r.role, r.instanceNonce)
+        : undefined;
+      const peerId = fingerprint ? `fp_${fingerprint}` : this.allocPeerId();
+      const capabilities = r.capabilities ?? [];
+
+      // Check for a disconnected peer with the same fingerprint.
+      const tombstone = fingerprint ? this.disconnectedPeers.get(fingerprint) : undefined;
+      if (tombstone) this.disconnectedPeers.delete(fingerprint!);
+
+      // Subscriptions: restore from tombstone or start fresh.
+      const subscriptions: Map<string, string> = tombstone
+        ? new Map(tombstone.subscriptions)
+        : new Map();
+
       const peer: PeerConnection = {
         peerId,
         role: r.role as ClawsRole,
         peerName: r.peerName ?? 'unnamed',
         terminalId: r.terminalId,
-        capabilities: r.capabilities ?? [],
+        capabilities,
         socket: ctx.socket,
-        subscriptions: new Map(),
+        subscriptions,
         lastSeen: Date.now(),
         connectedAt: Date.now(),
+        fingerprint,
       };
       this.peers.set(peerId, peer);
       this.socketToPeer.set(ctx.socket, peerId);
       ctx.setPeerId(peerId);
       ctx.setNegotiatedProtocol('claws/2');
-      this.opts.logger(`[claws/2] peer registered: ${peerId} role=${peer.role} name=${peer.peerName}`);
+
+      // Re-add restored subscriptions to the subscription index.
+      if (tombstone) {
+        for (const pattern of peer.subscriptions.values()) {
+          if (!this.subscriptionIndex.has(pattern)) this.subscriptionIndex.set(pattern, new Set());
+          this.subscriptionIndex.get(pattern)!.add(peerId);
+        }
+        // Re-bind any tasks that were assigned to this peerId while disconnected.
+        for (const task of this.tasks.values()) {
+          if (task.assignee === peerId && ['pending', 'running', 'blocked'].includes(task.status)) {
+            task.updatedAt = Date.now();
+          }
+        }
+        this.opts.logger(`[claws/2] peer reconnected (restored): ${peerId} name=${peer.peerName} subs=${peer.subscriptions.size}`);
+      } else {
+        this.opts.logger(`[claws/2] peer registered: ${peerId} role=${peer.role} name=${peer.peerName}`);
+      }
+
+      // Auto-subscribe workers to their cmd channel (skip if already restored).
+      if (peer.role === 'worker') {
+        const cmdTopic = `cmd.${peerId}.**`;
+        const alreadySubscribed = Array.from(peer.subscriptions.values()).includes(cmdTopic);
+        if (!alreadySubscribed) {
+          const subId = `s_${(++this.subSeq).toString(16).padStart(4, '0')}`;
+          peer.subscriptions.set(subId, cmdTopic);
+          if (!this.subscriptionIndex.has(cmdTopic)) this.subscriptionIndex.set(cmdTopic, new Set());
+          this.subscriptionIndex.get(cmdTopic)!.add(peerId);
+        }
+      }
+      // If this peer is a wave sub-worker, record its heartbeat.
+      if (r.waveId && r.subWorkerRole) {
+        this.waveRegistry.recordHeartbeat(r.waveId, r.subWorkerRole as SubWorkerRole, peerId);
+      }
+
       return {
         ok: true,
         peerId,
         protocol: PROTOCOL_VERSION_V2,
         serverCapabilities: ['push', 'broadcast', 'tasks'],
         orchestratorPresent: this.hasOrchestrator(),
+        restored: tombstone !== undefined,
       };
     }
 
@@ -680,12 +1150,21 @@ export class ClawsServer {
       if (denied) return denied;
       const r = req as import('./protocol').SubscribeRequest;
       if (!r.topic || typeof r.topic !== 'string') return { ok: false, error: 'topic required' };
+      if (r.fromCursor !== undefined && parseCursor(r.fromCursor) === null) {
+        return { ok: false, error: 'invalid cursor format' };
+      }
       const peerId = ctx.getPeerId()!;
       const peer = this.peers.get(peerId)!;
       const subId = `s_${(++this.subSeq).toString(16).padStart(4, '0')}`;
       peer.subscriptions.set(subId, r.topic);
       if (!this.subscriptionIndex.has(r.topic)) this.subscriptionIndex.set(r.topic, new Set());
       this.subscriptionIndex.get(r.topic)!.add(peerId);
+      if (r.fromCursor) {
+        const cursor = r.fromCursor;
+        const topicPattern = r.topic;
+        const socket = ctx.socket;
+        setImmediate(() => { void this.replayFromCursor(cursor, topicPattern, subId, socket); });
+      }
       return { ok: true, subscriptionId: subId };
     }
 
@@ -706,56 +1185,133 @@ export class ClawsServer {
     if (cmd === 'publish') {
       const denied = this.requireRole(ctx, ['orchestrator', 'worker', 'observer']);
       if (denied) return denied;
+      const capDenied = this.requireCapability(ctx, 'publish');
+      if (capDenied) return capDenied;
       const r = req as import('./protocol').PublishRequest;
       if (!r.topic || typeof r.topic !== 'string') return { ok: false, error: 'topic required' };
       const peerId = ctx.getPeerId()!;
-      const strict = this.getConfig().strictEventValidation;
+      const cfg = this.getConfig();
 
-      const dataSchema = schemaForTopic(r.topic);
-      if (dataSchema !== null) {
-        const envelopeResult = EnvelopeV1.safeParse(r.payload);
-        if (!envelopeResult.success) {
-          this.opts.logger(`[claws/schema] malformed envelope from ${peerId} on ${r.topic}`);
-          this.fanOut('system.malformed.received', 'server', {
-            from: peerId, topic: r.topic, error: envelopeResult.error.issues,
-          }, false);
-          if (strict) {
-            return { ok: false, error: 'envelope:invalid', details: envelopeResult.error.issues };
-          }
-        } else {
-          const dataResult = dataSchema.safeParse(envelopeResult.data.data);
-          if (!dataResult.success) {
-            this.opts.logger(`[claws/schema] malformed data from ${peerId} on ${r.topic}`);
-            this.fanOut('system.malformed.received', 'server', {
-              from: peerId, topic: r.topic, error: dataResult.error.issues,
-            }, false);
+      // L14: Per-peer rate limiter — checked BEFORE admission control so that
+      // high-frequency publishers get the semantically correct error code.
+      const nowMs = Date.now();
+      const bucket = this.publishRateTracker.get(peerId) ?? { count: 0, windowStart: nowMs };
+      if (nowMs - bucket.windowStart >= 1000) { bucket.count = 0; bucket.windowStart = nowMs; }
+      bucket.count++;
+      this.publishRateTracker.set(peerId, bucket);
+      if (bucket.count > cfg.maxPublishRateHz) {
+        this.peerRateLimitHits.set(peerId, (this.peerRateLimitHits.get(peerId) ?? 0) + 1);
+        return { ok: false, error: 'rate-limit-exceeded' };
+      }
+
+      // L14: Queue-depth admission control — serverInFlight is incremented
+      // synchronously before any await so concurrent handlers see an accurate count.
+      if (this.serverInFlight > cfg.maxQueueDepth) {
+        return { ok: false, error: 'admission-control:backlog' };
+      }
+      this.serverInFlight++;
+      this.publishCountSinceHeartbeat++;
+
+      try {
+        const strict = cfg.strictEventValidation;
+        const dataSchema = schemaForTopic(r.topic);
+        if (dataSchema !== null) {
+          const envelopeResult = EnvelopeV1.safeParse(r.payload);
+          if (!envelopeResult.success) {
+            this.opts.logger(`[claws/schema] malformed envelope from ${peerId} on ${r.topic}`);
+            await this.emitServerEvent('system.malformed.received', {
+              from: peerId, topic: r.topic, error: envelopeResult.error.issues,
+            });
             if (strict) {
-              return { ok: false, error: 'payload:invalid', details: dataResult.error.issues };
+              return { ok: false, error: 'envelope:invalid', details: envelopeResult.error.issues };
+            }
+          } else {
+            const dataResult = dataSchema.safeParse(envelopeResult.data.data);
+            if (!dataResult.success) {
+              this.opts.logger(`[claws/schema] malformed data from ${peerId} on ${r.topic}`);
+              await this.emitServerEvent('system.malformed.received', {
+                from: peerId, topic: r.topic, error: dataResult.error.issues,
+              });
+              if (strict) {
+                return { ok: false, error: 'payload:invalid', details: dataResult.error.issues };
+              }
             }
           }
         }
-      }
 
-      // Durably append to the event log before fan-out.
-      // If append() throws (non-degraded I/O error), we refuse to publish so
-      // the caller is not told ok:true for an event that was not persisted.
-      // In degraded mode (log disabled at startup) append() returns sequence -1
-      // without throwing and fan-out proceeds normally.
-      let sequence: number | undefined;
-      try {
-        const logResult = await this.eventLog.append({
-          topic: r.topic,
-          from: peerId,
-          ts_server: new Date().toISOString(),
-          payload: r.payload,
-        });
-        sequence = logResult.sequence >= 0 ? logResult.sequence : undefined;
-      } catch {
-        return { ok: false, error: 'event-log:write-failed' };
-      }
+        // Durably append to the event log before fan-out.
+        // If append() throws (non-degraded I/O error), we refuse to publish so
+        // the caller is not told ok:true for an event that was not persisted.
+        // In degraded mode (log disabled at startup) append() returns sequence -1
+        // without throwing and fan-out proceeds normally.
+        let sequence: number | undefined;
+        try {
+          const logResult = await this.eventLog.append({
+            topic: r.topic,
+            from: peerId,
+            ts_server: new Date().toISOString(),
+            payload: r.payload,
+          });
+          sequence = logResult.sequence >= 0 ? logResult.sequence : undefined;
+        } catch {
+          return { ok: false, error: 'event-log:write-failed' };
+        }
 
-      const delivered = this.fanOut(r.topic, peerId, r.payload, r.echo ?? false, sequence);
-      return { ok: true, deliveredTo: delivered };
+        const delivered = this.fanOut(r.topic, peerId, r.payload, r.echo ?? false, sequence);
+
+        // L16 TYPED-RPC: resolve any pending rpc.call waiting on this response topic.
+        // Topic: rpc.response.<callerPeerId>.<requestId> — parts[3] is the requestId.
+        if (r.topic.startsWith('rpc.response.')) {
+          const parts = r.topic.split('.');
+          if (parts.length >= 4) {
+            const requestId = parts[parts.length - 1];
+            const pending = this.rpcPending.get(requestId);
+            if (pending) {
+              clearTimeout(pending.timer);
+              this.rpcPending.delete(requestId);
+              pending.resolve({ ok: true, requestId, result: r.payload });
+            }
+          }
+        }
+
+        // L11 Pipeline: if topic matches output.<sourceId>.*, route output to sink terminals.
+        const outputMatch = /^output\.([^.]+)\./.exec(r.topic);
+        if (outputMatch) {
+          const sourceTerminalId = outputMatch[1];
+          const activePipelines = this.pipelineRegistry.findBySource(sourceTerminalId);
+          for (const pipeline of activePipelines) {
+            const sourceStep = pipeline.steps.find((s) => s.role === 'source');
+            const sinkStep = pipeline.steps.find((s) => s.role === 'sink');
+            if (!sourceStep || !sinkStep) continue;
+            const payloadObj = typeof r.payload === 'object' && r.payload !== null
+              ? r.payload as Record<string, unknown>
+              : {};
+            const text = typeof payloadObj['text'] === 'string'
+              ? payloadObj['text']
+              : JSON.stringify(r.payload);
+            const sinkRec = this.opts.terminalManager.recordById(sinkStep.terminalId);
+            if (sinkRec) {
+              if (sinkRec.pty) {
+                sinkRec.pty.writeInjected(text, true, false);
+              } else {
+                sinkRec.terminal.sendText(text, true);
+              }
+            }
+            void this.emitSystemEvent(`pipeline.${pipeline.pipelineId}.step.${sourceStep.stepId}`, {
+              pipelineId: pipeline.pipelineId,
+              stepId:     sourceStep.stepId,
+              role:       'source',
+              terminalId: sourceTerminalId,
+              state:      'active',
+              ts:         new Date().toISOString(),
+            });
+          }
+        }
+
+        return { ok: true, deliveredTo: delivered };
+      } finally {
+        this.serverInFlight--;
+      }
     }
 
     if (cmd === 'broadcast') {
@@ -764,18 +1320,23 @@ export class ClawsServer {
       const r = req as import('./protocol').BroadcastRequest;
       const from = ctx.getPeerId()!;
       const targetRole = r.targetRole ?? 'worker';
+      let injectText = r.text;
+      if (r.inject && r.text.startsWith('[CLAWS_CMD ')) {
+        this.broadcastSeq++;
+        injectText = r.text.replace('[CLAWS_CMD ', `[CLAWS_CMD seq=${this.broadcastSeq} `);
+      }
       let count = 0;
       for (const peer of this.peers.values()) {
         if (targetRole !== 'all' && peer.role !== targetRole) continue;
-        this.pushFrame(peer.socket, 'system.broadcast', from, { text: r.text });
+        this.pushFrame(peer.socket, 'system.broadcast', from, { text: injectText });
         count++;
         if (r.inject && peer.terminalId) {
           const rec = this.opts.terminalManager.recordById(String(peer.terminalId));
           if (rec) {
             if (rec.pty) {
-              rec.pty.writeInjected(r.text, true, true);
+              rec.pty.writeInjected(injectText, true, true);
             } else {
-              rec.terminal.sendText(r.text, true);
+              rec.terminal.sendText(injectText, true);
             }
           }
         }
@@ -810,7 +1371,7 @@ export class ClawsServer {
       const deliver = r.deliver ?? 'publish';
       // Publish task.assigned.<assignee> so the worker learns about the task
       if (deliver === 'publish' || deliver === 'both') {
-        this.fanOut(`task.assigned.${r.assignee}`, 'server', { ...task }, false);
+        await this.emitServerEvent(`task.assigned.${r.assignee}`, { ...task });
       }
       // Inject prompt into the worker's terminal if requested
       if (deliver === 'inject' || deliver === 'both') {
@@ -845,13 +1406,13 @@ export class ClawsServer {
       if (r.note !== undefined) task.note = r.note;
       task.updatedAt = Date.now();
       // Publish task.status for orchestrator subscribers
-      this.fanOut('task.status', 'server', {
+      await this.emitServerEvent('task.status', {
         taskId: task.taskId,
         assignee: task.assignee,
         status: task.status,
         progressPct: task.progressPct,
         note: task.note,
-      }, false);
+      });
       return { ok: true };
     }
 
@@ -870,12 +1431,12 @@ export class ClawsServer {
       task.artifacts = r.artifacts;
       task.completedAt = now;
       task.updatedAt = now;
-      this.fanOut('task.completed', 'server', {
+      await this.emitServerEvent('task.completed', {
         taskId: task.taskId,
         status: task.status,
         result: task.result,
         artifacts: task.artifacts,
-      }, false);
+      });
       this.opts.logger(`[claws/2] task completed: ${task.taskId} status=${task.status}`);
       return { ok: true };
     }
@@ -889,10 +1450,10 @@ export class ClawsServer {
       task.cancelRequested = true;
       task.cancelReason = r.reason;
       task.updatedAt = Date.now();
-      this.fanOut(`task.cancel_requested.${task.assignee}`, 'server', {
+      await this.emitServerEvent(`task.cancel_requested.${task.assignee}`, {
         taskId: task.taskId,
         reason: r.reason,
-      }, false);
+      });
       return { ok: true };
     }
 
@@ -911,8 +1472,9 @@ export class ClawsServer {
         return { ok: false, error: 'lifecycle:plan-empty', message: 'plan text must be non-empty' };
       }
       const existingState = this.lifecycleStore.snapshot();
+      const isResettingFromReflect = existingState !== null && existingState.phase === 'REFLECT';
       const state = this.lifecycleStore.plan(r.plan);
-      const idempotent = existingState !== null;
+      const idempotent = existingState !== null && !isResettingFromReflect;
       return { ok: true, state, idempotent };
     }
 
@@ -954,7 +1516,267 @@ export class ClawsServer {
       }
     }
 
+    // ── Wave army commands ──────────────────────────────────────────────────
+
+    if (cmd === 'wave.create') {
+      const r = req as import('./protocol').WaveCreateRequest;
+      if (!r.waveId) return { ok: false, error: 'wave.create:missing-waveId' };
+      if (!Array.isArray(r.manifest) || r.manifest.length === 0) {
+        return { ok: false, error: 'wave.create:missing-manifest' };
+      }
+      const peerId = ctx.getPeerId() ?? 'unknown';
+      const wave = this.waveRegistry.createWave(
+        r.waveId,
+        Array.isArray(r.layers) ? r.layers : [],
+        r.manifest as SubWorkerRole[],
+        peerId,
+      );
+      void this.emitSystemEvent(`wave.${r.waveId}.lead.boot`, {
+        waveId: r.waveId,
+        peerName: this.peers.get(peerId)?.peerName ?? peerId,
+        layers: wave.layers,
+        manifest: r.manifest,
+        started_at: new Date(wave.createdAt).toISOString(),
+      });
+      return { ok: true, waveId: wave.waveId, createdAt: wave.createdAt };
+    }
+
+    if (cmd === 'wave.status') {
+      const r = req as import('./protocol').WaveStatusRequest;
+      if (!r.waveId) return { ok: false, error: 'wave.status:missing-waveId' };
+      const wave = this.waveRegistry.getWave(r.waveId);
+      if (!wave) return { ok: false, error: `wave.status:not-found:${r.waveId}` };
+      const subWorkers = [...wave.subWorkers.entries()].map(([role, entry]) => ({
+        role,
+        peerId: entry.peerId ?? null,
+        lastHeartbeatMs: entry.lastHeartbeatMs,
+        complete: entry.complete,
+      }));
+      return {
+        ok: true,
+        waveId: wave.waveId,
+        layers: wave.layers,
+        leadPeerId: wave.leadPeerId,
+        subWorkers,
+        complete: wave.complete,
+        createdAt: wave.createdAt,
+        completedAt: wave.completedAt ?? null,
+        summary: wave.summary ?? null,
+        commits: wave.commits ?? [],
+        regressionClean: wave.regressionClean ?? null,
+      };
+    }
+
+    if (cmd === 'wave.complete') {
+      const r = req as import('./protocol').WaveCompleteRequest;
+      if (!r.waveId) return { ok: false, error: 'wave.complete:missing-waveId' };
+      const peerId = ctx.getPeerId() ?? 'unknown';
+      const wave = this.waveRegistry.getWave(r.waveId);
+      if (!wave) return { ok: false, error: `wave.complete:not-found:${r.waveId}` };
+      if (wave.leadPeerId !== peerId) {
+        return { ok: false, error: 'wave.complete:not-lead — only the LEAD peer may complete a wave' };
+      }
+      const completed = this.waveRegistry.completeWave(
+        r.waveId,
+        r.summary,
+        r.commits,
+        r.regressionClean,
+      );
+      if (!completed) return { ok: false, error: `wave.complete:already-complete:${r.waveId}` };
+      void this.emitSystemEvent(`wave.${r.waveId}.complete`, {
+        waveId: r.waveId,
+        status: 'ok',
+        commits: r.commits ?? [],
+        regression_clean: r.regressionClean ?? false,
+      });
+      return { ok: true, waveId: r.waveId, completedAt: completed.completedAt };
+    }
+
+    if (cmd === 'deliver-cmd') {
+      const denied = this.requireRole(ctx, ['orchestrator']);
+      if (denied) return denied;
+      const r = req as import('./protocol').DeliverCmdRequest;
+      if (!r.targetPeerId) return { ok: false, error: 'deliver-cmd:missing-targetPeerId' };
+      if (!r.cmdTopic)     return { ok: false, error: 'deliver-cmd:missing-cmdTopic' };
+      if (!r.idempotencyKey) return { ok: false, error: 'deliver-cmd:missing-idempotencyKey' };
+      const targetPeer = this.peers.get(r.targetPeerId);
+      if (!targetPeer) return { ok: false, error: `deliver-cmd:target-not-found:${r.targetPeerId}` };
+      const existing = this.cmdIdempotencyMap.get(r.idempotencyKey);
+      if (existing) return { ok: true, duplicate: true, seq: existing.seq };
+      const seq = ++this.cmdSeq;
+      const from = ctx.getPeerId() ?? 'unknown';
+      this.cmdIdempotencyMap.set(r.idempotencyKey, { seq, targetPeerId: r.targetPeerId });
+      this.cmdDeliveryMap.set(seq, { targetPeerId: r.targetPeerId, from, cmdTopic: r.cmdTopic });
+      try {
+        await this.eventLog.append({
+          schema: 'cmd-deliver-v1',
+          topic: r.cmdTopic,
+          peerId: from,
+          peerName: ctx.getPeerId() ?? 'unknown',
+          payload: { targetPeerId: r.targetPeerId, cmdTopic: r.cmdTopic, idempotencyKey: r.idempotencyKey, seq },
+        });
+      } catch { /* non-fatal: delivery continues even if log fails */ }
+      this.pushFrame(targetPeer.socket, r.cmdTopic, from, r.payload, seq);
+      return { ok: true, seq };
+    }
+
+    if (cmd === 'cmd.ack') {
+      const denied = this.requireRole(ctx, ['worker']);
+      if (denied) return denied;
+      const r = req as import('./protocol').CmdAckRequest;
+      const workerPeerId = ctx.getPeerId() ?? 'unknown';
+      const ackTopic = `cmd.${workerPeerId}.ack`;
+      const ackPayload: Record<string, unknown> = { seq: r.seq, status: r.status, workerPeerId };
+      if (r.correlation_id) ackPayload.correlation_id = r.correlation_id;
+      let sequence: number | undefined;
+      try {
+        const logResult = await this.eventLog.append({
+          schema: 'cmd-ack-v1',
+          topic: ackTopic,
+          peerId: workerPeerId,
+          peerName: workerPeerId,
+          payload: ackPayload,
+        });
+        sequence = logResult.sequence >= 0 ? logResult.sequence : undefined;
+      } catch { /* non-fatal */ }
+      this.fanOut(ackTopic, workerPeerId, ackPayload, false, sequence);
+      return { ok: true };
+    }
+
+    if (cmd === 'pipeline.create') {
+      const denied = this.requireRole(ctx, ['orchestrator']);
+      if (denied) return denied;
+      const r = req as import('./protocol').PipelineCreateRequest;
+      if (!Array.isArray(r.steps) || r.steps.length < 2) {
+        return { ok: false, error: 'pipeline.create:steps-required (min 2 steps)' };
+      }
+      if (!r.steps.some((s) => s.role === 'source')) {
+        return { ok: false, error: 'pipeline.create:source-step-required' };
+      }
+      if (!r.steps.some((s) => s.role === 'sink')) {
+        return { ok: false, error: 'pipeline.create:sink-step-required' };
+      }
+      const pipeline = this.pipelineRegistry.create(r.name ?? 'pipeline', r.steps);
+      await this.emitSystemEvent(`pipeline.${pipeline.pipelineId}.created`, {
+        pipelineId: pipeline.pipelineId,
+        name:       pipeline.name,
+        steps:      pipeline.steps,
+        state:      pipeline.state,
+        createdAt:  pipeline.createdAt,
+      });
+      return { ok: true, pipelineId: pipeline.pipelineId, pipeline };
+    }
+
+    if (cmd === 'pipeline.list') {
+      return { ok: true, pipelines: this.pipelineRegistry.list() };
+    }
+
+    if (cmd === 'pipeline.close') {
+      const denied = this.requireRole(ctx, ['orchestrator']);
+      if (denied) return denied;
+      const r = req as import('./protocol').PipelineCloseRequest;
+      if (!r.pipelineId) return { ok: false, error: 'pipeline.close:pipelineId-required' };
+      const closed = this.pipelineRegistry.close(r.pipelineId);
+      if (!closed) return { ok: false, error: `pipeline.close:not-found:${r.pipelineId}` };
+      await this.emitSystemEvent(`pipeline.${r.pipelineId}.closed`, {
+        pipelineId: r.pipelineId,
+        state:      'closed',
+        closedAt:   closed.closedAt,
+        steps:      closed.steps,
+      });
+      return { ok: true, pipelineId: r.pipelineId };
+    }
+
+    // ── L16 TYPED-RPC ───────────────────────────────────────────────────────
+
+    if (cmd === 'rpc.call') {
+      const denied = this.requireRole(ctx, ['orchestrator', 'worker', 'observer']);
+      if (denied) return denied;
+      const r = req as import('./protocol').RpcCallRequest;
+      if (!r.targetPeerId) return { ok: false, error: 'rpc.call:missing-targetPeerId' };
+      if (!r.method)       return { ok: false, error: 'rpc.call:missing-method' };
+
+      const targetPeer = this.peers.get(r.targetPeerId);
+      if (!targetPeer) return { ok: false, error: `rpc.call:target-not-found:${r.targetPeerId}` };
+
+      const requestId = randomUUID();
+      const callerPeerId = ctx.getPeerId()!;
+      const timeoutMs = r.timeoutMs ?? 5000;
+
+      // Returns a Promise held open until the worker responds or times out.
+      return new Promise<ClawsResponse>((resolve) => {
+        const timer = setTimeout(() => {
+          if (this.rpcPending.delete(requestId)) {
+            resolve({ ok: false, error: 'rpc.call:timeout', requestId });
+          }
+        }, timeoutMs);
+
+        this.rpcPending.set(requestId, { resolve, callerPeerId, timer });
+
+        this.pushFrame(targetPeer.socket, `rpc.${r.targetPeerId}.request`, callerPeerId, {
+          requestId,
+          method: r.method,
+          params: r.params ?? {},
+          callerPeerId,
+        });
+      });
+    }
+
+    // ── L7 Schema Registry ──────────────────────────────────────────────────
+
+    if (cmd === 'schema.list') {
+      return { ok: true, schemas: Object.keys(SCHEMA_BY_NAME).sort() };
+    }
+
+    if (cmd === 'schema.get') {
+      const r = req as import('./protocol').SchemaGetRequest;
+      if (!r.name) return { ok: false, error: 'schema.get:missing-name' };
+      const schema = SCHEMA_BY_NAME[r.name];
+      if (!schema) return { ok: false, error: `schema.get:not-found:${r.name}` };
+      return { ok: true, name: r.name, schema: serializeZodSchema(schema) };
+    }
+
     return { ok: false, error: `unknown cmd: ${cmd}` };
+  }
+}
+
+/**
+ * Serialize a Zod schema to a plain JSON-compatible object suitable for the
+ * schema registry `schema.get` response. Covers the shapes used in
+ * event-schemas.ts; unknown wrapper types fall back to `{ type: typeName }`.
+ */
+function serializeZodSchema(schema: z.ZodTypeAny): Record<string, unknown> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const def = (schema as any)._def as Record<string, unknown>;
+  const typeName = String(def.typeName ?? 'unknown');
+
+  switch (typeName) {
+    case 'ZodObject': {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const shapeMap = (schema as any).shape as Record<string, z.ZodTypeAny>;
+      const fields: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(shapeMap)) {
+        fields[k] = serializeZodSchema(v);
+      }
+      return { type: 'object', fields };
+    }
+    case 'ZodString':  return { type: 'string' };
+    case 'ZodNumber':  return { type: 'number' };
+    case 'ZodBoolean': return { type: 'boolean' };
+    case 'ZodArray':
+      return { type: 'array', items: serializeZodSchema(def.type as z.ZodTypeAny) };
+    case 'ZodEnum':
+      return { type: 'enum', values: def.values as string[] };
+    case 'ZodOptional':
+      return { ...serializeZodSchema(def.innerType as z.ZodTypeAny), optional: true };
+    case 'ZodNullable':
+      return { ...serializeZodSchema(def.innerType as z.ZodTypeAny), nullable: true };
+    case 'ZodLiteral':
+      return { type: 'literal', value: def.value as unknown };
+    case 'ZodRecord':
+      return { type: 'record', values: serializeZodSchema(def.valueType as z.ZodTypeAny) };
+    case 'ZodUnknown': return { type: 'unknown' };
+    default:           return { type: typeName };
   }
 }
 

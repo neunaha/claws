@@ -5,6 +5,235 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6] - 2026-04-30 — Claws TCP — full architectural release (10 waves + embedder)
+
+### Fixed — Ship restoration
+
+- `extension/scripts/deploy-dev.mjs`: deploy loop now copies `README.md`, `CHANGELOG.md`, `icon.png` alongside `dist/` and `native/` — these were previously skipped, causing blank display in the VS Code Extensions panel.
+- `extension/CHANGELOG.md`: synced from root CHANGELOG (was stale at v0.5.3, now complete through v0.7.6).
+- `scripts/inject-claude-md.js`: `TOOLS_V2` expanded with all v0.7.6 MCP tools — `claws_lifecycle_{plan,advance,snapshot,reflect}`, `claws_wave_{create,status,complete}`, `claws_deliver_cmd`, `claws_cmd_ack`, `claws_schema_{list,get}`, `claws_rpc_call`.
+
+### Added — W10/L18+L19 Token Auth + WebSocket Transport (Wave 10 — FINAL)
+
+- `extension/src/server-config.ts` — `AuthConfig` (`enabled`, `tokenPath`), `WebSocketConfig` (`enabled`, `port`, `certPath`, `keyPath`) sub-configs added to `ServerConfig`; `defaultServerConfig` defaults to both disabled.
+- `extension/src/protocol.ts` — `HelloRequest` gains `token?`, `nonce?`, `timestamp?` fields for L18 auth.
+- `extension/src/server.ts` — `validateAuthToken()`: HMAC-SHA256 over `peerName:role:nonce:timestamp`; checks token present, timestamp ≤5 min stale, nonce single-use, HMAC `timingSafeEqual`; `usedNonces` Set cleared on `stop()`; auth called at start of `hello` handler before any other logic; `wsTransport.start()` invoked in `start()` chain when `webSocket.enabled`; `wsTransport.stop()` in `stop()`.
+- `extension/src/websocket-transport.ts` (new) — `WebSocketTransport` class: `WsSocketAdapter` wraps `ws.WebSocket` in a `net.Socket`-compatible EventEmitter shim (adapts message→data, close→end, write strips `\n` and calls `ws.send`); `WebSocketServer` created over http/https server; TLS when `certPath`+`keyPath` provided; loaded lazily so no cost when WS disabled.
+- `extension/src/extension.ts` — `getConfig()` wires `auth.*` and `webSocket.*` from VS Code settings.
+- `extension/package.json` — `ws@8` + `@types/ws@8` as optional/dev deps; VS Code config contributions for all 6 new config keys; `test:auth` and `test:ws-transport` scripts; both added to `test` chain.
+- `extension/test/claws-auth.test.js` (new) — 6-check auth suite: no-token, wrong-HMAC, valid-HMAC, stale-timestamp, nonce-reuse, auth-disabled.
+- `extension/test/claws-ws-transport.test.js` (new) — 5-check WS suite: hello, pub/sub round-trip, shared peer registry with Unix socket, protocol tag, worker auto-subscribe.
+
+### Added — W8/L16+L7 Typed RPC + Schema Registry (Wave 8)
+
+- `extension/src/server.ts` — `rpc.call` command: synchronous blocking RPC — caller's request is held open (like `exec`) until the target peer publishes to `rpc.response.<callerPeerId>.<requestId>` or the timeout fires; `rpcPending` correlation map with `clearTimeout` cleanup on resolution; `schema.list` command returns sorted keys from `SCHEMA_BY_NAME`; `schema.get` command returns a simplified JSON representation via `serializeZodSchema` (recursive Zod `_def` traversal covering object, string, number, boolean, array, record, enum, literal, optional, nullable, unknown).
+- `extension/src/event-schemas.ts` — `RpcRequestV1` (requestId uuid, method, params optional, callerPeerId) and `RpcResponseV1` (requestId, ok, result optional, error optional) Zod schemas; both registered in `SCHEMA_BY_NAME` (32 → 35 with PipelineStepV1).
+- `extension/src/topic-registry.ts` — `rpc.*.request` and `rpc.response.**` patterns registered; registry grows 32 → 34.
+- `extension/src/protocol.ts` — `RpcCallRequest`, `SchemaListRequest`, `SchemaGetRequest` interfaces added to `ClawsRequest` union.
+- `mcp_server.js` — `claws_schema_list`, `claws_schema_get`, `claws_rpc_call` handlers.
+- `scripts/codegen/gen-mcp-tools.mjs` — descriptions and input schemas for the 3 new tools (`claws_schema_list`, `claws_schema_get`, `claws_rpc_call`); tool count grows 23 → 26; `schemas/mcp-tools.json` is fully generated — no hand-edits needed.
+- `schemas/json/rpc-request-v1.json`, `schemas/json/rpc-response-v1.json`, `schemas/json/pipeline-step-v1.json` — generated JSON Schema files (pipeline-step-v1 was missing from prior run).
+- `scripts/gen-client-types.mjs` (new) — standalone codegen script: bundles `event-schemas.ts` via esbuild, walks `SCHEMA_BY_NAME`, emits `schemas/client-types.d.ts` with TypeScript interface declarations for all 35 schemas; zero additional deps (uses esbuild already in extension devDeps).
+- `schemas/client-types.d.ts` (new) — generated TypeScript client type declarations; one `export interface` per SCHEMA_BY_NAME entry; union/nullable/optional/record/array types all handled.
+- `extension/test/claws-v2-typed-rpc.test.js` (new) — 40-check integration suite: round-trip RPC (<500ms), timeout (300ms), unknown-peer error, `schema.list` (checks rpc/worker/cmd names), `schema.get` (positive + negative), validation (missing method/targetPeerId).
+
+### Added — W9/L11+L17 Pipeline Composition + Workflow DAG Foundation (Wave 9)
+
+- `extension/src/pipeline-registry.ts` (new) — `PipelineRegistry` with `create`, `get`, `list`, `close`, `findBySource`, `clear`; `PipelineRecord` and `PipelineStep` types; `pipe_NNNN` monotonic IDs; `findBySource` returns only active pipelines for O(n) output-wiring dispatch.
+- `extension/src/server.ts` — `pipeline.create` handler (orchestrator-only, ≥2 steps with source+sink required); `pipeline.list` and `pipeline.close` handlers; output→sink wiring in `publish` handler: `output.<id>.*` topics matched by regex, active pipelines found via `findBySource`, text forwarded to sink via pty `writeInjected` or VS Code `sendText`, `pipeline.<id>.step.<stepId>` event emitted for each delivery.
+- `extension/src/event-schemas.ts` — `PipelineStepV1` Zod schema (pipelineId, stepId, role, terminalId, state, ts); `SCHEMA_BY_NAME` grows from 34 → 35 (also adds previously-missing `rpc-request-v1` and `rpc-response-v1` entries).
+- `extension/src/topic-registry.ts` — `pipeline.*.step.*`, `pipeline.*.created`, `pipeline.*.closed` patterns registered; registry grows 31 → 34.
+- `extension/src/protocol.ts` — `PipelineCreateRequest`, `PipelineListRequest`, `PipelineCloseRequest` interfaces added to the `ClawsRequest` union.
+- `mcp_server.js` — `claws_pipeline_create`, `claws_pipeline_list`, `claws_pipeline_close` handlers.
+- `schemas/mcp-tools.json` — 3 new tool definitions for the pipeline MCP tools.
+- `extension/test/claws-v2-pipeline.test.js` (new) — 34-check integration suite: create/list/close lifecycle (pipeline.*.created push, list active, close emits pipeline.*.closed, list shows closed state), output wiring (output.tA.line publish → step event + sink sendText), error cases (empty steps, missing source/sink, unknown pipelineId), topic subscription acceptance.
+
+### Added — W6/L10 Structured Control — deliver-cmd + cmd.ack (Wave 6)
+
+- `extension/src/server.ts` — `deliver-cmd` handler: orchestrator-only; validates target peer exists, deduplicates by `idempotencyKey`, allocates monotonic `seq`, appends to event log, and pushes the command envelope to the worker's auto-subscription topic. `cmd.ack` handler: worker-only; fans out `cmd.<peerId>.ack` to all subscribed orchestrators with the `seq` and `status` fields.
+- `extension/src/protocol.ts` — `DeliverCmdRequest` and `CmdAckRequest` interfaces added to the `ClawsRequest` union.
+- `extension/src/event-schemas.ts` — `CmdDeliverV1` and `CmdAckV1` Zod schemas; `SCHEMA_BY_NAME` grows from 30 → 32.
+- `extension/src/topic-registry.ts` — `cmd.*.ack` pattern registered with `CmdAckV1` schema; registry grows 28 → 29.
+- `mcp_server.js` — `claws_deliver_cmd` and `claws_cmd_ack` MCP tool handlers.
+- `schemas/mcp-tools.json` — 21 → 23 tools; `schemas/json/cmd-deliver-v1.json` and `schemas/json/cmd-ack-v1.json` generated.
+- `scripts/codegen/gen-mcp-tools.mjs` — descriptions and input schemas for the two new tools.
+- `extension/test/claws-v2-control.test.js` — 31-check integration suite (6 suites): basic delivery (push frame, seq number), idempotency (duplicate key returns `{ok:true, duplicate:true}` without re-push), unknown peer error, role gating (orchestrator cannot call `cmd.ack`), event-log durability, and `cmd.*.ack` registry subscription.
+
+### Added — W7/L13+L14 Observability and Rate Control (Wave 7)
+
+- `extension/src/event-log.ts` — `lastSequence` getter: returns the last successfully appended sequence number (min 0); used by `system.metrics` heartbeat payload.
+- `extension/src/server-config.ts` — `maxPublishRateHz` (default 10 000) and `maxQueueDepth` (default 500) added to `ServerConfig`; `DEFAULT_MAX_PUBLISH_RATE_HZ` and `DEFAULT_MAX_QUEUE_DEPTH` exported.
+- `extension/src/extension.ts` — `getConfig()` wires `maxPublishRateHz` and `maxQueueDepth` from `claws.*` VS Code settings.
+- `extension/src/server.ts` — L13: heartbeat timer now emits `system.metrics` (publishRate_per_sec, queueDepth, peerCount, eventLogLastSeq, uptimeMs, ts) and `system.peer.metrics.<peerId>` for peers with drops or rate-limit hits; per-heartbeat publish counter resets each tick.
+- `extension/src/server.ts` — L14: per-peer sliding 1-second rate limiter; publish requests exceeding `maxPublishRateHz` return `{ok:false,error:'rate-limit-exceeded'}`; `serverInFlight` admission-control counter (incremented synchronously before any `await`) rejects beyond `maxQueueDepth` with `{ok:false,error:'admission-control:backlog'}`; rate check fires before admission so high-rate publishers get the semantically correct error code.
+- `extension/src/event-schemas.ts` — `SystemMetricsV1` and `SystemPeerMetricsV1` Zod schemas added; registered in `SCHEMA_BY_NAME`.
+- `extension/src/topic-registry.ts` — `system.metrics` and `system.peer.metrics.*` registered with their schemas.
+- `schemas/json/system-metrics-v1.json`, `schemas/json/system-peer-metrics-v1.json` — JSON Schema representations of the two new event types.
+- `extension/test/claws-v2-rate.test.js` — 19-check integration test suite: system.metrics shape and cadence, burst rate-limit rejection, admission-control:backlog, system.peer.metrics per-peer emission with rateLimitHits, 1s backoff recovery, peerCount tracking.
+
+### Added — W5/L8 Event Log Durability Hardening (Wave 5)
+
+- `extension/src/event-log.ts` — `EventLogWriter.runRetention(retentionDays)`: deletes `.jsonl` segments (and companion `.idx` files) whose mtime is older than `retentionDays` days; closes the open fd before unlinking the active segment so no EBUSY on Linux; removes deleted entries from the in-memory manifest and flushes to disk.
+- `extension/src/event-log.ts` — `EventLogWriter.compact()`: on startup, merges all segments smaller than 1 KB (COMPACT_SIZE_THRESHOLD) into a single merged `.jsonl` using atomic tmp-then-rename; preserves event sequence ordering; rebuilds the `.idx` for the merged segment.
+- `extension/src/event-log.ts` — Per-segment `.idx` files: `topic<TAB>byte_offset` index written atomically alongside each `.jsonl` on `close()` and `rotate()`; offsets are the exact byte positions of each record's start, enabling O(1) seek for filtered replay. Written via tmp-then-rename for atomicity.
+- `extension/src/server-config.ts` — `EventLogConfig` interface with `retentionDays` (default 7) and `compact` (default true); added to `ServerConfig` as `eventLog` field; `DEFAULT_EVENT_LOG_RETENTION_DAYS` and `DEFAULT_EVENT_LOG_COMPACT` constants exported.
+- `extension/src/server.ts` — `start()` calls `eventLog.compact()` after `open()` when `eventLog.compact` config is true; heartbeat timer calls `eventLog.runRetention(retentionDays)` each tick.
+- `extension/src/extension.ts` — `getConfig()` now populates `eventLog.retentionDays` and `eventLog.compact` from VS Code settings (`claws.eventLog.*`).
+- `extension/test/claws-event-log-retention.test.js` — 10-check test suite: retention deletes old segments and keeps recent; manifest updated; fd closed before deletion; `.idx` written and parseable; `compact()` merges 3 small segments into 1; sequence ordering preserved; `scanFrom` replay works after compaction; byte offsets in `.idx` match actual line starts.
+
+### Added — W1/L4 Vehicle State Machine
+
+- `extension/src/protocol.ts` — `TerminalDescriptor` now includes `vehicleState?: 'PROVISIONING' | 'BOOTING' | 'READY' | 'BUSY' | 'IDLE' | 'CLOSING' | 'CLOSED'` so `list` responses expose the current vehicle state.
+- `extension/src/event-schemas.ts` — `VehicleStateV1` Zod schema (terminalId, from, to, ts); `VehicleStateEnum` with all 7 states. `SCHEMA_BY_NAME` updated to include `vehicle-state-v1`.
+- `extension/src/topic-registry.ts` — three new topic patterns registered: `vehicle.*.state`, `vehicle.*.created`, `vehicle.*.closed`.
+- `extension/src/claws-pty.ts` — `ClawsPtyOptions` gains two optional hooks: `onOpenHook` (fires when VS Code calls Pseudoterminal.open()) and `onFirstOutputHook` (fires on the first byte of pty output). These let TerminalManager drive state transitions without coupling to the pty internals.
+- `extension/src/terminal-manager.ts` — `TerminalRecord` grows `vehicleState: VehicleStateName`; `TerminalManager` gains `setStateChangeCallback(cb)` and a private `transitionState(rec, to)` that enforces the valid-transition table (PROVISIONING→BOOTING→READY→BUSY/IDLE→CLOSING→CLOSED). `createWrapped` emits PROVISIONING then immediately BOOTING; `onOpenHook` fires BOOTING→READY when the pty opens; `close` and `onTerminalClosed` emit CLOSING→CLOSED.
+- `extension/src/server.ts` — wires `setStateChangeCallback` in the constructor; the callback calls `emitSystemEvent('vehicle.<id>.state', {terminalId, from, to, ts})` so every transition is appended to the event log and fanned out to subscribers.
+- `extension/test/claws-v2-vehicle-state.test.js` — 19-assertion integration test suite covering: PROVISIONING→BOOTING and BOOTING→READY push frames, close emitting CLOSING→CLOSED, vehicleState in list responses, ordering invariants, payload structure (terminalId, from, to, ts).
+
+### Added — Wave Army Protocol (embedder wave)
+
+The embedder wave introduces the Wave Army Protocol — a structured multi-agent orchestration layer built on the claws/2 pub/sub bus. Every wave has a typed lifecycle (create → sub-workers boot → sub-workers complete → lead emits complete) with violation detection and disciplined per-role obligations.
+
+**Protocol layer (shipped):**
+- `extension/src/protocol.ts` — `SubWorkerRole` type (`lead | tester | reviewer | auditor | bench | doc`); `ContractedRoles` constant; `HelloRequest` extended with optional `waveId` and `subWorkerRole`; `WaveCreateRequest`, `WaveCompleteRequest`, `WaveStatusRequest` added to `ClawsRequest` union.
+- `extension/src/event-schemas.ts` — 7 new Zod schemas: `WaveLeadBootV1`, `WaveLeadCompleteV1`, `WaveTesterRedCompleteV1`, `WaveReviewFindingV1`, `WaveAuditFindingV1`, `WaveBenchMetricV1`, `WaveDocCompleteV1`. `SCHEMA_BY_NAME` grows from 24 to 31 entries.
+- `extension/src/topic-registry.ts` — `wave.**` catch-all pattern registered; specific wave schemas bound in `SCHEMA_BY_NAME`.
+- `extension/src/wave-registry.ts` — new `WaveRegistry` class tracking active waves: per-role heartbeat timers fire `wave.<N>.violation` after 25s silence; `createWave`, `recordHeartbeat`, `markSubWorkerComplete`, `completeWave`, `handlePeerDisconnect`, `dispose`.
+- `extension/src/server.ts` — `WaveRegistry` wired into `ClawsServer`; handlers for `wave.create`, `wave.status`, `wave.complete`; `hello` records sub-worker heartbeat when `waveId+subWorkerRole` present; `handleDisconnect` notifies registry.
+
+**MCP tools (shipped):** `claws_wave_create`, `claws_wave_status`, `claws_wave_complete`, `claws_dispatch_subworker` added to `mcp_server.js` handler dispatch; `schemas/mcp-tools.json` updated with all 4 tool schemas (total grows by 4).
+
+**Discipline contract embedded (shipped):** `templates/CLAUDE.project.md` and `templates/CLAUDE.global.md` gain "Wave Discipline Contract (mandatory)" sections listing all 8 sub-worker rules (heartbeat, boot event, phase events, error events, no --no-verify, full suite before commit, type check per .ts file, complete event). `scripts/hooks/session-start-claws.js` extended to include wave discipline summary block when Claws socket is detected.
+
+### Fixed — embedder wave reviewer findings (F28/F29)
+
+- `mcp_server.js` `claws_dispatch_subworker` — F28 (MEDIUM): switched mission delivery from `newline:true` to `newline:false` + separate `\r` submit, matching the established `claws_worker` pattern; prevents spurious double-LF in Claude TUI mid-think (reviewer finding F28).
+- `mcp_server.js` `claws_dispatch_subworker` — F29 (LOW): boot-poll loop now tracks `nextOffset` from each `readLog` response and passes it as `offset` on the next call; eliminates repeated full-log reads during the 25 s boot window.
+
+**Skills (shipped):** `.claude/skills/claws-wave-lead/SKILL.md` and `.claude/skills/claws-wave-subworker/SKILL.md` — full role contracts, boot sequences, schema references.
+
+**Commands (shipped):** `.claude/commands/claws-wave-lead.md` (LEAD activation flow) and `.claude/commands/claws-army.md` (full army deployment with monitoring and completion criteria).
+
+### Added — W2/L15 Event Log Replay + L9 Observation
+
+- `extension/src/event-log.ts` — `EventLogReader` class: `scanFrom(cursor, topicPattern)` async generator reads segments from a byte-offset cursor position, filters records by topic pattern via `matchTopic()`, handles both manifest-based and directory-scan segment discovery.
+- `extension/src/server.ts` — `subscribe` handler now validates `fromCursor` format (`parseCursor` → null = reject with `invalid cursor format`); registers subscription in `subscriptionIndex` **before** replay starts (atomicity — no live events missed during replay); `setImmediate` dispatches `replayFromCursor` so the subscribe ACK is sent first. `replayFromCursor` sends `{push:'message', replayed:true}` frames then a `{push:'caught-up', subscriptionId, replayedCount, resumeCursor}` terminal signal.
+- `extension/src/protocol.ts` — `SubscribeResponse` interface adds optional `replayedCount?: number`.
+- `extension/src/claws-pty.ts` — `getForegroundProcess()` uses `pgrep -P <shellPid>` + `ps -p <pid> -o comm=` to detect the foreground process basename under the shell; powers L9 content-type observation.
+- `extension/src/peer-registry.ts` — `DisconnectedPeer` tombstone interface; `fingerprintPeer(peerName, role, nonce)` derives stable 12-hex sha256 fingerprint for `fp_`-prefixed stable peer IDs on reconnect.
+- `extension/src/terminal-manager.ts` — `ContentChangeCallback`; `startContentDetection` polls foreground process every 2 s and fires `onContentChange` on basename transitions; wired via `setContentChangeCallback`.
+- `extension/src/wave-registry.ts` — violation timer updates; sub-worker heartbeat tracking improvements.
+- `extension/test/claws-event-log-replay.test.js` — 13-assertion integration test: publishes 10 events, subscribes with `fromCursor`, verifies all 10 replayed frames carry `replayed:true`, caught-up frame fires with correct count, live events arrive without `replayed`, invalid cursor rejected (TDD: 6 failing → 13 passing).
+
+### Fixed
+- `extension/test/claws-v2-content.test.js` — interrupt foreground process with `\x03` before sending vim and extend wait timeout from 5s to 8s to reduce flakiness on slow machines.
+- `extension/test/event-schemas.test.js` — update `SCHEMA_BY_NAME` count from 19 to 20 (added `vehicle-state-v1`).
+- `extension/test/topic-registry.test.js` — update `TOPIC_REGISTRY` count from 19 to 22 (added 3 vehicle.* patterns).
+- `extension/test/event-schemas.test.js` — align `SCHEMA_BY_NAME` count assertion with current registry: was 19, now 20 after v0.7.5 L1.1+L1.4 schemas added `vehicle-state-v1`; test now derives expected names explicitly and asserts the correct total.
+- `scripts/inject-settings-hooks.js` — hook commands must use absolute paths. `CLAWS_BIN` was used as-is when passed as a relative argument (e.g. `"scripts"`), producing hook commands like `node "scripts/hooks/pre-tool-use-claws.js"` that broke with `ERR_MODULE_NOT_FOUND` whenever Claude Code's CWD was not the project root. Fix: wrap the arg with `path.resolve()` before computing script paths. Regression test added: `extension/test/inject-settings-absolute-paths.test.js`.
+
+## [0.7.5] - 2026-04-29 — Bus hardening release
+
+This release hardens the orchestrator↔worker communication bus surfaced by W1–W4 audits. The `.claws/events/default/*.jsonl` was empty on user systems because (a) the MCP server was dropping every push frame from the persistent socket, and (b) default workers never publish.
+
+### L-1 Display fixes (R1, R4, R5, R7) — landed
+- `claws-pty.ts` — inject `CLAWS_WRAPPED=1` (real pty) or `CLAWS_PIPE_MODE=1` (degraded) plus `CLAWS_TERMINAL_ID` so the shell hook reports truthful state
+- `protocol.ts` — `TerminalDescriptor` now exposes `ptyPid` (real shell pid) and `ptyMode` (`'pty'`/`'pipe'`/`'none'`)
+- `terminal-manager.ts` — `describe()` returns `pty.pid` and `pty.mode` from the live `ClawsPty` instance
+- `mcp_server.js` — `claws_list` formatter trusts the `wrapped` boolean (was incorrectly keying off `logPath` which is always null in the Pseudoterminal capture model). Pid column shows the real shell pid. Wrapped state labels: `WRAPPED`, `WRAPPED-DEGRADED-pipe-mode`, `WRAPPED-pending`, `unwrapped`
+
+Pre-fix symptoms: `claws_list` always showed `[unwrapped]` and `pid=-1` for wrapped terminals; shell-hook banner always said "unwrapped". All cosmetic-but-misleading; the underlying terminals were real ptys.
+
+### L0 — Push-frame capture (landed)
+- `mcp_server.js` — `_pconnHandleData` buffers push frames (no rid) into a 1000-entry ring buffer instead of silently dropping them; each entry carries `absoluteIndex`, `topic`, `from`, `payload`, `sentAt`, `sequence`
+- `mcp_server.js` — new `claws_drain_events` MCP tool: drains buffered push frames with `since_index` cursor, optional `wait_ms` blocking, and `max` page size; auto-subscribes to `**` on first call so no explicit subscribe is required
+- `mcp_server.js` — `_pconnEnsureRegistered` helper: lazily hellos as `orchestrator / mcp-orchestrator` on the persistent socket (once per process lifetime) so publish/subscribe calls work without a prior `claws_hello`
+- `schemas/mcp-tools.json` — added `claws_drain_events` tool schema
+
+### L1.1 — Worker lifecycle events (landed)
+- `mcp_server.js` — `runBlockingWorker` publishes `system.worker.spawned` (with `terminal_id`, `name`, `wrapped`, `started_at`) immediately after the terminal is created and `system.worker.completed` (with `terminal_id`, `status`, `duration_ms`, `marker_line`, `booted`) after the poll loop exits; guaranteed for both mission-mode and command-mode workers
+- `mcp_server.js` — publishes go via the persistent socket registered as `orchestrator / mcp-orchestrator`; both are best-effort — failure is logged and the worker run continues unaffected
+
+### L1.2 — Lazy .jsonl creation (landed)
+- `extension/src/event-log.ts` — `EventLogWriter.openFreshSegment` defers `fs.openSync` until the first `doAppend` call; the segment file is only created when an event is actually written, eliminating empty `.jsonl` files at activation time
+- `extension/src/event-log.ts` — `doAppend` performs a lazy open when `fdDeferred` is true; open errors set `degraded` and return gracefully
+- `extension/src/event-log.ts` — `append` allows the deferred-open case through (changed guard from `fd === null` to `fd === null && !fdDeferred`)
+- `extension/src/event-log.ts` — `tryRecoverFromManifest` handles missing segment files gracefully — if the file doesn't exist (lazy segment never written), it marks `fdDeferred = true` rather than falling back to a full scan
+- `extension/src/event-log.ts` — `rotate` clears `fdDeferred` before `openFreshSegment` so rotation always starts with a clean deferred state
+
+### L1.2 rotation regression fix (landed)
+- `extension/src/event-log.ts` — `rotate()` now opens the new segment fd eagerly after `openFreshSegment()`; the lazy-open guarantee (no empty `.jsonl` at activation) applied only to the first segment; rotation fires inside `doAppend` so the file is already being written — deferring left `fd=null` which the post-rotate `fd === null` guard treated as degraded mode, returning `sequence=-1` for all subsequent appends; fix: open fd immediately in `rotate()` and clear `fdDeferred`
+
+### L1.4 — Persist task.* + system.malformed.received events (landed)
+- `extension/src/server.ts` — new `emitServerEvent(topic, payload)` private async helper: appends to the event log then fans out, mirroring the `publish` handler's persist-then-fanout contract for server-originated events
+- `extension/src/server.ts` — all 6 server-side `fanOut` call-sites for `task.assigned.*`, `task.status`, `task.completed`, `task.cancel_requested.*`, and `system.malformed.received` replaced with `await this.emitServerEvent(...)` so these events are now durably persisted to `.claws/events/default/*.jsonl`
+- `extension/src/server.ts` — degraded mode: if `eventLog.append` returns sequence -1 the sequence field is omitted from the push frame; on real I/O error the fanOut fires anyway (delivery preserved, persistence skipped)
+- `extension/test/task-event-persist.test.js` — new regression test: boots extension, registers orchestrator + worker, drives assign → update → complete, asserts all 3 entries appear in the .jsonl with monotonically-increasing sequences
+
+### L3 — Reverse channel hardening (landed)
+
+#### L3.1 — Monotonic `seq` stamp in `[CLAWS_CMD]` broadcast text
+- `extension/src/server.ts` — added `private broadcastSeq = 0` class field; broadcast handler increments it and rewrites text matching `[CLAWS_CMD ` to `[CLAWS_CMD seq=N ` before `writeInjected` and `pushFrame` calls; free-form broadcast text (no `[CLAWS_CMD` prefix) passes through unchanged; makes re-delivered commands idempotent — workers can track the highest seq seen
+- `extension/test/broadcast-seq.test.js` — 6 regression checks: seq=1/2/3 inserted correctly on three consecutive broadcasts; free-form text unchanged; seq counter only advances for `[CLAWS_CMD` text
+
+#### L3.2 — Worker auto-subscribe to `cmd.<peerId>.**` on hello
+- `extension/src/server.ts` — hello handler now auto-registers a `cmd.${peerId}.**` subscription on the peer's socket when `role=worker`; uses the existing subscription-index mechanism so non-Template-8 workers get the reverse channel at the transport layer without an explicit `subscribe` call
+- `extension/test/auto-subscribe-cmd.test.js` — 8 regression checks: worker receives `cmd.<peerId>.approve` push without explicit subscribe; deep wildcard `cmd.<peerId>.sub.nested` also delivered; observer role is NOT auto-subscribed
+
+#### L3.1 test fix — `reverse-channel.test.js` updated for seq= prefix
+- `extension/test/reverse-channel.test.js` — two legacy assertions compared injected/pushed text against the original `CMD_TEXT` literal; after L3.1 the server rewrites `[CLAWS_CMD ` to `[CLAWS_CMD seq=N `; switched both assertions to regex `CMD_TEXT_RE = /^\[CLAWS_CMD seq=\d+ r=r1\] approve_request/` — no behavior change, test now correctly validates the seq-stamped output
+
+#### L3.4 — Backpressure on `socket.write` in `pushFrame`
+- `extension/src/server.ts` — added `private readonly pausedPeers = new Set<string>()` and `private readonly droppedFrames = new Map<string, number>()`; `pushFrame` checks `socket.write()` return value — if `false`, marks peer as paused, logs `[claws/2] backpressure on push to <peerId>; pausing`, registers a one-shot `drain` listener; while paused, frames are silently dropped with a per-peer counter; drain clears the paused state and logs dropped count (warning if ≥ 100)
+- `extension/test/pushframe-backpressure.test.js` — 9 regression checks: normal push arrives before backpressure; publish after subscriber disconnect returns ok (no crash); new subscriber receives pushes normally after prior peer disconnect; no crash logs; graceful disconnection log
+
+### L2 — Lifecycle REFLECT → PLAN cycle reset (landed)
+- `extension/src/lifecycle-store.ts` — `hasPlan()` now returns `false` when the current phase is `REFLECT`, closing the lifecycle gate after a completed cycle (was: always true once any plan was logged)
+- `extension/src/lifecycle-store.ts` — `plan()` resets the cycle when called from `REFLECT` phase, starting cycle N+1 with fresh `phases_completed=['PLAN']` and the new plan text; idempotency still applies within any active (non-REFLECT) cycle
+- `extension/src/server.ts` — `lifecycle.plan` handler sets `idempotent:false` when the previous phase was `REFLECT` (a cycle reset is not an idempotent no-op); `idempotent:true` only for mid-cycle duplicate calls
+- `extension/test/lifecycle-reset.test.js` — 8 regression checks covering: gate-closes-at-REFLECT, plan-resets-cycle, phases_completed-reset, hasPlan-reopens, SPAWN-advances-after-reset, mid-cycle-idempotency-preserved, reflect-field-cleared
+
+### L1.3 — Periodic system.heartbeat from the extension (landed)
+- `extension/src/server-config.ts` — added `heartbeatIntervalMs` field (default 60 000 ms, 0 = disabled) to `ServerConfig` and `defaultServerConfig`; exported `DEFAULT_HEARTBEAT_INTERVAL_MS`
+- `extension/src/server.ts` — new `private async emitSystemEvent(topic, payload)` helper: appends to the event log then fans out with the returned sequence; skips entirely when `eventLog.isDegraded` is true; errors are swallowed so timer failures never crash the extension
+- `extension/src/server.ts` — `start()` schedules a `setInterval` after `bind()` resolves; reads `heartbeatIntervalMs` from `getConfig()` at schedule time; 0 = no timer created; stores timer in `private heartbeatTimer`
+- `extension/src/server.ts` — `stop()` clears `heartbeatTimer` before closing the event log and socket
+- `extension/src/event-log.ts` — added public `get isDegraded(): boolean` accessor so the server can gate heartbeat emissions without accessing a private field
+- `extension/src/terminal-manager.ts` — added public `get terminalCount(): number` accessor so heartbeat payload can report the live terminal count without exposing the private `records` Map
+- `extension/src/extension.ts` — `getConfig()` now reads `claws.heartbeatIntervalMs` from VS Code settings and passes it to the server
+- `extension/package.json` — added `claws.heartbeatIntervalMs` configuration property (type: number, default: 60000, minimum: 0)
+- `extension/test/heartbeat.test.js` — new regression test: boots extension with `heartbeatIntervalMs=200ms`, waits 700ms, asserts ≥2 `system.heartbeat` entries in the segment file and validates payload shape (uptimeMs, peers, terminals, from, ts_server, sequence)
+
+### L1.5 — [CLAWS_PUB] line scanner for SDK-less worker publishing (landed)
+- `mcp_server.js` — new `_scanAndPublishCLAWSPUB(newText, sockPath)` async helper: scans lines for `[CLAWS_PUB] topic=<topic> key=val ...` markers, parses key=value pairs (quoted strings, bare tokens, numeric, boolean coercion), and calls `_pconnEnsureRegistered` + `_pconnWrite` to publish on the worker's behalf; parse errors and publish failures are logged and never abort the worker run
+- `mcp_server.js` — poll loop (step 6) in `runBlockingWorker` now tracks `pubScanOffset` across iterations; each tick slices `text.slice(scanStart)` (new bytes only) into `_scanAndPublishCLAWSPUB` and advances `pubScanOffset = text.length` so each pty line is scanned at most once
+- Workers using Templates 1–7 can now emit bus events by printing a single line: `[CLAWS_PUB] topic=worker.<id>.phase kind=DEPLOY step=3` — no socket, SDK, peerId, or env-var injection required
+- `extension/test/claws-pub-scanner.test.js` — 12 regression checks: source-level (function defined, MARKER_RE present, called in poll loop, pubScanOffset present, _pconnEnsureRegistered called) + behavioral (3 publishes from 3 markers, duplicate-scan no-re-publish, new-bytes-after-offset published, malformed lines skipped without throw, quoted values, boolean/numeric coercion, non-prefixed lines ignored)
+
+### L4 — Bus correctness (landed)
+
+#### L4.1 — `_pconnWrite` id field collision fix
+- `mcp_server.js` — `_pconnWrite` now explicitly destructures and drops any user-supplied `id` before stamping the RPC correlation id (`const { id: _discarded, ...reqBody } = req`). No behaviour change for current callers (none set `id`) but makes the contract auditable and prevents silent misrouting for future stateful commands that use `id` as a routing field.
+
+#### L4.2 — Sequence counter persistence across restarts
+- `extension/src/event-log.ts` — `Manifest` interface gains `sequence_counter?: number`
+- `extension/src/event-log.ts` — `writeManifest()` persists `sequence_counter: this.sequenceCounter` (the next value to issue) so the counter survives server restarts
+- `extension/src/event-log.ts` — `tryRecoverFromManifest()` restores the counter with `+1` offset so the last issued sequence before crash is never re-issued; cost is one detectable gap per restart (acceptable)
+- `extension/test/sequence-persist.test.js` — new regression test: writes 5 events, simulates restart with a fresh writer, writes 5 more; asserts second batch is ≥5, monotonically increasing, and spans at most one gap at the restart boundary
+
+#### L4.3 — Peer disconnect fails orphaned tasks
+- `extension/src/server.ts` — `handleDisconnect()` now walks `this.tasks` after removing the peer and fails any task whose `assignee === peerId` and `status` is `pending`, `running`, or `blocked`; sets `status='failed'`, `note='assignee disconnected'`, `updatedAt=Date.now()`
+- `extension/src/server.ts` — each newly-failed task emits a `task.completed` event via `emitServerEvent` (best-effort, `.catch()` guards so disconnect never throws) so subscribers see the cancellation
+- `extension/test/peer-disconnect-fails-tasks.test.js` — new regression test: registers orchestrator + worker, assigns 2 tasks, destroys the worker socket, asserts both tasks are `failed` in `task.list` and `task.completed` push frames fired for both
+
+#### L4.4 — subscribe fromCursor (structural contract, full replay P1 for v0.7.6)
+- `extension/src/protocol.ts` — `SubscribeRequest` gains optional `fromCursor?: string` field with inline doc describing the cursor format and the v0.7.6 TODO
+- `extension/src/server.ts` — subscribe handler accepts `fromCursor`; logs `[claws/2] fromCursor replay not yet implemented` and continues with live delivery when the field is present; full replay (read event log from cursor, push matching events before live) deferred to v0.7.6 (P1)
+
+### L1.4–L3 (previously landed — see entries above)
+Fleet of layered fixes ordered root-up: L0 capture (push frames captured, `claws_drain_events` MCP tool), L1 production (`system.worker.spawned/completed`, lazy `.jsonl`, heartbeat, task event persistence, `[CLAWS_PUB]` line scanner), L2 lifecycle (REFLECT-reset cycle), L3 reverse-channel hardening (idempotent re-delivery, ACK protocol, backpressure), L4 bus correctness (sequence persistence, peer reconnect, replay).
+
 ## [0.7.4] - 2026-04-29 — Bulletproof regression fix release
 
 This release closes 50 findings surfaced by a 4-worker parallel audit of the v0.7.2 + v0.7.3 release cycle. After the user reported lifecycle breakage on `/claws-update`, we ran a full Plan→Implement→Review→Audit→Test→Fix→Repeat loop across 5 layers to deliver one bulletproof codebase that absorbs all in-flight unmerged work (γ.1 reverse channel, γ.2 event log core, MCP persistent socket fix) plus 50 regression fixes.

@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "vehicle-state-v1",
+  "$ref": "#/definitions/vehicle-state-v1",
+  "definitions": {
+    "vehicle-state-v1": {
+      "type": "object",
+      "properties": {
+        "terminalId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "from": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "PROVISIONING",
+                "BOOTING",
+                "READY",
+                "BUSY",
+                "IDLE",
+                "CLOSING",
+                "CLOSED"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "to": {
+          "type": "string",
+          "enum": [
+            "PROVISIONING",
+            "BOOTING",
+            "READY",
+            "BUSY",
+            "IDLE",
+            "CLOSING",
+            "CLOSED"
+          ]
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "terminalId",
+        "from",
+        "to",
+        "ts"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

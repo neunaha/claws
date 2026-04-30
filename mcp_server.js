@@ -148,6 +148,18 @@ const _pconn = {
   connected: false,
 };
 
+// ─── Push-frame ring buffer ───────────────────────────────────────────────────
+// Captures every push frame delivered on the persistent socket so the
+// orchestrator can drain them via claws_drain_events without needing an active
+// subscription loop.
+const _eventBuffer = {
+  ring: [],          // { absoluteIndex, topic, from, payload, sentAt, sequence }
+  maxSize: 1000,     // evict oldest when full
+  totalReceived: 0,  // monotonically increasing; used as cursor by callers
+  waiters: [],       // { resolve, timer } registered by drain with wait_ms > 0
+  subscribed: false, // true once we've sent hello + subscribe("**") on _pconn
+};
+
 let _pconnConnecting = null; // Promise | null — guards concurrent connect attempts
 
 function _pconnHandleData(data) {
@@ -166,8 +178,21 @@ function _pconnHandleData(data) {
         clearTimeout(timer);
         _pconn.pending.delete(rid);
         resolve(msg);
+      } else if (rid == null && (msg.push === 'message' || msg.topic != null)) {
+        // Push frame (no rid) — buffer for claws_drain_events.
+        const entry = {
+          absoluteIndex: ++_eventBuffer.totalReceived,
+          topic: msg.topic || '',
+          from: msg.from || '',
+          payload: msg.payload != null ? msg.payload : null,
+          sentAt: msg.sentAt || null,
+          sequence: msg.sequence != null ? msg.sequence : null,
+        };
+        _eventBuffer.ring.push(entry);
+        if (_eventBuffer.ring.length > _eventBuffer.maxSize) _eventBuffer.ring.shift();
+        const woke = _eventBuffer.waiters.splice(0);
+        for (const w of woke) { clearTimeout(w.timer); w.resolve(); }
       }
-      // Push frames (no rid) are silently dropped for now.
     } catch { /* ignore malformed frames */ }
   }
 }
@@ -251,7 +276,11 @@ function _pconnWrite(req, timeout) {
     }, ms);
     _pconn.pending.set(rid, { resolve, reject, timer });
     try {
-      _pconn.socket.write(JSON.stringify({ ...req, id: rid }) + '\n');
+      // Stateful commands route via taskId/assignee/subscriptionId/peerId — never 'id'.
+      // Explicitly drop any user-supplied 'id' before stamping the RPC correlation id,
+      // so a future command carrying 'id' as a routing field cannot be silently misrouted.
+      const { id: _discarded, ...reqBody } = req;
+      _pconn.socket.write(JSON.stringify({ ...reqBody, id: rid }) + '\n');
     } catch (err) {
       clearTimeout(timer);
       _pconn.pending.delete(rid);
@@ -316,6 +345,40 @@ function findMarkerLine(text, marker) {
   return text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trim();
 }
 
+// ─── [CLAWS_PUB] line scanner ─────────────────────────────────────────────────
+// SDK-less workers print [CLAWS_PUB] topic=<topic> key=val ... lines to stdout.
+// The MCP server scans new pty output for these markers each poll tick and
+// publishes on the worker's behalf — no socket, peerId, or SDK required.
+// Grammar:  [CLAWS_PUB] topic=<topic> key1=val key2="quoted val" key3=42
+// Values:   "..." → string  |  true/false → boolean  |  digits → number
+async function _scanAndPublishCLAWSPUB(newText, sockPath) {
+  const MARKER_RE = /^\[CLAWS_PUB\]\s+topic=(\S+)\s*(.*)?$/;
+  const KV_RE = /(\w+)=("([^"]*)"|(\S+))/g;
+  for (const line of newText.split('\n')) {
+    const m = MARKER_RE.exec(line);
+    if (!m) continue;
+    const topic = m[1];
+    const rest = m[2] || '';
+    const payload = {};
+    KV_RE.lastIndex = 0;
+    let kv;
+    while ((kv = KV_RE.exec(rest)) !== null) {
+      const key = kv[1];
+      const rawVal = kv[3] !== undefined ? kv[3] : kv[4];
+      if (rawVal === 'true') payload[key] = true;
+      else if (rawVal === 'false') payload[key] = false;
+      else if (/^-?\d+(\.\d+)?$/.test(rawVal)) payload[key] = parseFloat(rawVal);
+      else payload[key] = rawVal;
+    }
+    try {
+      await _pconnEnsureRegistered(sockPath);
+      await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic, payload });
+    } catch (e) {
+      log('[CLAWS_PUB] publish failed topic=' + topic + ': ' + (e && e.message || e));
+    }
+  }
+}
+
 async function runBlockingWorker(sock, args) {
   const DEFAULTS = {
     timeout_ms: 30 * 60 * 1000,
@@ -341,6 +404,16 @@ async function runBlockingWorker(sock, args) {
   if (!cr.ok) return { status: 'error', error: `create failed: ${cr.error}` };
   const termId = cr.id;
   const startedAt = Date.now();
+
+  // Publish system.worker.spawned — best-effort, never aborts on failure.
+  try {
+    await _pconnEnsureRegistered(sock);
+    await _pconnWrite({
+      cmd: 'publish', protocol: 'claws/2',
+      topic: 'system.worker.spawned',
+      payload: { terminal_id: termId, name: args.name || 'claws-worker', wrapped: true, started_at: new Date(startedAt).toISOString() },
+    });
+  } catch (e) { log('system.worker.spawned publish failed: ' + (e && e.message || e)); }
 
   // 2. Give shell a moment to emit prompt
   await sleep(400);
@@ -396,11 +469,19 @@ async function runBlockingWorker(sock, args) {
   const timeoutDeadline = startedAt + opt.timeout_ms;
   let status = 'timeout';
   let markerLine = null;
+  let pubScanOffset = 0; // byte position already scanned for [CLAWS_PUB] markers
   while (Date.now() < timeoutDeadline) {
     const snap = await clawsRpc(sock, {
       cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024,
     });
     const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
+
+    // Scan lines added since the last poll tick for [CLAWS_PUB] publish markers.
+    const scanStart = Math.min(pubScanOffset, text.length);
+    if (text.length > scanStart) {
+      await _scanAndPublishCLAWSPUB(text.slice(scanStart), sock);
+    }
+    pubScanOffset = text.length;
 
     if (text.includes(opt.complete_marker)) {
       status = 'completed';
@@ -420,6 +501,16 @@ async function runBlockingWorker(sock, args) {
 
     await sleep(opt.poll_interval_ms);
   }
+
+  // Publish system.worker.completed — best-effort, never aborts on failure.
+  try {
+    await _pconnEnsureRegistered(sock);
+    await _pconnWrite({
+      cmd: 'publish', protocol: 'claws/2',
+      topic: 'system.worker.completed',
+      payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted },
+    });
+  } catch (e) { log('system.worker.completed publish failed: ' + (e && e.message || e)); }
 
   // 7. Harvest final output
   const final = await clawsRpc(sock, {
@@ -444,6 +535,26 @@ async function runBlockingWorker(sock, args) {
     cleaned_up: cleanedUp,
     harvest,
   };
+}
+
+// ─── Persistent-socket identity helper ────────────────────────────────────────
+// Ensures the persistent socket is connected AND this process has a peerId.
+// If not yet registered, sends hello with role=orchestrator, peerName=mcp-orchestrator.
+// Called once per process lifetime in practice (peerId cached on _pconn).
+async function _pconnEnsureRegistered(sockPath) {
+  await _pconnEnsure(sockPath);
+  if (!_pconn.peerId) {
+    const hr = await _pconnWrite({
+      cmd: 'hello', protocol: 'claws/2',
+      role: 'orchestrator', peerName: 'mcp-orchestrator',
+    }, 5000);
+    if (hr.ok) {
+      _pconn.peerId = hr.peerId;
+      _pconn.role = 'orchestrator';
+      _pconn.peerName = 'mcp-orchestrator';
+      log('auto-registered as peer ' + hr.peerId + ' role=orchestrator');
+    }
+  }
 }
 
 // ─── Tool handlers ─────────────────────────────────────────────────────────
@@ -487,9 +598,27 @@ async function handleTool(name, args) {
     const terms = resp.terminals || [];
     if (!terms.length) return { content: [{ type: 'text', text: '[no terminals open]' }] };
     const lines = terms.map(t => {
-      const wrap = t.logPath ? 'WRAPPED' : 'unwrapped';
+      // R4: trust the `wrapped` boolean. Old code keyed off `logPath` which is
+      // always null in the Pseudoterminal capture model — every wrapped
+      // terminal was misreported as unwrapped.
+      // Annotate pipe-mode degradation explicitly so the user sees it at a glance.
+      let wrap;
+      if (!t.wrapped) {
+        wrap = 'unwrapped';
+      } else if (t.ptyMode === 'pipe') {
+        wrap = 'WRAPPED-DEGRADED-pipe-mode';
+      } else if (t.ptyMode === 'pty') {
+        wrap = 'WRAPPED';
+      } else if (t.ptyMode === 'none') {
+        wrap = 'WRAPPED-pending'; // pty.open() not called yet (panel hidden?)
+      } else {
+        wrap = 'WRAPPED';
+      }
       const marker = t.active ? '*' : ' ';
-      return `${marker} ${t.id}  ${(t.name || '').padEnd(25)} pid=${t.pid}  [${wrap}]`;
+      // R7: Pseudoterminal terminals report pid=-1 from VS Code's API
+      // (VS Code didn't spawn the shell — we did). Prefer ptyPid.
+      const realPid = (typeof t.ptyPid === 'number' && t.ptyPid > 0) ? t.ptyPid : t.pid;
+      return `${marker} ${t.id}  ${(t.name || '').padEnd(25)} pid=${realPid}  [${wrap}]`;
     });
     return { content: [{ type: 'text', text: lines.join('\n') }] };
   }
@@ -719,6 +848,57 @@ async function handleTool(name, args) {
     return { content: [{ type: 'text', text: header.join('\n') + '\n\n── harvest (last lines) ──\n' + body }] };
   }
 
+  /**
+   * claws_drain_events — drain buffered push frames from the persistent socket.
+   * On first call, auto-subscribes to "**" (all topics) via the persistent socket
+   * so subsequent frames are captured automatically. Returns events received since
+   * since_index, with a dropped count for events that aged out of the ring buffer.
+   * Set wait_ms > 0 to block until at least one new event arrives or the timer fires.
+   */
+  if (name === 'claws_drain_events') {
+    const sinceIndex = typeof args.since_index === 'number' ? args.since_index : 0;
+    const waitMs = typeof args.wait_ms === 'number' ? args.wait_ms : 0;
+    const maxEvents = typeof args.max === 'number' ? args.max : 100;
+
+    // Auto-subscribe on first call.
+    if (!_eventBuffer.subscribed) {
+      try {
+        await _pconnEnsureRegistered(sock);
+        const sr = await _pconnWrite({ cmd: 'subscribe', topic: '**' }, 5000);
+        if (sr.ok) _eventBuffer.subscribed = true;
+      } catch (err) {
+        log('claws_drain_events: auto-subscribe failed: ' + (err && err.message || err));
+      }
+    }
+
+    // If wait_ms > 0 and no new events yet, register a waiter.
+    const hasNew = () => _eventBuffer.ring.some(e => e.absoluteIndex > sinceIndex);
+    if (waitMs > 0 && !hasNew()) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, waitMs);
+        _eventBuffer.waiters.push({ resolve, timer });
+      });
+    }
+
+    const ring = _eventBuffer.ring;
+    const totalReceived = _eventBuffer.totalReceived;
+    const filtered = ring.filter(e => e.absoluteIndex > sinceIndex).slice(0, maxEvents);
+
+    // dropped = events in [sinceIndex+1, ring[0].absoluteIndex - 1] that were evicted.
+    let dropped = 0;
+    if (ring.length > 0) {
+      const firstInRing = ring[0].absoluteIndex;
+      if (firstInRing > sinceIndex + 1) dropped = firstInRing - sinceIndex - 1;
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ events: filtered, total_received: totalReceived, dropped }, null, 2),
+      }],
+    };
+  }
+
   if (name === 'claws_lifecycle_plan') {
     const resp = await clawsRpc(sock, { cmd: 'lifecycle.plan', plan: args.plan });
     if (!resp.ok) return toolError(`ERROR: ${resp.error}\n${resp.message || ''}`);
@@ -747,6 +927,170 @@ async function handleTool(name, args) {
     return { content: [{ type: 'text', text: JSON.stringify({ state: resp.state }, null, 2) }] };
   }
 
+  if (name === 'claws_wave_create') {
+    const resp = await clawsRpc(sock, {
+      cmd: 'wave.create',
+      waveId: args.waveId,
+      layers: args.layers,
+      manifest: args.manifest,
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ waveId: resp.waveId, created: resp.created }, null, 2) }] };
+  }
+
+  if (name === 'claws_wave_status') {
+    const resp = await clawsRpc(sock, { cmd: 'wave.status', waveId: args.waveId });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify(resp.wave, null, 2) }] };
+  }
+
+  if (name === 'claws_wave_complete') {
+    const resp = await clawsRpc(sock, {
+      cmd: 'wave.complete',
+      waveId: args.waveId,
+      summary: args.summary,
+      commits: args.commits,
+      regressionClean: args.regressionClean,
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ waveId: resp.waveId, completedAt: resp.completedAt }, null, 2) }] };
+  }
+
+  if (name === 'claws_deliver_cmd') {
+    const payload = typeof args.payload === 'string' ? JSON.parse(args.payload) : args.payload;
+    const resp = await clawsRpc(sock, {
+      cmd: 'deliver-cmd',
+      protocol: 'claws/2',
+      targetPeerId: args.targetPeerId,
+      cmdTopic: args.cmdTopic,
+      payload,
+      idempotencyKey: args.idempotencyKey,
+    });
+    if (!resp.ok && !resp.duplicate) return toolError(`ERROR: ${resp.error}`);
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: resp.ok,
+          seq: resp.seq,
+          duplicate: resp.duplicate ?? false,
+        }, null, 2),
+      }],
+    };
+  }
+
+  if (name === 'claws_cmd_ack') {
+    const resp = await clawsRpc(sock, {
+      cmd: 'cmd.ack',
+      protocol: 'claws/2',
+      seq: args.seq,
+      status: args.status,
+      ...(args.correlation_id ? { correlation_id: args.correlation_id } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true }, null, 2) }] };
+  }
+
+  if (name === 'claws_pipeline_create') {
+    const steps = typeof args.steps === 'string' ? JSON.parse(args.steps) : args.steps;
+    const resp = await clawsRpc(sock, {
+      cmd: 'pipeline.create',
+      name: args.name || 'pipeline',
+      steps,
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ pipelineId: resp.pipelineId, pipeline: resp.pipeline }, null, 2),
+      }],
+    };
+  }
+
+  if (name === 'claws_pipeline_list') {
+    const resp = await clawsRpc(sock, { cmd: 'pipeline.list' });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify(resp.pipelines, null, 2) }] };
+  }
+
+  if (name === 'claws_pipeline_close') {
+    const resp = await clawsRpc(sock, { cmd: 'pipeline.close', pipelineId: args.pipelineId });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, pipelineId: resp.pipelineId }, null, 2) }] };
+  }
+
+  if (name === 'claws_dispatch_subworker') {
+    const workerName = `wave-${args.waveId}-${args.role}`;
+    const cr = await clawsRpc(sock, {
+      cmd: 'create', name: workerName, wrapped: true, show: true,
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+    });
+    if (!cr.ok) return toolError(`ERROR: create failed: ${cr.error}`);
+    const termId = cr.id;
+
+    await sleep(400);
+    await clawsRpc(sock, {
+      cmd: 'send', id: termId,
+      text: 'claude --model claude-sonnet-4-6 --dangerously-skip-permissions', newline: true,
+    });
+
+    // Poll for trust prompt (~25 s), tracking log offset to avoid re-reading.
+    let bootOk = false;
+    let logOffset = 0;
+    const bootDeadline = Date.now() + 25_000;
+    while (Date.now() < bootDeadline) {
+      const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, offset: logOffset, limit: 32 * 1024 });
+      if (snap.ok && typeof snap.bytes === 'string') {
+        if (snap.bytes.includes('trust')) { bootOk = true; break; }
+        if (typeof snap.nextOffset === 'number') logOffset = snap.nextOffset;
+      }
+      await sleep(500);
+    }
+    if (!bootOk) log(`claws_dispatch_subworker: trust prompt not seen for ${workerName} — continuing anyway`);
+
+    // Send bypass selection without newline, wait for Claude prompt, then deliver
+    // mission via bracketed paste with newline=false + separate \r submit.
+    // Using separate \r (not relying on newline:true) avoids a double-LF in the
+    // Claude TUI that can dismiss spinners mid-think (reviewer finding F28).
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: '1', newline: false });
+    await sleep(1000);
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: args.mission, newline: false, paste: true });
+    await sleep(300);
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ terminal_id: termId, waveId: args.waveId, role: args.role, name: workerName }, null, 2),
+      }],
+    };
+  }
+
+  if (name === 'claws_schema_list') {
+    const resp = await clawsRpc(sock, { cmd: 'schema.list', protocol: 'claws/2' });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ schemas: resp.schemas }, null, 2) }] };
+  }
+
+  if (name === 'claws_schema_get') {
+    const resp = await clawsRpc(sock, { cmd: 'schema.get', protocol: 'claws/2', name: args.name });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ name: resp.name, schema: resp.schema }, null, 2) }] };
+  }
+
+  if (name === 'claws_rpc_call') {
+    const resp = await clawsRpc(sock, {
+      cmd: 'rpc.call',
+      protocol: 'claws/2',
+      targetPeerId: args.targetPeerId,
+      method: args.method,
+      ...(args.params ? { params: args.params } : {}),
+      ...(args.timeoutMs ? { timeoutMs: args.timeoutMs } : {}),
+    });
+    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    return { content: [{ type: 'text', text: JSON.stringify({ requestId: resp.requestId, result: resp.result }, null, 2) }] };
+  }
+
   return toolError(`unknown tool: ${name}`);
 }
 
@@ -767,7 +1111,7 @@ async function main() {
       respond(id, {
         protocolVersion: '2024-11-05',
         // Version must match extension/package.json — bump both together on release.
-        serverInfo: { name: 'claws', version: '0.7.4' },
+        serverInfo: { name: 'claws', version: '0.7.6' },
         capabilities: { tools: {} },
       });
     } else if (method === 'notifications/initialized') {

@@ -52,6 +52,10 @@ const TOOLS_V2 = [
   'claws_hello', 'claws_subscribe', 'claws_publish', 'claws_broadcast',
   'claws_ping', 'claws_peers', 'claws_task_assign', 'claws_task_update',
   'claws_task_complete', 'claws_task_cancel', 'claws_task_list',
+  'claws_lifecycle_plan', 'claws_lifecycle_advance', 'claws_lifecycle_snapshot', 'claws_lifecycle_reflect',
+  'claws_wave_create', 'claws_wave_status', 'claws_wave_complete',
+  'claws_deliver_cmd', 'claws_cmd_ack',
+  'claws_schema_list', 'claws_schema_get', 'claws_rpc_call',
 ];
 const BEGIN = '<!-- CLAWS:BEGIN -->';
 const END   = '<!-- CLAWS:END -->';

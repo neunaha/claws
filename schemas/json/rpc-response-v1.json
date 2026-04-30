@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "rpc-response-v1",
+  "$ref": "#/definitions/rpc-response-v1",
+  "definitions": {
+    "rpc-response-v1": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "result": {},
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "requestId",
+        "ok"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -40,19 +40,19 @@ export class LifecycleStore {
     this.loadFromDisk();
   }
 
-  /** True when a PLAN has been logged (gate passes). */
-  hasPlan(): boolean { return this.state !== null; }
+  /** True when a PLAN has been logged and the cycle is still active (not REFLECT). */
+  hasPlan(): boolean { return this.state !== null && this.state.phase !== 'REFLECT'; }
 
   /** Returns current state, or null if no PLAN exists. */
   snapshot(): LifecycleState | null { return this.state; }
 
   /**
    * Create initial lifecycle state at PLAN phase.
-   * Idempotent: if state already exists, returns it unchanged.
+   * Idempotent within an active cycle; REFLECT is terminal, so a new plan() starts cycle N+1.
    */
   plan(planText: string): LifecycleState {
     if (!planText.trim()) throw new Error('lifecycle:plan-empty');
-    if (this.state !== null) return this.state;
+    if (this.state !== null && this.state.phase !== 'REFLECT') return this.state;
     this.state = {
       v: 1,
       phase: 'PLAN',

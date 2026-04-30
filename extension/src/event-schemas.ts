@@ -194,6 +194,178 @@ export const SystemMalformedReceivedV1 = z.object({
 });
 export type SystemMalformedReceived = z.infer<typeof SystemMalformedReceivedV1>;
 
+// ── Vehicle state schemas (server-emitted, not published by clients) ──────
+
+export const VEHICLE_STATES = [
+  'PROVISIONING', 'BOOTING', 'READY', 'BUSY', 'IDLE', 'CLOSING', 'CLOSED',
+] as const;
+export const VehicleStateEnum = z.enum(VEHICLE_STATES);
+export type VehicleStateName = z.infer<typeof VehicleStateEnum>;
+
+export const VehicleStateV1 = z.object({
+  terminalId: z.string().min(1),
+  from:       VehicleStateEnum.nullable(),
+  to:         VehicleStateEnum,
+  ts:         z.string().datetime(),
+});
+export type VehicleState = z.infer<typeof VehicleStateV1>;
+
+// ── Vehicle content schemas (L5 content detection) ────────────────────────
+
+export const CONTENT_TYPES = [
+  'shell', 'claude', 'python', 'node', 'vim', 'htop', 'unknown',
+] as const;
+export const ContentTypeEnum = z.enum(CONTENT_TYPES);
+export type ContentType = z.infer<typeof ContentTypeEnum>;
+
+export const VehicleContentV1 = z.object({
+  terminalId:    z.string().min(1),
+  contentType:   ContentTypeEnum,
+  foregroundPid: z.number().int().nonnegative().nullable(),
+  basename:      z.string().nullable().optional(),
+  detectedAt:    z.string().datetime(),
+  confidence:    z.enum(['high', 'low', 'unknown']).optional(),
+});
+export type VehicleContent = z.infer<typeof VehicleContentV1>;
+
+// ── Command lifecycle schemas (L6 event taxonomy) ─────────────────────────
+
+export const CommandStartV1 = z.object({
+  terminalId: z.string().min(1),
+  command:    z.string().min(1),
+  startedAt:  z.string().datetime(),
+});
+export type CommandStart = z.infer<typeof CommandStartV1>;
+
+export const CommandEndV1 = z.object({
+  terminalId: z.string().min(1),
+  command:    z.string().min(1),
+  exitCode:   z.number().int().nullable(),
+  durationMs: z.number().nonnegative(),
+  degraded:   z.boolean().optional(),
+  endedAt:    z.string().datetime(),
+});
+export type CommandEnd = z.infer<typeof CommandEndV1>;
+
+// ── Wave army event schemas ────────────────────────────────────────────────
+
+export const SUB_WORKER_ROLES = ['lead', 'tester', 'reviewer', 'auditor', 'bench', 'doc'] as const;
+export const SubWorkerRoleEnum = z.enum(SUB_WORKER_ROLES);
+
+export const WaveLeadBootV1 = z.object({
+  waveId:     z.string().min(1),
+  peerName:   z.string().min(1),
+  layers:     z.array(z.string()),
+  manifest:   z.array(SubWorkerRoleEnum),
+  started_at: z.string().datetime(),
+});
+export type WaveLeadBoot = z.infer<typeof WaveLeadBootV1>;
+
+export const WaveLeadCompleteV1 = z.object({
+  waveId:           z.string().min(1),
+  status:           z.enum(['ok', 'failed', 'partial']),
+  commits:          z.array(z.string()),
+  regression_clean: z.boolean(),
+  duration_sec:     z.number().nonnegative().optional(),
+});
+export type WaveLeadComplete = z.infer<typeof WaveLeadCompleteV1>;
+
+export const WaveTesterRedCompleteV1 = z.object({
+  waveId:        z.string().min(1),
+  test_file:     z.string().min(1),
+  failing_tests: z.number().nonnegative(),
+  ts:            z.string().datetime(),
+});
+export type WaveTesterRedComplete = z.infer<typeof WaveTesterRedCompleteV1>;
+
+export const WaveReviewFindingV1 = z.object({
+  waveId:        z.string().min(1),
+  severity:      z.enum(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']),
+  file:          z.string().min(1),
+  line:          z.number().int().nonnegative().optional(),
+  message:       z.string().min(1),
+  suggested_fix: z.string().optional(),
+});
+export type WaveReviewFinding = z.infer<typeof WaveReviewFindingV1>;
+
+export const WaveAuditFindingV1 = z.object({
+  waveId:         z.string().min(1),
+  severity:       z.enum(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']),
+  category:       z.enum(['race_condition', 'schema', 'error_handling', 'regression', 'security']),
+  file:           z.string().min(1),
+  finding:        z.string().min(1),
+  recommendation: z.string().optional(),
+});
+export type WaveAuditFinding = z.infer<typeof WaveAuditFindingV1>;
+
+export const WaveBenchMetricV1 = z.object({
+  waveId:   z.string().min(1),
+  name:     z.string().min(1),
+  value:    z.number(),
+  unit:     z.string().min(1),
+  baseline: z.number().optional(),
+});
+export type WaveBenchMetric = z.infer<typeof WaveBenchMetricV1>;
+
+export const WaveDocCompleteV1 = z.object({
+  waveId:        z.string().min(1),
+  files_updated: z.array(z.string()),
+  ts:            z.string().datetime(),
+});
+export type WaveDocComplete = z.infer<typeof WaveDocCompleteV1>;
+
+// ── Structured control schemas (L10 deliver-cmd / cmd.ack) ───────────────────
+
+export const CmdDeliverV1 = z.object({
+  targetPeerId:   z.string().min(1),
+  cmdTopic:       z.string().min(1),
+  payload:        EnvelopeV1,
+  idempotencyKey: z.string().uuid(),
+  seq:            z.number().int().nonnegative(),
+});
+export type CmdDeliver = z.infer<typeof CmdDeliverV1>;
+
+export const CmdAckV1 = z.object({
+  seq:            z.number().int().nonnegative(),
+  status:         z.enum(['executed', 'rejected', 'duplicate']),
+  correlation_id: z.string().uuid().optional(),
+});
+export type CmdAck = z.infer<typeof CmdAckV1>;
+
+// ── Typed RPC schemas (L16) ───────────────────────────────────────────────
+
+export const RpcRequestV1 = z.object({
+  requestId:    z.string().uuid(),
+  method:       z.string().min(1),
+  params:       z.record(z.unknown()).optional(),
+  callerPeerId: z.string().min(1),
+});
+export type RpcRequest = z.infer<typeof RpcRequestV1>;
+
+export const RpcResponseV1 = z.object({
+  requestId: z.string().uuid(),
+  ok:        z.boolean(),
+  result:    z.unknown().optional(),
+  error:     z.string().optional(),
+});
+export type RpcResponse = z.infer<typeof RpcResponseV1>;
+
+// ── Pipeline schemas (L11 composition) ────────────────────────────────────
+
+export const PIPELINE_STEP_STATES = ['active', 'degraded', 'closed'] as const;
+export const PipelineStepStateEnum = z.enum(PIPELINE_STEP_STATES);
+export type PipelineStepStateName = z.infer<typeof PipelineStepStateEnum>;
+
+export const PipelineStepV1 = z.object({
+  pipelineId: z.string().min(1),
+  stepId:     z.string().min(1),
+  role:       z.enum(['source', 'sink']),
+  terminalId: z.string().min(1),
+  state:      PipelineStepStateEnum,
+  ts:         z.string().datetime(),
+});
+export type PipelineStep = z.infer<typeof PipelineStepV1>;
+
 // ── Schema name → Zod schema map (for server validation and SDK use) ───────
 
 export const SCHEMA_BY_NAME: Record<string, z.ZodTypeAny> = {
@@ -216,4 +388,20 @@ export const SCHEMA_BY_NAME: Record<string, z.ZodTypeAny> = {
   'system-gate-fired-v1':          SystemGateFiredV1,
   'system-budget-warning-v1':      SystemBudgetWarningV1,
   'system-malformed-received-v1':  SystemMalformedReceivedV1,
+  'vehicle-state-v1':              VehicleStateV1,
+  'vehicle-content-v1':            VehicleContentV1,
+  'command-start-v1':              CommandStartV1,
+  'command-end-v1':                CommandEndV1,
+  'wave-lead-boot-v1':             WaveLeadBootV1,
+  'wave-lead-complete-v1':         WaveLeadCompleteV1,
+  'wave-tester-red-complete-v1':   WaveTesterRedCompleteV1,
+  'wave-review-finding-v1':        WaveReviewFindingV1,
+  'wave-audit-finding-v1':         WaveAuditFindingV1,
+  'wave-bench-metric-v1':          WaveBenchMetricV1,
+  'wave-doc-complete-v1':          WaveDocCompleteV1,
+  'cmd-deliver-v1':                CmdDeliverV1,
+  'cmd-ack-v1':                    CmdAckV1,
+  'pipeline-step-v1':              PipelineStepV1,
+  'rpc-request-v1':                RpcRequestV1,
+  'rpc-response-v1':               RpcResponseV1,
 };

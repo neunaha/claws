@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "command-start-v1",
+  "$ref": "#/definitions/command-start-v1",
+  "definitions": {
+    "command-start-v1": {
+      "type": "object",
+      "properties": {
+        "terminalId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "terminalId",
+        "command",
+        "startedAt"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

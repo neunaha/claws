@@ -8,7 +8,7 @@
 // the package.json publisher+name, copies dist/extension.js, and rsyncs the
 // native/ bundle. Reports what was updated.
 
-import { readFileSync, statSync, readdirSync, copyFileSync, mkdirSync } from 'fs';
+import { readFileSync, statSync, readdirSync, copyFileSync, mkdirSync, existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
@@ -48,6 +48,11 @@ for (const target of candidates) {
   copyFileSync(pkgJsonSrc, join(target, 'package.json'));
   const r = spawnSync('rsync', ['-a', '--delete', nativeSrc + '/', join(target, 'native') + '/'], { stdio: 'inherit' });
   if (r.status !== 0) { console.error(`[deploy-dev] rsync failed for ${target}`); process.exit(r.status ?? 1); }
+  // Copy display artifacts so VS Code Extensions panel shows title, icon, and changelog.
+  for (const artifact of ['README.md', 'CHANGELOG.md', 'icon.png']) {
+    const src = join(extRoot, artifact);
+    if (existsSync(src)) copyFileSync(src, join(target, artifact));
+  }
   console.log(`[deploy-dev] updated ${target} (version ${pkg.version})`);
   deployed++;
 }

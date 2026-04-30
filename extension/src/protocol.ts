@@ -13,6 +13,21 @@
 export const PROTOCOL_VERSION = 'claws/1';
 export const PROTOCOL_VERSION_V2 = 'claws/2';
 
+// ── Wave army protocol types ───────────────────────────────────────────────
+
+/** Sub-worker roles in the wave army protocol. */
+export type SubWorkerRole = 'lead' | 'tester' | 'reviewer' | 'auditor' | 'bench' | 'doc';
+
+/** All contracted sub-worker roles with their discipline obligations. */
+export const ContractedRoles: Record<SubWorkerRole, string> = {
+  lead:     'Implementer — owns the diff, commits, builds, PIAFEUR loop',
+  tester:   'TDD — writes red tests before impl, validates green after',
+  reviewer: 'Read-only code review — watches git diff, publishes findings',
+  auditor:  'Read-only — sweeps for race conditions, schema correctness, regression risks',
+  bench:    'Read-only — runs perf benchmarks after green, publishes metrics',
+  doc:      'Docs only — updates CHANGELOG, gap doc, templates',
+};
+
 export interface BaseRequest {
   id?: number | string;
   cmd: string;
@@ -127,6 +142,54 @@ export interface HelloRequest extends BaseRequest {
   peerName: string;
   terminalId?: string;
   capabilities?: string[];
+  /**
+   * Optional stable identity nonce. When present, the server derives a
+   * fingerprint-based peerId (`fp_` + sha256(peerName+role+nonce)[:12]).
+   * Reconnecting with the same nonce restores subscriptions and re-binds
+   * any orphaned tasks assigned to the previous connection session.
+   */
+  instanceNonce?: string;
+  /** Wave id this peer belongs to (wave army protocol). */
+  waveId?: string;
+  /** Sub-worker role within the wave (wave army protocol). */
+  subWorkerRole?: SubWorkerRole;
+  /**
+   * L18 AUTH — HMAC-SHA256 token. Required when server auth is enabled.
+   * Computed as: HMAC-SHA256(secret, `${peerName}:${role}:${nonce}:${timestamp}`).
+   */
+  token?: string;
+  /** L18 AUTH — random hex nonce. Prevents replay attacks; single-use. */
+  nonce?: string;
+  /**
+   * L18 AUTH — Unix epoch milliseconds at token creation time. The server
+   * rejects tokens older than AUTH_MAX_TOKEN_AGE_MS (5 minutes).
+   */
+  timestamp?: number;
+}
+
+/** Create a new wave, registering expected sub-worker roles and heartbeat manifest. */
+export interface WaveCreateRequest extends BaseRequest {
+  cmd: 'wave.create';
+  waveId: string;
+  /** Human-readable layers or goals this wave covers. */
+  layers: string[];
+  /** Expected sub-worker roles — server tracks heartbeats for each. */
+  manifest: SubWorkerRole[];
+}
+
+/** Mark a wave as complete. Only the LEAD should call this. */
+export interface WaveCompleteRequest extends BaseRequest {
+  cmd: 'wave.complete';
+  waveId: string;
+  summary: string;
+  commits?: string[];
+  regressionClean?: boolean;
+}
+
+/** Read-only status snapshot for a wave. */
+export interface WaveStatusRequest extends BaseRequest {
+  cmd: 'wave.status';
+  waveId: string;
 }
 
 /**
@@ -140,6 +203,21 @@ export interface PingRequest extends BaseRequest {
 export interface SubscribeRequest extends BaseRequest {
   cmd: 'subscribe';
   topic: string;
+  /**
+   * Optional cursor for catch-up replay. When present, the server will replay
+   * all matching events from this cursor before switching to live delivery.
+   * Format: "<4-digit-segment-id>:<decimal-byte-offset>" (same as publish response cursor).
+   * TODO(P1 v0.7.6): full replay not yet implemented — server accepts the field and logs a
+   * warning, then falls through to live delivery only.
+   */
+  fromCursor?: string;
+}
+
+/** Response to a subscribe command. replayedCount is populated when fromCursor replay is used. */
+export interface SubscribeResponse extends ClawsResponse {
+  ok: true;
+  subscriptionId: string;
+  replayedCount?: number;
 }
 
 /** Remove a subscription by id. */
@@ -245,6 +323,67 @@ export interface LifecycleReflectRequest extends BaseRequest {
   reflect: string;
 }
 
+/** Deliver a typed command envelope to a specific worker peer (orchestrator-only). */
+export interface DeliverCmdRequest extends BaseRequest {
+  cmd: 'deliver-cmd';
+  targetPeerId: string;
+  cmdTopic: string;
+  payload: unknown;
+  idempotencyKey: string;
+}
+
+/** Worker acknowledges receipt of a delivered command; fans out to orchestrator. */
+export interface CmdAckRequest extends BaseRequest {
+  cmd: 'cmd.ack';
+  seq: number;
+  status: 'executed' | 'rejected' | 'duplicate';
+  correlation_id?: string;
+}
+
+/**
+ * L16 TYPED-RPC — issue a typed RPC call to a target peer. The server pushes
+ * the call to `rpc.<targetPeerId>.request` and holds this request open until
+ * the target publishes to `rpc.response.<callerPeerId>.<requestId>` or the
+ * timeout fires.
+ */
+export interface RpcCallRequest extends BaseRequest {
+  cmd: 'rpc.call';
+  targetPeerId: string;
+  method: string;
+  params?: Record<string, unknown>;
+  /** Milliseconds before the caller receives a timeout error. Default: 5000. */
+  timeoutMs?: number;
+}
+
+/** L7 Schema Registry — return sorted list of all registered schema names. */
+export interface SchemaListRequest extends BaseRequest {
+  cmd: 'schema.list';
+}
+
+/** L7 Schema Registry — return a simplified JSON representation of one schema. */
+export interface SchemaGetRequest extends BaseRequest {
+  cmd: 'schema.get';
+  name: string;
+}
+
+/** Create a named pipeline connecting source vehicle output to sink vehicle input. */
+export interface PipelineCreateRequest extends BaseRequest {
+  cmd: 'pipeline.create';
+  name?: string;
+  steps: Array<{ role: 'source' | 'sink'; terminalId: string }>;
+}
+
+/** List all pipelines (active and closed). */
+export interface PipelineListRequest extends BaseRequest {
+  cmd: 'pipeline.list';
+}
+
+/** Destroy a pipeline and emit pipeline.<id>.closed event. */
+export interface PipelineCloseRequest extends BaseRequest {
+  cmd: 'pipeline.close';
+  pipelineId: string;
+}
+
 export type ClawsRequest =
   | ListRequest
   | CreateRequest
@@ -271,18 +410,46 @@ export type ClawsRequest =
   | LifecycleAdvanceRequest
   | LifecycleSnapshotRequest
   | LifecycleReflectRequest
+  | WaveCreateRequest
+  | WaveCompleteRequest
+  | WaveStatusRequest
+  | DeliverCmdRequest
+  | CmdAckRequest
+  | PipelineCreateRequest
+  | PipelineListRequest
+  | PipelineCloseRequest
+  | RpcCallRequest
+  | SchemaListRequest
+  | SchemaGetRequest
   | BaseRequest;
 
 export interface TerminalDescriptor {
   id: string;
   name: string;
   pid: number | null;
+  /**
+   * Real shell pid when the wrapped pty has spawned successfully. VS Code's
+   * `terminal.processId` returns null/-1 for Pseudoterminal-based terminals
+   * (because VS Code didn't spawn the process — we did), so we expose the
+   * underlying ptyProc/childProc pid here. Null when not wrapped or when
+   * pty.open() has not yet fired.
+   */
+  ptyPid?: number | null;
+  /**
+   * 'pty' = real pseudoterminal via node-pty (TUIs work)
+   * 'pipe' = child_process fallback when node-pty unavailable (TUIs broken)
+   * 'none' = pty.open() has not been called yet by VS Code
+   * undefined = unwrapped terminal (no pty at all)
+   */
+  ptyMode?: 'pty' | 'pipe' | 'none';
   hasShellIntegration: boolean;
   active: boolean;
   logPath: string | null;
   wrapped: boolean;
   /** 'unknown' is emitted for terminals the manager has never adopted. */
   status?: 'adopted' | 'unknown';
+  /** Current vehicle lifecycle state. Absent for unwrapped (non-pty) terminals. */
+  vehicleState?: 'PROVISIONING' | 'BOOTING' | 'READY' | 'BUSY' | 'IDLE' | 'CLOSING' | 'CLOSED';
 }
 
 export interface HistoryEvent {

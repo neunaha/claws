@@ -6,6 +6,7 @@
 // re-exported here for backward compatibility with existing callers.
 
 import * as net from 'net';
+import * as crypto from 'crypto';
 export { matchTopic } from './topic-utils';
 
 /**
@@ -22,7 +23,7 @@ export type ClawsRole = 'orchestrator' | 'worker' | 'observer';
  * the record from the registry and the subscription index.
  */
 export interface PeerConnection {
-  /** Allocated peerId, format `p_` + 6 lowercase hex chars. */
+  /** Allocated peerId, format `p_` + 6 lowercase hex chars OR `fp_` + 12 hex for fingerprinted peers. */
   peerId: string;
   /** Role as declared in the `hello` frame. */
   role: ClawsRole;
@@ -40,6 +41,27 @@ export interface PeerConnection {
   lastSeen: number;
   /** Timestamp when the `hello` was accepted. */
   connectedAt: number;
+  /**
+   * Stable 12-hex fingerprint derived from sha256(peerName+role+instanceNonce).
+   * Present only when the peer supplied `instanceNonce` in their hello frame.
+   * Used to restore subscriptions and tasks on reconnect.
+   */
+  fingerprint?: string;
+}
+
+/**
+ * Tombstone stored when a fingerprinted peer disconnects. Allows the server
+ * to restore subscriptions and re-bind orphaned tasks on reconnect.
+ */
+export interface DisconnectedPeer {
+  peerId: string;
+  fingerprint: string;
+  role: ClawsRole;
+  peerName: string;
+  capabilities: string[];
+  /** subscriptionId → topicPattern snapshot from the moment of disconnect. */
+  subscriptions: Map<string, string>;
+  disconnectedAt: number;
 }
 
 /**
@@ -53,3 +75,15 @@ export function allocPeerId(seq: number): string {
   return 'p_' + seq.toString(16).padStart(6, '0');
 }
 
+/**
+ * Derive a stable 12-hex peerId component from the peer's identity tuple.
+ * The result is the first 12 hex chars (6 bytes) of sha256(peerName+role+nonce).
+ * Callers prefix with `fp_` to produce the wire peerId: `fp_<fingerprint>`.
+ */
+export function fingerprintPeer(peerName: string, role: string, nonce: string): string {
+  return crypto
+    .createHash('sha256')
+    .update(peerName + '\x00' + role + '\x00' + nonce)
+    .digest('hex')
+    .slice(0, 12);
+}

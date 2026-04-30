@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "system-metrics-v1",
+  "$ref": "#/definitions/system-metrics-v1",
+  "definitions": {
+    "system-metrics-v1": {
+      "type": "object",
+      "properties": {
+        "publishRate_per_sec": {
+          "type": "number",
+          "minimum": 0
+        },
+        "queueDepth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "peerCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "eventLogLastSeq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "uptimeMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "publishRate_per_sec",
+        "queueDepth",
+        "peerCount",
+        "eventLogLastSeq",
+        "uptimeMs",
+        "ts"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

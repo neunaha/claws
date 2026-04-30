@@ -21,9 +21,11 @@ const os   = require('os');
 const { pathToFileURL } = require('url');
 
 const DEFAULT_CLAWS_BIN = __dirname;
-const CLAWS_BIN = (process.argv[2] && !process.argv[2].startsWith('--'))
-  ? process.argv[2]
-  : DEFAULT_CLAWS_BIN;
+const CLAWS_BIN = path.resolve(
+  (process.argv[2] && !process.argv[2].startsWith('--'))
+    ? process.argv[2]
+    : DEFAULT_CLAWS_BIN
+);
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const REMOVE  = process.argv.includes('--remove');

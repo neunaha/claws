@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wave-lead-boot-v1",
+  "$ref": "#/definitions/wave-lead-boot-v1",
+  "definitions": {
+    "wave-lead-boot-v1": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "peerName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "layers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "manifest": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "lead",
+              "tester",
+              "reviewer",
+              "auditor",
+              "bench",
+              "doc"
+            ]
+          }
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "waveId",
+        "peerName",
+        "layers",
+        "manifest",
+        "started_at"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

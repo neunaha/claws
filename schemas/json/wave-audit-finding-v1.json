@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wave-audit-finding-v1",
+  "$ref": "#/definitions/wave-audit-finding-v1",
+  "definitions": {
+    "wave-audit-finding-v1": {
+      "type": "object",
+      "properties": {
+        "waveId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW"
+          ]
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "race_condition",
+            "schema",
+            "error_handling",
+            "regression",
+            "security"
+          ]
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "finding": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recommendation": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "waveId",
+        "severity",
+        "category",
+        "file",
+        "finding"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

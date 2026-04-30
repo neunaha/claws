@@ -1,0 +1,106 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "cmd-deliver-v1",
+  "$ref": "#/definitions/cmd-deliver-v1",
+  "definitions": {
+    "cmd-deliver-v1": {
+      "type": "object",
+      "properties": {
+        "targetPeerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cmdTopic": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "parent_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "from_peer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "from_name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "terminal_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ts_published": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "ts_server": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "sequence": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "data": {}
+          },
+          "required": [
+            "v",
+            "id",
+            "from_peer",
+            "from_name",
+            "ts_published",
+            "schema"
+          ],
+          "additionalProperties": false
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "targetPeerId",
+        "cmdTopic",
+        "payload",
+        "idempotencyKey",
+        "seq"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

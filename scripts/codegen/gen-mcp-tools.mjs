@@ -47,6 +47,22 @@ const DESC = {
     'Read the current server-side lifecycle state without changing it. Returns null when no PLAN has been logged yet. Use this to check what phase you are in before sending lifecycle commands.',
   claws_lifecycle_reflect:
     'Terminal lifecycle transition: advance to REFLECT and persist your retrospective text. Call this after CLEANUP when all workers are closed and you have assessed the session. The REFLECT phase is terminal — no further transitions are allowed.',
+  claws_wave_create:
+    "Register a new wave on the server, initialising heartbeat tracking for each expected sub-worker role. Call this as LEAD immediately after hello. waveId should be a stable human-readable slug (e.g. 'embedder-v1'). The server fires a 25s violation timer per sub-worker that resets on each heartbeat.",
+  claws_wave_status:
+    'Fetch a live snapshot of the wave: sub-worker heartbeat timestamps, completion flags, and wave-level complete/summary fields. Use this to monitor progress or diagnose silent sub-workers.',
+  claws_wave_complete:
+    'Mark the wave as complete on the server. Clears all sub-worker violation timers. Call this after every sub-worker has published its complete event and the LEAD has committed, built, and run the full test suite. Only the peer that created the wave (LEAD) may call this.',
+  claws_deliver_cmd:
+    "Deliver a typed command envelope to a specific worker peer over the pub/sub bus. The server validates the payload against the declared schema, allocates a monotonic sequence number, and pushes the command to the worker's auto-subscription. Use idempotencyKey (a UUID) to make retries safe — duplicate keys return {ok:true, duplicate:true} without re-delivering.",
+  claws_cmd_ack:
+    'Acknowledge receipt and execution of a delivered command (worker-only). The server fans out a cmd.<workerPeerId>.ack event to all orchestrator subscribers. status must be one of: executed, rejected, duplicate.',
+  claws_schema_list:
+    'Return a sorted list of all Zod schema names registered in the Claws schema registry. Use this to discover which schemas are available before calling claws_schema_get.',
+  claws_schema_get:
+    "Return a simplified JSON representation of one registered Zod schema by name (e.g. 'worker-boot-v1', 'rpc-request-v1'). Use claws_schema_list to discover valid names.",
+  claws_rpc_call:
+    'Issue a typed RPC call to a target peer. The server routes the call to rpc.<targetPeerId>.request and waits for the worker to publish a response to rpc.response.<callerPeerId>.<requestId>. Returns the result or a timeout error.',
 };
 
 export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
@@ -154,6 +170,49 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
 
     tool('claws_lifecycle_reflect', z.object({
       reflect: z.string().describe('Retrospective text: what succeeded, what failed, what to improve next time.'),
+    })),
+
+    tool('claws_wave_create', z.object({
+      waveId:   z.string().describe("Stable human-readable wave identifier (e.g. 'embedder-v1', 'bus-hardening-r2')."),
+      layers:   z.array(z.string()).describe("Human-readable layer or goal labels this wave covers (e.g. ['L1-schemas', 'L2-handlers']).").optional(),
+      manifest: z.array(z.enum(['lead', 'tester', 'reviewer', 'auditor', 'bench', 'doc'])).describe('Expected sub-worker roles. One violation timer is started per role.'),
+    })),
+
+    tool('claws_wave_status', z.object({
+      waveId: z.string().describe('Wave identifier to inspect.'),
+    })),
+
+    tool('claws_wave_complete', z.object({
+      waveId:          z.string().describe('Wave identifier to complete.'),
+      summary:         z.string().describe('One-paragraph retrospective: what shipped, test result, any regressions.'),
+      commits:         z.array(z.string()).describe('Git commit SHAs produced during this wave.').optional(),
+      regressionClean: z.boolean().describe('True if the full test suite passed with no regressions after the wave\'s changes.').optional(),
+    })),
+
+    tool('claws_deliver_cmd', z.object({
+      targetPeerId:   z.string().describe('peerId of the worker to receive the command.'),
+      cmdTopic:       z.string().describe('Full topic the server will push on (e.g. cmd.p_000002.abort).'),
+      payload:        z.record(z.unknown()).describe('EnvelopeV1 payload: {v:1, id:uuid, schema:string, from_peer, from_name, ts_published, data}.'),
+      idempotencyKey: z.string().uuid().describe('Client-generated UUID. Duplicate keys return {ok:true, duplicate:true} without re-delivering.'),
+    })),
+
+    tool('claws_cmd_ack', z.object({
+      seq:            z.number().int().nonnegative().describe('Sequence number from the deliver-cmd response.'),
+      status:         z.enum(['executed', 'rejected', 'duplicate']).describe('Execution outcome reported by the worker.'),
+      correlation_id: z.string().uuid().describe('Optional UUID carried through for orchestrator correlation.').optional(),
+    })),
+
+    tool('claws_schema_list', z.object({})),
+
+    tool('claws_schema_get', z.object({
+      name: z.string().describe("Schema name as returned by claws_schema_list (e.g. 'worker-boot-v1')."),
+    })),
+
+    tool('claws_rpc_call', z.object({
+      targetPeerId: z.string().describe('peerId of the peer to call.'),
+      method:       z.string().describe("RPC method name (e.g. 'introspect', 'status')."),
+      params:       z.record(z.unknown()).describe('Optional method parameters.').optional(),
+      timeoutMs:    z.number().int().min(100).max(30000).describe('Milliseconds before the call times out. Default: 5000.').optional(),
     })),
   ];
 
