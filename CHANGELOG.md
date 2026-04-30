@@ -5,6 +5,31 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.7] - 2026-04-30 — Development Discipline Hooks
+
+### Added
+
+- **Five dev-hook scripts** in `scripts/dev-hooks/`: `check-stale-main`, `check-tag-pushed`, `check-tag-vs-main`, `check-open-claws-terminals`, `check-extension-dirs` — each exits 0 (warn-only, never blocks), logs to `/tmp/claws-dev-hooks.log`.
+- **`scripts/inject-dev-hooks.js`** — idempotent safe-merge hook registration; tags all entries with `_source:"claws-dev-hooks"` for clean removal; skips re-registration if hook already present.
+- **`install.sh` and `update.sh`** — now deploy dev hooks to `<project>/.claws-bin/dev-hooks/` and register them via `inject-dev-hooks.js` on both fresh install and update paths.
+- **`scripts/shell-hook.sh` runtime version** — banner version is now read at runtime from `CLAWS_VERSION` env var or nearest `package.json` (walks up from CWD); no more hardcoded `v0.x.y` that drifts across releases. Banner also detects pipe-mode (non-interactive) and suppresses the command list in that context.
+- **`templates/CLAUDE.project.md`** — new "Development Discipline (enforced by hooks)" section with 7 best-practice bullets covering stale-main pulls, semver compliance, extension-dir safety, CLAUDE.md re-injection, pre-PR drift check, tag discipline, and Claws terminal policy.
+- **WaveRegistry lifecycle hardening** — wave lifecycle state machine enforces valid transitions (PLANNED→RUNNING→COMPLETE/FAILED); stale wave entries GC'd after configurable TTL; `claws_wave_status` now returns `phase` + `elapsedMs`.
+- **Army-style nested wave harvest** (`extension/src/wave-registry.ts`, `server.ts`) — `WaveRecord` gains `parentWave?`, `subWorkerTerminals[]`, `harvestedAt?`, `orphanedTerminals[]`; `WaveRegistry.trackTerminal()` records TIDs spawned by wave-affiliated peers; `harvestWave()` returns orphaned TIDs for auto-close on `wave.complete`; lead-silence violation timer fires `wave.<id>.violation {kind:"silent_lead_with_active_subs"}` when LEAD goes quiet with active sub-worker terminals.
+- **`WaveHarvestedV1` schema** (`event-schemas.ts`) — typed schema for `wave.*.harvested` events; registered in `SCHEMA_BY_NAME` and `TOPIC_REGISTRY`.
+- **`claws_wave_status` nested tree** (`mcp_server.js`) — response now includes `lead: {peerId, peerName, terminalId, status, lastSeenMs}` and `subWorkers[].terminalId`; `subWorkerTerminals` flat array exposed.
+- **`PeerConnection`** (`peer-registry.ts`) — gains `waveId?` and `subWorkerRole?` to persist wave affiliation from `hello` across subsequent commands.
+
+### Fixed (carries all v0.7.6.1 patch fixes)
+
+- **P0-1** `mcp_server.js` — `claws_worker` circuit breaker: skips reconnect if last failure < 30 s ago; `_scanAndPublishCLAWSPUB` trips `scanDisabled` after 3 consecutive socket errors; default `timeout_ms` reduced 1 800 000 → 300 000 ms.
+- **P0-2** `extension/src/server.ts` — orchestrator peers exempt from per-peer publish rate limit; no self-deadlock during high-volume waves.
+- **P1-1** `extension/src/server-config.ts` — `DEFAULT_STRICT_EVENT_VALIDATION` flipped `false` → `true`; W4 validation active by default.
+- **P1-2** `mcp_server.js` — `_eventBuffer.maxWaiters=10` cap; excess `wait_ms` requests return error immediately; `system.bus.ring-overflow` event emitted once per eviction batch.
+- **P1-5/P1-6** `scripts/install.sh` — deploy blocks for `claws-wave-lead`, `claws-wave-subworker`, `dev-protocol-piafeur` skills.
+- **P1-7** `schemas/mcp-tools.json` + `mcp_server.js` — all 5 `claws_task_*` tools (`claws_task_assign`, `claws_task_update`, `claws_task_complete`, `claws_task_cancel`, `claws_task_list`) registered in schemas and MCP handlers.
+- **P1-8** `scripts/shell-hook.sh` — banner version no longer drifts across releases (see Added above).
+
 ## [0.7.6.1] - 2026-04-30 — Bug-fix patch (8 P0/P1 code + 2 hot-fixes)
 
 ### Fixed
