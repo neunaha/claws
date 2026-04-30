@@ -834,6 +834,8 @@ else
     if [ -d "$INSTALL_DIR/schemas" ]; then
       mkdir -p "$PROJECT_ROOT/.claws-bin/schemas/json" "$PROJECT_ROOT/.claws-bin/schemas/types"
       cp "$INSTALL_DIR/schemas/mcp-tools.json" "$PROJECT_ROOT/.claws-bin/schemas/" 2>/dev/null || true
+      # P3-1: deploy client-types.d.ts for typed SDK consumers
+      cp "$INSTALL_DIR/schemas/client-types.d.ts" "$PROJECT_ROOT/.claws-bin/schemas/" 2>/dev/null || true
       cp "$INSTALL_DIR"/schemas/json/*.json "$PROJECT_ROOT/.claws-bin/schemas/json/" 2>/dev/null || true
       cp "$INSTALL_DIR"/schemas/types/*.d.ts "$PROJECT_ROOT/.claws-bin/schemas/types/" 2>/dev/null || true
     fi
@@ -841,6 +843,8 @@ else
     if [ -f "$INSTALL_DIR/claws-sdk.js" ]; then
       cp "$INSTALL_DIR/claws-sdk.js" "$PROJECT_ROOT/.claws-bin/claws-sdk.js"
       chmod +x "$PROJECT_ROOT/.claws-bin/claws-sdk.js" 2>/dev/null || true
+    else
+      warn "claws-sdk.js not found in $INSTALL_DIR — SDK helpers unavailable (P3-3)"
     fi
     cp "$INSTALL_DIR/scripts/shell-hook.sh" "$PROJECT_ROOT/.claws-bin/shell-hook.sh"
     # Copy event-streaming sidecar (v0.6.2+) so Bash run_in_background + Monitor can stream pub/sub frames
@@ -1133,26 +1137,19 @@ CLAWSCMD
   [ -f "$INSTALL_DIR/rules/claws-default-behavior.md" ] \
     && cp "$INSTALL_DIR/rules/claws-default-behavior.md" "$TARGET/.claude/rules/" || true
 
-  if [ -d "$INSTALL_DIR/.claude/skills/claws-orchestration-engine" ]; then
-    rm -rf "$TARGET/.claude/skills/claws-orchestration-engine" 2>/dev/null || true
-    cp -r "$INSTALL_DIR/.claude/skills/claws-orchestration-engine" "$TARGET/.claude/skills/"
-  fi
+  # P3-2: glob all claws-* and dev-protocol-* skills so new skills are picked up
+  # without editing this script. prompt-templates is renamed to claws-prompt-templates.
+  for _skill_src in "$INSTALL_DIR/.claude/skills"/claws-* "$INSTALL_DIR/.claude/skills"/dev-protocol-*; do
+    [ -d "$_skill_src" ] || continue
+    _skill_name="$(basename "$_skill_src")"
+    rm -rf "$TARGET/.claude/skills/$_skill_name" 2>/dev/null || true
+    cp -r "$_skill_src" "$TARGET/.claude/skills/$_skill_name"
+  done
   if [ -d "$INSTALL_DIR/.claude/skills/prompt-templates" ]; then
     rm -rf "$TARGET/.claude/skills/claws-prompt-templates" 2>/dev/null || true
     cp -r "$INSTALL_DIR/.claude/skills/prompt-templates" "$TARGET/.claude/skills/claws-prompt-templates"
   fi
-  if [ -d "$INSTALL_DIR/.claude/skills/claws-wave-lead" ]; then
-    rm -rf "$TARGET/.claude/skills/claws-wave-lead" 2>/dev/null || true
-    cp -r "$INSTALL_DIR/.claude/skills/claws-wave-lead" "$TARGET/.claude/skills/"
-  fi
-  if [ -d "$INSTALL_DIR/.claude/skills/claws-wave-subworker" ]; then
-    rm -rf "$TARGET/.claude/skills/claws-wave-subworker" 2>/dev/null || true
-    cp -r "$INSTALL_DIR/.claude/skills/claws-wave-subworker" "$TARGET/.claude/skills/"
-  fi
-  if [ -d "$INSTALL_DIR/.claude/skills/dev-protocol-piafeur" ]; then
-    rm -rf "$TARGET/.claude/skills/dev-protocol-piafeur" 2>/dev/null || true
-    cp -r "$INSTALL_DIR/.claude/skills/dev-protocol-piafeur" "$TARGET/.claude/skills/"
-  fi
+  unset _skill_src _skill_name
 
   # CLAUDE.md injection (project scope only — never inside $HOME)
   # M-21: GIT_PULL_OK=0 means git pull failed in update.sh — skip re-injection to
