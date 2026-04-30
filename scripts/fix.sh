@@ -410,7 +410,31 @@ mcp.stdin.write(req + "\n");
     ok "MCP server responds (initialize OK)"
   else
     fail "MCP server failed to respond: ${HANDSHAKE:0:200}"
-    ISSUES=$((ISSUES+1))
+    fix "refreshing mcp_server.js from $INSTALL_DIR and re-probing"
+    if cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js" 2>/dev/null; then
+      chmod +x "$PROJECT_ROOT/.claws-bin/mcp_server.js" 2>/dev/null || true
+      HANDSHAKE2=$(node --no-deprecation -e '
+const { spawn } = require("child_process");
+const mcp = spawn("node", [process.argv[1]], { stdio: ["pipe", "pipe", "ignore"] });
+const req = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "claws-fix", version: "1" } } });
+let buf = "";
+const done = (c, o) => { try { mcp.kill(); } catch {} process.stdout.write(o); process.exit(c); };
+const timer = setTimeout(() => done(1, "TIMEOUT"), 4000);
+mcp.stdout.on("data", d => { buf += d.toString("utf8"); if (buf.includes("claws")) { clearTimeout(timer); done(0, buf.slice(0, 200)); } });
+mcp.on("error", e => { clearTimeout(timer); done(1, "SPAWN_ERROR: " + e.message); });
+mcp.stdin.write(req + "\n");
+' "$PROJECT_ROOT/.claws-bin/mcp_server.js" 2>&1 || echo "FAILED")
+      if echo "$HANDSHAKE2" | grep -q "claws"; then
+        ok "MCP server responds after refresh"
+        FIXED=$((FIXED+1))
+      else
+        fail "MCP server still unresponsive after refresh: ${HANDSHAKE2:0:200}"
+        ISSUES=$((ISSUES+1))
+      fi
+    else
+      fail "could not copy mcp_server.js from $INSTALL_DIR — check permissions"
+      ISSUES=$((ISSUES+1))
+    fi
   fi
 else
   fail "node or $MCP_PATH missing"
