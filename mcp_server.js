@@ -162,6 +162,14 @@ const _eventBuffer = {
 
 let _pconnConnecting = null; // Promise | null — guards concurrent connect attempts
 
+// Circuit breaker for _pconnEnsureRegistered and _scanAndPublishCLAWSPUB.
+// Prevents repeated expensive reconnect attempts when the extension socket is down.
+const _circuitBreaker = {
+  lastFailureTs: 0,       // epoch ms of most recent connect failure
+  scanConsecutiveErrors: 0, // consecutive _scanAndPublishCLAWSPUB socket failures
+  scanDisabled: false,    // true after 3 consecutive scan errors; reset on explicit reconnect
+};
+
 function _pconnHandleData(data) {
   _pconn.buf += data.toString('utf8');
   let nl;
@@ -352,6 +360,8 @@ function findMarkerLine(text, marker) {
 // Grammar:  [CLAWS_PUB] topic=<topic> key1=val key2="quoted val" key3=42
 // Values:   "..." → string  |  true/false → boolean  |  digits → number
 async function _scanAndPublishCLAWSPUB(newText, sockPath) {
+  // Circuit breaker: if 3 consecutive socket errors, stop scanning until reconnect.
+  if (_circuitBreaker.scanDisabled) return;
   const MARKER_RE = /^\[CLAWS_PUB\]\s+topic=(\S+)\s*(.*)?$/;
   const KV_RE = /(\w+)=("([^"]*)"|(\S+))/g;
   for (const line of newText.split('\n')) {
@@ -373,15 +383,22 @@ async function _scanAndPublishCLAWSPUB(newText, sockPath) {
     try {
       await _pconnEnsureRegistered(sockPath);
       await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic, payload });
+      _circuitBreaker.scanConsecutiveErrors = 0;
     } catch (e) {
+      _circuitBreaker.scanConsecutiveErrors++;
       log('[CLAWS_PUB] publish failed topic=' + topic + ': ' + (e && e.message || e));
+      if (_circuitBreaker.scanConsecutiveErrors >= 3) {
+        _circuitBreaker.scanDisabled = true;
+        log('[CLAWS_PUB] circuit breaker tripped after 3 consecutive socket errors — scan disabled until reconnect');
+        return;
+      }
     }
   }
 }
 
 async function runBlockingWorker(sock, args) {
   const DEFAULTS = {
-    timeout_ms: 30 * 60 * 1000,
+    timeout_ms: 5 * 60 * 1000,
     boot_wait_ms: 8000,
     boot_marker: 'Claude Code',
     complete_marker: 'MISSION_COMPLETE',
@@ -542,7 +559,20 @@ async function runBlockingWorker(sock, args) {
 // If not yet registered, sends hello with role=orchestrator, peerName=mcp-orchestrator.
 // Called once per process lifetime in practice (peerId cached on _pconn).
 async function _pconnEnsureRegistered(sockPath) {
-  await _pconnEnsure(sockPath);
+  // 30s failure cache: skip reconnect attempt entirely if we failed recently.
+  if (!_pconn.connected && _circuitBreaker.lastFailureTs > 0) {
+    if (Date.now() - _circuitBreaker.lastFailureTs < 30_000) {
+      throw new Error('circuit-breaker: last connect failed < 30s ago, skipping');
+    }
+  }
+  try {
+    await _pconnEnsure(sockPath);
+  } catch (err) {
+    _circuitBreaker.lastFailureTs = Date.now();
+    throw err;
+  }
+  // Reset failure timestamp on successful connect.
+  _circuitBreaker.lastFailureTs = 0;
   if (!_pconn.peerId) {
     const hr = await _pconnWrite({
       cmd: 'hello', protocol: 'claws/2',
@@ -552,6 +582,9 @@ async function _pconnEnsureRegistered(sockPath) {
       _pconn.peerId = hr.peerId;
       _pconn.role = 'orchestrator';
       _pconn.peerName = 'mcp-orchestrator';
+      // Re-enable scan if it was disabled — explicit reconnect counts as resume.
+      _circuitBreaker.scanDisabled = false;
+      _circuitBreaker.scanConsecutiveErrors = 0;
       log('auto-registered as peer ' + hr.peerId + ' role=orchestrator');
     }
   }

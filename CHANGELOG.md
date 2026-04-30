@@ -5,6 +5,20 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6.1] - 2026-04-30 — Bug-fix patch (8 P0/P1 code + 2 hot-fixes)
+
+### Fixed
+
+- **P0-1/P2-3** `mcp_server.js` — circuit breaker: `_pconnEnsureRegistered` skips reconnect if last failure < 30s ago; `_scanAndPublishCLAWSPUB` trips `scanDisabled` after 3 consecutive socket errors, resumes on explicit reconnect; default `timeout_ms` reduced 1,800,000 → 300,000 ms (5 min).
+- **P0-2** `extension/src/server.ts` — orchestrator peers exempt from per-peer publish rate limit; orchestrator management commands can no longer be self-rate-limited during high-volume waves.
+- **P1-1** `extension/src/server-config.ts` — `strictEventValidation` default flipped `false` → `true`; unregistered topics pass through unchecked, registered-schema topics are now validated by default.
+- **P1-2** `mcp_server.js` — `_eventBuffer` drain waiters capped at 10; excess `wait_ms` requests rejected immediately; `system.bus.ring-overflow` event emitted once per eviction batch.
+- **P1-5/P1-6** `scripts/install.sh` — copy blocks added for `claws-wave-lead`, `claws-wave-subworker`, `dev-protocol-piafeur` skills and `claws-wave-lead.md`, `claws-army.md` commands; `claws-update` on existing projects now picks up these assets.
+- **P1-7** `schemas/mcp-tools.json` — added `claws_task_assign`, `claws_task_update`, `claws_task_complete`, `claws_task_cancel`, `claws_task_list` tool definitions; `claws_schema_get` no longer returns not-found for these 5 tools.
+- **P1-8** `scripts/shell-hook.sh:66` — banner version updated `v0.6.1` → `v0.7.6`.
+- **HOT-FIX A** — ran `inject-claude-md.js` against `/Users/ANISH.NEUNAHA/Desktop/Claws`; `CLAWS:BEGIN` block now present.
+- **HOT-FIX B** — removed stale `~/.vscode/extensions/neunaha.claws-0.7.4/` and `neunaha.claws-0.7.5/`; only `neunaha.claws-0.7.6` remains.
+
 ## [0.7.6] - 2026-04-30 — Claws TCP — full architectural release (10 waves + embedder)
 
 ### Fixed — Ship restoration
