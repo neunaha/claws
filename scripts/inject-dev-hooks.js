@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // inject-dev-hooks.js — Register Claws dev-discipline hooks into a project's
 // .claude/settings.json. Idempotent: detects existing hooks by _source tag
-// and updates in place. Safe-merge: never overwrites existing non-Claws hooks.
+// and updates in place. Safe-merge: uses json-safe.mjs mergeIntoFile —
+// atomic write, JSONC-tolerant, abort-on-malformed (FINDING-B-3).
 //
 // Claude Code settings.json hooks format:
 //   { hooks: { SessionStart: [{matcher, hooks:[{type,command}], _source}], ... } }
@@ -11,8 +12,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const SOURCE_TAG = 'claws-dev-hooks';
+
+const HELPERS_MJS = pathToFileURL(
+  path.resolve(__dirname, '_helpers', 'json-safe.mjs')
+).href;
 
 // Five dev-hook definitions — event → script file in .claws-bin/dev-hooks/
 const DEV_HOOK_DEFS = [
@@ -31,57 +37,46 @@ function buildEntry(def, binDir) {
   };
 }
 
-function readSettings(settingsPath) {
-  try {
-    return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-  } catch (_) {
-    return {};
-  }
-}
-
-function writeSettings(settingsPath, obj) {
-  const dir = path.dirname(settingsPath);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(settingsPath, JSON.stringify(obj, null, 2) + '\n', 'utf8');
-}
-
-function inject(projectRoot) {
+async function inject(projectRoot) {
+  const { mergeIntoFile } = await import(HELPERS_MJS);
   const settingsPath = path.join(projectRoot, '.claude', 'settings.json');
   const binDir = path.join(projectRoot, '.claws-bin', 'dev-hooks');
-  const settings = readSettings(settingsPath);
-
-  if (!settings.hooks || typeof settings.hooks !== 'object' || Array.isArray(settings.hooks)) {
-    settings.hooks = {};
-  }
 
   let totalRegistered = 0;
-
-  for (const def of DEV_HOOK_DEFS) {
-    const eventKey = def.event;
-    if (!Array.isArray(settings.hooks[eventKey])) {
-      settings.hooks[eventKey] = [];
+  const result = await mergeIntoFile(settingsPath, (settings) => {
+    // Migrate legacy array format (same guard as inject-settings-hooks.js)
+    if (!settings.hooks || typeof settings.hooks !== 'object' || Array.isArray(settings.hooks)) {
+      settings.hooks = {};
     }
-    const arr = settings.hooks[eventKey];
 
-    // Remove stale claws-dev-hooks entry for this exact script (idempotent update)
-    const newCommand = `node "${path.join(binDir, def.script)}"`;
-    const idx = arr.findIndex(
-      (e) => e._source === SOURCE_TAG && e.hooks && e.hooks[0] && e.hooks[0].command === newCommand
-    );
-
-    if (idx === -1) {
-      // Also remove any old entry for this script path (from a different binDir)
-      const oldIdx = arr.findIndex(
-        (e) => e._source === SOURCE_TAG && e.hooks && e.hooks[0] &&
-               e.hooks[0].command.includes(def.script)
+    for (const def of DEV_HOOK_DEFS) {
+      if (!Array.isArray(settings.hooks[def.event])) {
+        settings.hooks[def.event] = [];
+      }
+      const arr = settings.hooks[def.event];
+      const newCmd = `node "${path.join(binDir, def.script)}"`;
+      const exactIdx = arr.findIndex(
+        (e) => e._source === SOURCE_TAG && e.hooks && e.hooks[0] && e.hooks[0].command === newCmd
       );
-      if (oldIdx !== -1) arr.splice(oldIdx, 1);
-      arr.push(buildEntry(def, binDir));
+      if (exactIdx === -1) {
+        // Also remove any old entry for this script path (from a different binDir)
+        const oldIdx = arr.findIndex(
+          (e) => e._source === SOURCE_TAG && e.hooks && e.hooks[0] &&
+                 e.hooks[0].command.includes(def.script)
+        );
+        if (oldIdx !== -1) arr[oldIdx] = buildEntry(def, binDir);
+        else arr.push(buildEntry(def, binDir));
+      }
+      totalRegistered++;
     }
-    totalRegistered++;
-  }
+  }, { allowJsonc: true });
 
-  writeSettings(settingsPath, settings);
+  if (!result.ok) {
+    const e = result.error;
+    process.stderr.write(`inject-dev-hooks: settings merge failed: ${e.message}\n`);
+    if (e.backupSavedAt) process.stderr.write(`  original backed up to: ${e.backupSavedAt}\n`);
+    process.exit(1);
+  }
   return totalRegistered;
 }
 
@@ -92,10 +87,10 @@ if (!fs.existsSync(projectRoot)) {
   process.exit(1);
 }
 
-try {
-  const count = inject(projectRoot);
+(async () => {
+  const count = await inject(projectRoot);
   console.log(`  inject-dev-hooks: ${count} hooks ready (_source: "${SOURCE_TAG}")`);
-} catch (e) {
+})().catch((e) => {
   console.error(`inject-dev-hooks failed: ${e.message}`);
   process.exit(1);
-}
+});
