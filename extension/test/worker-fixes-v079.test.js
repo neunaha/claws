@@ -141,6 +141,18 @@ check(
   /settleIndicator/.test(MCP),
 );
 
+// claws_fleet must NOT pass undefined keys through to runBlockingWorker.
+// The original implementation wrote `{ cwd: args.cwd, model: args.model, ... }`
+// unconditionally; when the caller omitted a key, the spread propagated
+// `undefined` and clobbered the runBlockingWorker DEFAULTS — the launch line
+// became `claude --model undefined`, breaking the spawn and leaving the
+// orchestrator blocked on a hung worker.
+check(
+  'claws_fleet sharedDefaults filters undefined keys (no --model undefined regression)',
+  /const\s+sharedDefaults\s*=\s*\{\s*\}/.test(MCP) &&
+  /if\s*\(\s*args\[k\]\s*!==\s*undefined\s*\)\s*sharedDefaults\[k\]\s*=\s*args\[k\]/.test(MCP),
+);
+
 // ─── Final report ────────────────────────────────────────────────────────────
 
 let pass = 0;

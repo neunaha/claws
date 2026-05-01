@@ -973,15 +973,26 @@ async function handleTool(name, args) {
     if (fleetWorkers.length === 0) {
       return toolError('ERROR: workers must be a non-empty array of worker configs');
     }
-    const sharedDefaults = {
-      cwd: args.cwd, model: args.model,
-      timeout_ms: args.timeout_ms, boot_wait_ms: args.boot_wait_ms,
-      poll_interval_ms: args.poll_interval_ms, harvest_lines: args.harvest_lines,
-      close_on_complete: args.close_on_complete,
-    };
+    // Build sharedDefaults by INCLUDING ONLY the keys the caller actually set.
+    // The previous implementation always wrote `model: args.model` etc. — when
+    // the caller omitted model, that wrote `model: undefined` into the merged
+    // worker args, which then overrode runBlockingWorker's DEFAULTS via spread
+    // (because `{...DEFAULTS, model: undefined}` clobbers the default). The
+    // worker's launch line became `claude --model undefined`, breaking the spawn.
+    const sharedDefaults = {};
+    for (const k of ['cwd', 'model', 'timeout_ms', 'boot_wait_ms', 'poll_interval_ms', 'harvest_lines', 'close_on_complete']) {
+      if (args[k] !== undefined) sharedDefaults[k] = args[k];
+    }
     const fleetStartedAt = Date.now();
     const results = await Promise.all(
-      fleetWorkers.map((w) => runBlockingWorker(sock, { ...sharedDefaults, ...w })),
+      fleetWorkers.map((w) => {
+        // Same defensive filter for per-worker overrides.
+        const wClean = {};
+        for (const [k, v] of Object.entries(w)) {
+          if (v !== undefined) wClean[k] = v;
+        }
+        return runBlockingWorker(sock, { ...sharedDefaults, ...wClean });
+      }),
     );
     const summary = {
       fleet_size: results.length,

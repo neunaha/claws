@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 v0.7.10 deletes the two new abstractions v0.7.9 introduced (file-referrer mission delivery and boot retry) and returns to the v0.7.4 contract: **the mission text becomes Claude Code's input as if a human typed it.** No /tmp file. No "Read /tmp/.../mission.md and follow it precisely." prompt. The v0.7.9 marker false-match is still fixed, but via a much simpler mechanism: capture the pty scan offset *after* the payload + echo settle, so the user's mission text never re-matches the completion marker.
 
+### Fixed — claws_fleet sharedDefaults undefined-key bug
+
+The first claws_fleet implementation wrote `sharedDefaults = { cwd: args.cwd, model: args.model, ... }` unconditionally — when the caller omitted any of those keys, the spread `{ ...sharedDefaults, ...w }` propagated `undefined` values into `runBlockingWorker`. Inside, `{ ...DEFAULTS, ...args }` let the undefined clobber the model default, producing a launch line of `claude --dangerously-skip-permissions --model undefined` that broke the spawn and left workers hanging at `pid=-1`. Fix: build `sharedDefaults` by INCLUDING ONLY keys the caller actually set. Same defensive filter for per-worker overrides via `wClean`. Regression test added.
+
 ### Removed (rolled back from v0.7.9)
 
 - **File-referrer pattern.** No mission file in `/tmp`. No `runToken`. No `fileNonce`. No `mission_file` / `run_token` worker return-value fields. Mission goes directly to Claude Code's input prompt.
