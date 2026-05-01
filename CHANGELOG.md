@@ -21,6 +21,18 @@ v0.7.10 deletes the two new abstractions v0.7.9 introduced (file-referrer missio
 - **`scripts/install.sh` skill-loop self-collision guard** — `-ef` (same-inode) test prevents the loop from `rm`-ing the source when `TARGET == INSTALL_DIR` on dev machines.
 - **`scripts/install.sh` uncommitted-work guard** — Step 1's `git reset --hard origin/main` refuses to run on a dirty tree unless `CLAWS_FORCE_RESET=1` is set, so contributor edits are no longer silently destroyed.
 
+### Added — `claws_fleet` (real parallel orchestration)
+
+`claws_fleet({ workers: [{name, mission, …}] })` is the new MCP tool for true parallel worker fan-out. Internally calls `runBlockingWorker` for each entry inside `Promise.all`, so all workers spawn and run concurrently within a **single MCP tool/call**. This bypasses Claude Code's MCP client-side serialization (which awaits each tool/call response before sending the next) — calling `claws_worker` N times from one assistant message still serializes, but `claws_fleet` returns one consolidated result with `wall_clock_ms`, `max_individual_ms`, `sum_individual_ms`, and per-worker results. Tool count grows 36 → 37.
+
+### Fixed — bulletproof marker scan offset
+
+`runBlockingWorker`'s `markerScanFrom` capture replaced the timing-fragile 400ms fixed sleep with a **poll-for-settle loop** (up to 5s): waits until either the pty buffer grows by 200+ bytes past pre-send length OR a TUI indicator appears (`Pasted text`, `tokens`, `thinking`, `Synthesizing`, `Combobulating`, `Brewed`, etc.), then captures the offset. Eliminates the false-completion that hit `para-auditor` in the v0.7.10 parallel test, where Claude Code v2.x delayed the input echo past the 400ms window and the marker substring in the mission body false-matched on echo.
+
+### Added — `docs/mcp-tools-guide.md` (calibration matrix)
+
+Comprehensive when-to-use-which guide for all 37 MCP tools. TL;DR decision matrix, mission-style cookbook (single / fleet / wave army), lifecycle gates table, anti-patterns, and the concurrent-dispatch caveats explaining why `claws_fleet` exists.
+
 ### Fixed — MCP main-loop concurrent dispatch (the critical fan-out fix)
 
 `mcp_server.js:1304` — the MCP `tools/call` branch used to `await handleTool(...)` inside the main `while (true)` loop. That made the loop **strictly serial**: every tool call blocked the next message read. When `claws_worker` sat in its poll loop for up to `timeout_ms`, the next tool call couldn't even start until the first either matched its marker or timed out. Three "parallel" `claws_worker` calls actually queued up sequentially — fan-out and wave-army patterns were broken.

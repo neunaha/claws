@@ -52,8 +52,8 @@ check(
   'markerScanFrom is captured AFTER the payload send (so the mission echo is excluded from the scan)',
   // The capture block must appear AFTER the `if (payload)` send block. We
   // match this structurally: there's a "send" call wrapped in `if (payload)`,
-  // then a sleep, then `markerScanFrom = initSnap.bytes.length`.
-  /if\s*\(\s*payload\s*\)[\s\S]*?cmd:\s*'send'[\s\S]*?await\s+sleep\s*\(\s*\d+\s*\)[\s\S]*?markerScanFrom\s*=\s*initSnap\.bytes\.length/.test(MCP),
+  // then the poll-for-settle block (settleDeadline + markerScanFrom assignment).
+  /if\s*\(\s*payload\s*\)[\s\S]*?cmd:\s*'send'[\s\S]*?settleDeadline[\s\S]*?markerScanFrom\s*=\s*text\.length/.test(MCP),
 );
 check(
   'poll loop scans scanText slice for completion marker (NOT the full text)',
@@ -122,6 +122,23 @@ check(
   // — and there must be NO `const result = await handleTool(...)` pattern.
   /handleTool\(params\.name\s*\|\|\s*''\s*,\s*params\.arguments\s*\|\|\s*\{\}\)\s*\.then\(\(result\)\s*=>\s*respond\(id,\s*result\)\)\s*\.catch\(/.test(MCP) &&
   !/const\s+result\s*=\s*await\s+handleTool\(/.test(MCP),
+);
+
+check(
+  'claws_fleet handler present (v0.7.10 parallel via Promise.all)',
+  /if\s*\(\s*name\s*===\s*'claws_fleet'\s*\)/.test(MCP) &&
+  /Promise\.all\s*\(\s*fleetWorkers\.map/.test(MCP),
+);
+check(
+  'claws_fleet zod schema present in gen-mcp-tools.mjs',
+  /tool\(['"]claws_fleet['"]/.test(
+    fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'codegen', 'gen-mcp-tools.mjs'), 'utf8'),
+  ),
+);
+check(
+  'markerScanFrom uses poll-for-settle (NOT a fixed 400ms sleep)',
+  /settleDeadline\s*=\s*Date\.now\(\)\s*\+\s*5000/.test(MCP) &&
+  /settleIndicator/.test(MCP),
 );
 
 // ─── Final report ────────────────────────────────────────────────────────────

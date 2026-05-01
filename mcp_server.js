@@ -523,18 +523,34 @@ async function runBlockingWorker(sock, args) {
     }
   }
 
-  // Capture pty length AFTER the payload has been sent and echoed. The poll
-  // loop scans only bytes added past this offset, so the user's mission text
-  // (which was just echoed by the shell/TUI) does not false-match the
-  // completion marker. Sleep first to let the echo land in the wrapped log.
-  await sleep(400);
+  // Bulletproof marker scan offset: poll for TUI evidence that the mission
+  // was acknowledged (paste-collapse placeholder, thinking spinner, or
+  // significant buffer growth past pre-send length), then capture offset.
+  // The 400ms fixed sleep was timing-fragile — Claude Code v2.x sometimes
+  // delays input echo past that window.
   let markerScanFrom = 0;
   try {
-    const initSnap = await clawsRpc(sock, {
-      cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024,
-    });
-    if (initSnap.ok && typeof initSnap.bytes === 'string') {
-      markerScanFrom = initSnap.bytes.length;
+    const preSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
+    const preLen = (preSnap.ok && typeof preSnap.bytes === 'string') ? preSnap.bytes.length : 0;
+    const settleDeadline = Date.now() + 5000;
+    const settleIndicator = /Pasted text|tokens|thinking|Synthesizing|Combobulating|Prestidigitating|Brewed|Cogitated|Crunched|Ideating/;
+    while (Date.now() < settleDeadline) {
+      await sleep(200);
+      const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
+      if (snap.ok && typeof snap.bytes === 'string') {
+        const text = snap.bytes;
+        const newRegion = text.slice(preLen);
+        if (text.length > preLen + 200 || settleIndicator.test(newRegion)) {
+          markerScanFrom = text.length;
+          break;
+        }
+      }
+    }
+    if (markerScanFrom === 0) {
+      const finalSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
+      if (finalSnap.ok && typeof finalSnap.bytes === 'string') {
+        markerScanFrom = finalSnap.bytes.length;
+      }
     }
   } catch (e) { /* keep markerScanFrom=0; degraded but not fatal */ }
 
@@ -950,6 +966,37 @@ async function handleTool(name, args) {
 
     const body = result.harvest || '';
     return { content: [{ type: 'text', text: header.join('\n') + '\n\n── harvest (last lines) ──\n' + body }] };
+  }
+
+  if (name === 'claws_fleet') {
+    const fleetWorkers = Array.isArray(args.workers) ? args.workers : [];
+    if (fleetWorkers.length === 0) {
+      return toolError('ERROR: workers must be a non-empty array of worker configs');
+    }
+    const sharedDefaults = {
+      cwd: args.cwd, model: args.model,
+      timeout_ms: args.timeout_ms, boot_wait_ms: args.boot_wait_ms,
+      poll_interval_ms: args.poll_interval_ms, harvest_lines: args.harvest_lines,
+      close_on_complete: args.close_on_complete,
+    };
+    const fleetStartedAt = Date.now();
+    const results = await Promise.all(
+      fleetWorkers.map((w) => runBlockingWorker(sock, { ...sharedDefaults, ...w })),
+    );
+    const summary = {
+      fleet_size: results.length,
+      wall_clock_ms: Date.now() - fleetStartedAt,
+      max_individual_ms: Math.max(...results.map((r) => r.duration_ms || 0)),
+      sum_individual_ms: results.reduce((a, r) => a + (r.duration_ms || 0), 0),
+      workers: results.map((r, i) => ({
+        name: fleetWorkers[i]?.name,
+        status: r.status,
+        terminal_id: r.terminal_id,
+        duration_ms: r.duration_ms,
+        marker_line: r.marker_line,
+      })),
+    };
+    return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
   }
 
   /**

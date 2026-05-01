@@ -83,6 +83,8 @@ const DESC = {
     'Close and remove a pipeline from the Claws server by pipelineId.',
   claws_dispatch_subworker:
     'Spawn a wrapped terminal for a wave sub-worker, launch Claude Code with --dangerously-skip-permissions, wait for the trust prompt, confirm bypass, and send the mission prompt. Returns terminalId and bootOk status. Use inside a wave after claws_wave_create.',
+  claws_fleet:
+    'Spawn a fleet of workers in parallel (single tool call). Internally fans out via Promise.all so all workers boot and run concurrently. Each entry in workers mirrors claws_worker args; shared top-level fields (cwd, model, timeout_ms, etc.) act as defaults overridden per-worker. Returns a fleet summary with wall-clock time, per-worker status, and marker lines.',
 };
 
 export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
@@ -150,6 +152,28 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
       poll_interval_ms:  z.number().int().describe('How often to check the capture buffer (default 1500).').optional(),
       harvest_lines:     z.number().int().describe('Tail N lines of output to return on completion (default 200).').optional(),
       close_on_complete: z.boolean().describe('Auto-close the terminal after completion (default true).').optional(),
+    })),
+
+    tool('claws_fleet', z.object({
+      workers: z.array(z.object({
+        name: z.string(),
+        mission: z.string().optional(),
+        command: z.string().optional(),
+        cwd: z.string().optional(),
+        model: z.string().optional(),
+        complete_marker: z.string().optional(),
+        error_markers: z.array(z.string()).optional(),
+        timeout_ms: z.number().int().optional(),
+        boot_wait_ms: z.number().int().optional(),
+        launch_claude: z.boolean().optional(),
+      })).describe('Worker configs to spawn in parallel (single tool call internally fans out via Promise.all).'),
+      cwd: z.string().describe('Shared default cwd.').optional(),
+      model: z.string().describe('Shared default model.').optional(),
+      timeout_ms: z.number().int().describe('Shared default per-worker timeout.').optional(),
+      boot_wait_ms: z.number().int().describe('Shared default boot wait.').optional(),
+      poll_interval_ms: z.number().int().describe('Shared default poll interval.').optional(),
+      harvest_lines: z.number().int().describe('Shared default harvest lines.').optional(),
+      close_on_complete: z.boolean().describe('Shared default auto-close.').optional(),
     })),
 
     tool('claws_hello', z.object({

@@ -214,6 +214,93 @@
     }
   },
   {
+    "name": "claws_fleet",
+    "description": "Spawn a fleet of workers in parallel (single tool call). Internally fans out via Promise.all so all workers boot and run concurrently. Each entry in workers mirrors claws_worker args; shared top-level fields (cwd, model, timeout_ms, etc.) act as defaults overridden per-worker. Returns a fleet summary with wall-clock time, per-worker status, and marker lines.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "mission": {
+                "type": "string"
+              },
+              "command": {
+                "type": "string"
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "complete_marker": {
+                "type": "string"
+              },
+              "error_markers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "timeout_ms": {
+                "type": "integer"
+              },
+              "boot_wait_ms": {
+                "type": "integer"
+              },
+              "launch_claude": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Worker configs to spawn in parallel (single tool call internally fans out via Promise.all)."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Shared default cwd."
+        },
+        "model": {
+          "type": "string",
+          "description": "Shared default model."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Shared default per-worker timeout."
+        },
+        "boot_wait_ms": {
+          "type": "integer",
+          "description": "Shared default boot wait."
+        },
+        "poll_interval_ms": {
+          "type": "integer",
+          "description": "Shared default poll interval."
+        },
+        "harvest_lines": {
+          "type": "integer",
+          "description": "Shared default harvest lines."
+        },
+        "close_on_complete": {
+          "type": "boolean",
+          "description": "Shared default auto-close."
+        }
+      },
+      "required": [
+        "workers"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "claws_hello",
     "description": "Register this Claude session with the Claws server as an orchestrator or worker peer. Must be called before subscribe, publish, or task commands. Returns a peerId for this session.",
     "inputSchema": {
