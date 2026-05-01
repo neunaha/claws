@@ -125,9 +125,9 @@ check(
 );
 
 check(
-  'claws_fleet handler present (v0.7.10 parallel via Promise.all)',
+  'claws_fleet handler present (v0.7.10 parallel via Promise.allSettled)',
   /if\s*\(\s*name\s*===\s*'claws_fleet'\s*\)/.test(MCP) &&
-  /Promise\.all\s*\(\s*fleetWorkers\.map/.test(MCP),
+  /Promise\.allSettled\s*\(\s*fleetWorkers\.map/.test(MCP),
 );
 check(
   'claws_fleet zod schema present in gen-mcp-tools.mjs',
@@ -151,6 +151,17 @@ check(
   'claws_fleet sharedDefaults filters undefined keys (no --model undefined regression)',
   /const\s+sharedDefaults\s*=\s*\{\s*\}/.test(MCP) &&
   /if\s*\(\s*args\[k\]\s*!==\s*undefined\s*\)\s*sharedDefaults\[k\]\s*=\s*args\[k\]/.test(MCP),
+);
+
+check(
+  'claws_fleet supports detach mode (additive — default behavior unchanged)',
+  /const\s+detach\s*=\s*args\.detach\s*===\s*true/.test(MCP) &&
+  /detach\s*\?\s*\{\s*detach:\s*true\s*\}/.test(MCP),
+);
+check(
+  'claws_workers_wait handler present (non-blocking companion to detach)',
+  /if\s*\(\s*name\s*===\s*'claws_workers_wait'\s*\)/.test(MCP) &&
+  /scanText\.includes\(completeMarker\)/.test(MCP),
 );
 
 // ─── Final report ────────────────────────────────────────────────────────────

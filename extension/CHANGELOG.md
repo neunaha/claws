@@ -25,6 +25,10 @@ The first claws_fleet implementation wrote `sharedDefaults = { cwd: args.cwd, mo
 - **`scripts/install.sh` skill-loop self-collision guard** — `-ef` (same-inode) test prevents the loop from `rm`-ing the source when `TARGET == INSTALL_DIR` on dev machines.
 - **`scripts/install.sh` uncommitted-work guard** — Step 1's `git reset --hard origin/main` refuses to run on a dirty tree unless `CLAWS_FORCE_RESET=1` is set, so contributor edits are no longer silently destroyed.
 
+### Added — claws_fleet detach mode + claws_workers_wait
+
+`claws_fleet` now accepts `detach=true`, which returns immediately after spawning each worker terminal (no marker poll) — the default blocking behavior is completely unchanged. Detached fleets are meant to be observed by a follow-up call to the new `claws_workers_wait` tool, which polls an array of terminal ids until each emits its `complete_marker` or `error_marker` (or times out). The two together enable a fire-and-monitor pattern where the orchestrator can do other work between spawning and harvesting. `claws_fleet` also migrated internally from `Promise.all` to `Promise.allSettled` so a single failed worker no longer aborts the entire fleet — each result is individually wrapped and the summary always covers all N workers. Tool count grows 37 → 38.
+
 ### Added — `claws_fleet` (real parallel orchestration)
 
 `claws_fleet({ workers: [{name, mission, …}] })` is the new MCP tool for true parallel worker fan-out. Internally calls `runBlockingWorker` for each entry inside `Promise.all`, so all workers spawn and run concurrently within a **single MCP tool/call**. This bypasses Claude Code's MCP client-side serialization (which awaits each tool/call response before sending the next) — calling `claws_worker` N times from one assistant message still serializes, but `claws_fleet` returns one consolidated result with `wall_clock_ms`, `max_individual_ms`, `sum_individual_ms`, and per-worker results. Tool count grows 36 → 37.

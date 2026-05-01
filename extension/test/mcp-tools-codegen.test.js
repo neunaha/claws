@@ -15,7 +15,7 @@ const MCP_SERVER = path.join(REPO_ROOT, 'mcp_server.js');
 
 const EXPECTED_NAMES = [
   'claws_list', 'claws_create', 'claws_send', 'claws_exec',
-  'claws_read_log', 'claws_poll', 'claws_close', 'claws_worker', 'claws_fleet',
+  'claws_read_log', 'claws_poll', 'claws_close', 'claws_worker', 'claws_fleet', 'claws_workers_wait',
   'claws_hello', 'claws_subscribe', 'claws_publish', 'claws_broadcast',
   'claws_ping', 'claws_peers',
   'claws_lifecycle_plan', 'claws_lifecycle_advance',
@@ -55,11 +55,11 @@ check('schemas/mcp-tools.json exists', () => {
 
 const TOOLS = fs.existsSync(TOOLS_JSON) ? require(TOOLS_JSON) : [];
 
-check('tool count is 37', () => {
-  assert.strictEqual(TOOLS.length, 37, `expected 37 tools, got ${TOOLS.length}`);
+check('tool count is 38', () => {
+  assert.strictEqual(TOOLS.length, 38, `expected 38 tools, got ${TOOLS.length}`);
 });
 
-check('all 37 tool names present in correct order', () => {
+check('all 38 tool names present in correct order', () => {
   const names = TOOLS.map((t) => t.name);
   assert.deepStrictEqual(names, EXPECTED_NAMES, `tool names or order mismatch`);
 });
@@ -93,7 +93,7 @@ check('each tool has name, description, and inputSchema', () => {
 
 // ─── mcp_server.js tools/list smoke test ─────────────────────────────────────
 
-check('mcp_server.js tools/list returns 37 tools with correct names', () => {
+check('mcp_server.js tools/list returns 38 tools with correct names', () => {
   const input = [
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}',
     '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}',
@@ -113,7 +113,7 @@ check('mcp_server.js tools/list returns 37 tools with correct names', () => {
   const parsed = JSON.parse(toolsResp);
   const tools  = parsed.result.tools;
   assert.ok(Array.isArray(tools), 'tools is not an array');
-  assert.strictEqual(tools.length, 37, `expected 37 tools from mcp_server, got ${tools.length}`);
+  assert.strictEqual(tools.length, 38, `expected 38 tools from mcp_server, got ${tools.length}`);
   const names = tools.map((t) => t.name);
   assert.deepStrictEqual(names, EXPECTED_NAMES, 'mcp_server tool names or order mismatch');
 });

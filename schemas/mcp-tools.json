@@ -215,7 +215,7 @@
   },
   {
     "name": "claws_fleet",
-    "description": "Spawn a fleet of workers in parallel (single tool call). Internally fans out via Promise.all so all workers boot and run concurrently. Each entry in workers mirrors claws_worker args; shared top-level fields (cwd, model, timeout_ms, etc.) act as defaults overridden per-worker. Returns a fleet summary with wall-clock time, per-worker status, and marker lines.",
+    "description": "Spawn a fleet of workers in parallel (single tool call). Internally fans out via Promise.allSettled so all workers boot and run concurrently. Each entry in workers mirrors claws_worker args; shared top-level fields (cwd, model, timeout_ms, etc.) act as defaults overridden per-worker. Set detach=true for non-blocking spawn (pair with claws_workers_wait). Returns a fleet summary with wall-clock time, per-worker status, and marker lines.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -292,10 +292,56 @@
         "close_on_complete": {
           "type": "boolean",
           "description": "Shared default auto-close."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "If true, return immediately after each worker is spawned (no marker poll). Companion to claws_workers_wait."
         }
       },
       "required": [
         "workers"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_workers_wait",
+    "description": "Poll a set of already-spawned terminal ids (from claws_fleet detach=true or claws_create) for completion markers. Blocks until every terminal emits its complete_marker or an error_marker, or the timeout expires. Non-blocking companion to claws_fleet detach mode.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "terminal_ids": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "description": "Terminal ids to poll (from claws_fleet detach=true or claws_create)."
+        },
+        "complete_marker": {
+          "type": "string",
+          "description": "Substring that signals success (default 'MISSION_COMPLETE')."
+        },
+        "error_markers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Substrings that signal failure (default ['MISSION_FAILED'])."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Max wait in ms (default 300000)."
+        },
+        "poll_interval_ms": {
+          "type": "integer",
+          "description": "Poll cadence (default 1500)."
+        }
+      },
+      "required": [
+        "terminal_ids"
       ],
       "additionalProperties": false
     }

@@ -973,34 +973,32 @@ async function handleTool(name, args) {
     if (fleetWorkers.length === 0) {
       return toolError('ERROR: workers must be a non-empty array of worker configs');
     }
-    // Build sharedDefaults by INCLUDING ONLY the keys the caller actually set.
-    // The previous implementation always wrote `model: args.model` etc. — when
-    // the caller omitted model, that wrote `model: undefined` into the merged
-    // worker args, which then overrode runBlockingWorker's DEFAULTS via spread
-    // (because `{...DEFAULTS, model: undefined}` clobbers the default). The
-    // worker's launch line became `claude --model undefined`, breaking the spawn.
+    const detach = args.detach === true;
     const sharedDefaults = {};
     for (const k of ['cwd', 'model', 'timeout_ms', 'boot_wait_ms', 'poll_interval_ms', 'harvest_lines', 'close_on_complete']) {
       if (args[k] !== undefined) sharedDefaults[k] = args[k];
     }
     const fleetStartedAt = Date.now();
-    const results = await Promise.all(
+    const settled = await Promise.allSettled(
       fleetWorkers.map((w) => {
-        // Same defensive filter for per-worker overrides.
         const wClean = {};
         for (const [k, v] of Object.entries(w)) {
           if (v !== undefined) wClean[k] = v;
         }
-        return runBlockingWorker(sock, { ...sharedDefaults, ...wClean });
+        return runBlockingWorker(sock, { ...sharedDefaults, ...wClean, ...(detach ? { detach: true } : {}) });
       }),
     );
+    const results = settled.map((s) => s.status === 'fulfilled'
+      ? s.value
+      : { status: 'error', error: String(s.reason && s.reason.message || s.reason || 'unknown') });
     const summary = {
       fleet_size: results.length,
+      detach,
       wall_clock_ms: Date.now() - fleetStartedAt,
-      max_individual_ms: Math.max(...results.map((r) => r.duration_ms || 0)),
+      max_individual_ms: Math.max(...results.map((r) => r.duration_ms || 0), 0),
       sum_individual_ms: results.reduce((a, r) => a + (r.duration_ms || 0), 0),
       workers: results.map((r, i) => ({
-        name: fleetWorkers[i]?.name,
+        name: fleetWorkers[i] && fleetWorkers[i].name,
         status: r.status,
         terminal_id: r.terminal_id,
         duration_ms: r.duration_ms,
@@ -1008,6 +1006,68 @@ async function handleTool(name, args) {
       })),
     };
     return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
+  }
+
+  if (name === 'claws_workers_wait') {
+    const ids = Array.isArray(args.terminal_ids) ? args.terminal_ids : [];
+    if (ids.length === 0) {
+      return toolError('ERROR: terminal_ids must be a non-empty array');
+    }
+    const completeMarker = typeof args.complete_marker === 'string' && args.complete_marker.length > 0
+      ? args.complete_marker : 'MISSION_COMPLETE';
+    const errorMarkers = Array.isArray(args.error_markers) ? args.error_markers : ['MISSION_FAILED'];
+    const timeoutMs = typeof args.timeout_ms === 'number' && args.timeout_ms > 0 ? args.timeout_ms : 5 * 60 * 1000;
+    const pollIntervalMs = typeof args.poll_interval_ms === 'number' && args.poll_interval_ms > 0 ? args.poll_interval_ms : 1500;
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
+    const state = ids.map((id) => ({
+      id, status: 'pending', marker_line: null, duration_ms: null, scanFrom: 0,
+    }));
+    for (const s of state) {
+      try {
+        const snap = await clawsRpc(sock, { cmd: 'readLog', id: s.id, strip: true, limit: 64 * 1024 });
+        if (snap.ok && typeof snap.bytes === 'string') s.scanFrom = snap.bytes.length;
+      } catch (e) { /* keep 0 */ }
+    }
+    while (Date.now() < deadline) {
+      let allDone = true;
+      for (const s of state) {
+        if (s.status !== 'pending') continue;
+        allDone = false;
+        try {
+          const snap = await clawsRpc(sock, { cmd: 'readLog', id: s.id, strip: true, limit: 64 * 1024 });
+          const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
+          const scanText = text.length > s.scanFrom ? text.slice(s.scanFrom) : '';
+          if (scanText.includes(completeMarker)) {
+            s.status = 'completed';
+            s.marker_line = findMarkerLine(scanText, completeMarker);
+            s.duration_ms = Date.now() - startedAt;
+            continue;
+          }
+          for (const em of errorMarkers) {
+            if (em && scanText.includes(em)) {
+              s.status = 'failed';
+              s.marker_line = findMarkerLine(scanText, em);
+              s.duration_ms = Date.now() - startedAt;
+              break;
+            }
+          }
+        } catch (e) { /* terminal vanished — leave pending; will time out */ }
+      }
+      if (allDone || state.every((s) => s.status !== 'pending')) break;
+      await sleep(pollIntervalMs);
+    }
+    for (const s of state) {
+      if (s.status === 'pending') {
+        s.status = 'timeout';
+        s.duration_ms = Date.now() - startedAt;
+      }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify({
+      total: state.length,
+      wall_clock_ms: Date.now() - startedAt,
+      results: state.map((s) => ({ terminal_id: s.id, status: s.status, marker_line: s.marker_line, duration_ms: s.duration_ms })),
+    }, null, 2) }] };
   }
 
   /**

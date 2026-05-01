@@ -84,7 +84,9 @@ const DESC = {
   claws_dispatch_subworker:
     'Spawn a wrapped terminal for a wave sub-worker, launch Claude Code with --dangerously-skip-permissions, wait for the trust prompt, confirm bypass, and send the mission prompt. Returns terminalId and bootOk status. Use inside a wave after claws_wave_create.',
   claws_fleet:
-    'Spawn a fleet of workers in parallel (single tool call). Internally fans out via Promise.all so all workers boot and run concurrently. Each entry in workers mirrors claws_worker args; shared top-level fields (cwd, model, timeout_ms, etc.) act as defaults overridden per-worker. Returns a fleet summary with wall-clock time, per-worker status, and marker lines.',
+    'Spawn a fleet of workers in parallel (single tool call). Internally fans out via Promise.allSettled so all workers boot and run concurrently. Each entry in workers mirrors claws_worker args; shared top-level fields (cwd, model, timeout_ms, etc.) act as defaults overridden per-worker. Set detach=true for non-blocking spawn (pair with claws_workers_wait). Returns a fleet summary with wall-clock time, per-worker status, and marker lines.',
+  claws_workers_wait:
+    'Poll a set of already-spawned terminal ids (from claws_fleet detach=true or claws_create) for completion markers. Blocks until every terminal emits its complete_marker or an error_marker, or the timeout expires. Non-blocking companion to claws_fleet detach mode.',
 };
 
 export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
@@ -174,6 +176,15 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
       poll_interval_ms: z.number().int().describe('Shared default poll interval.').optional(),
       harvest_lines: z.number().int().describe('Shared default harvest lines.').optional(),
       close_on_complete: z.boolean().describe('Shared default auto-close.').optional(),
+      detach: z.boolean().describe('If true, return immediately after each worker is spawned (no marker poll). Companion to claws_workers_wait.').optional(),
+    })),
+
+    tool('claws_workers_wait', z.object({
+      terminal_ids: z.array(z.union([z.string(), z.number()])).describe('Terminal ids to poll (from claws_fleet detach=true or claws_create).'),
+      complete_marker: z.string().describe("Substring that signals success (default 'MISSION_COMPLETE').").optional(),
+      error_markers: z.array(z.string()).describe("Substrings that signal failure (default ['MISSION_FAILED']).").optional(),
+      timeout_ms: z.number().int().describe('Max wait in ms (default 300000).').optional(),
+      poll_interval_ms: z.number().int().describe('Poll cadence (default 1500).').optional(),
     })),
 
     tool('claws_hello', z.object({
