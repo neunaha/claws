@@ -21,9 +21,15 @@ v0.7.10 deletes the two new abstractions v0.7.9 introduced (file-referrer missio
 - **`scripts/install.sh` skill-loop self-collision guard** — `-ef` (same-inode) test prevents the loop from `rm`-ing the source when `TARGET == INSTALL_DIR` on dev machines.
 - **`scripts/install.sh` uncommitted-work guard** — Step 1's `git reset --hard origin/main` refuses to run on a dirty tree unless `CLAWS_FORCE_RESET=1` is set, so contributor edits are no longer silently destroyed.
 
+### Fixed — MCP main-loop concurrent dispatch (the critical fan-out fix)
+
+`mcp_server.js:1304` — the MCP `tools/call` branch used to `await handleTool(...)` inside the main `while (true)` loop. That made the loop **strictly serial**: every tool call blocked the next message read. When `claws_worker` sat in its poll loop for up to `timeout_ms`, the next tool call couldn't even start until the first either matched its marker or timed out. Three "parallel" `claws_worker` calls actually queued up sequentially — fan-out and wave-army patterns were broken.
+
+Now the dispatch is fire-and-forget: `handleTool(...).then(respond).catch(respond)`. The main loop reads the next message immediately, multiple handlers interleave on the JS event loop, and N parallel `claws_worker` calls actually run concurrently with their own pty terminals. JSON-RPC responses can arrive out-of-order relative to requests (allowed by spec; each response carries the matching id). State sharing is safe — `_pconn.pending` uses unique rids, `_eventBuffer` push is single-statement-atomic, `_circuitBreaker` reads/writes are racy but benign.
+
 ### Tests
 
-`extension/test/worker-fixes-v079.test.js` rewritten to lock down v0.7.10's contract: 10 static-analysis checks covering the three correctness fixes plus **explicit assertions that the file-referrer pattern and boot-retry loop are NOT present**. Future contributors who try to reintroduce them will fail this test.
+`extension/test/worker-fixes-v079.test.js` rewritten to lock down v0.7.10's contract: 11 static-analysis checks covering the four correctness fixes plus **explicit assertions that the file-referrer pattern and boot-retry loop are NOT present, AND that `tools/call` dispatches concurrently (no `await` on `handleTool`)**. Future contributors who try to reintroduce the broken patterns will fail this test.
 
 ### Added — single-source-of-truth version
 

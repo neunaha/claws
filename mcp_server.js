@@ -1300,12 +1300,31 @@ async function main() {
     } else if (method === 'tools/list') {
       respond(id, { tools: TOOLS });
     } else if (method === 'tools/call') {
-      try {
-        const result = await handleTool(params.name || '', params.arguments || {});
-        respond(id, result);
-      } catch (e) {
-        respond(id, { content: [{ type: 'text', text: `ERROR: ${e.message || e}` }], isError: true });
-      }
+      // CONCURRENT TOOL DISPATCH (v0.7.10).
+      // Do NOT await handleTool here — that would block the main loop and
+      // serialize every tool call (the v0.7.4-through-v0.7.9 behavior).
+      // When a long-running tool like claws_worker is in flight, fan-out
+      // patterns (3 parallel workers, wave armies with 4 sub-workers, etc.)
+      // would queue up behind it for up to timeout_ms each, defeating the
+      // entire point of concurrent orchestration.
+      //
+      // Instead: dispatch the handler as a fire-and-forget Promise and let
+      // the main loop immediately read the next message from stdin. Multiple
+      // tool calls now interleave on the JS event loop, each progressing
+      // whenever it await's I/O. State sharing is safe because:
+      //   - _pconn requests use unique rids (nextRid++ is atomic in JS event loop)
+      //   - _eventBuffer push is single-statement, never interleaved mid-write
+      //   - _circuitBreaker fields are simple read/write, racy but benign
+      //
+      // respond() is called from the .then/.catch — JSON-RPC responses can
+      // arrive out-of-order relative to the requests, which is allowed by
+      // the spec (each response carries the matching id).
+      handleTool(params.name || '', params.arguments || {})
+        .then((result) => respond(id, result))
+        .catch((e) => respond(id, {
+          content: [{ type: 'text', text: `ERROR: ${e.message || e}` }],
+          isError: true,
+        }));
     } else if (method === 'ping') {
       respond(id, {});
     } else if (id != null) {

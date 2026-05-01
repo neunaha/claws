@@ -110,6 +110,20 @@ check(
   /uncommitted changes — refusing to git reset/.test(INSTALL_SH),
 );
 
+// ─── MCP main-loop concurrent dispatch (v0.7.10) ─────────────────────────────
+// The MCP tools/call branch must NOT await handleTool — that serializes every
+// tool call, defeating fan-out (3 parallel claws_worker, wave armies, etc.)
+// because each blocking call holds the main loop for up to timeout_ms.
+// v0.7.10 dispatches via .then/.catch so the loop reads the next message
+// while the previous handler runs.
+check(
+  'MCP tools/call dispatches concurrently (no await on handleTool)',
+  // The handleTool call inside tools/call must be followed by .then( and .catch(
+  // — and there must be NO `const result = await handleTool(...)` pattern.
+  /handleTool\(params\.name\s*\|\|\s*''\s*,\s*params\.arguments\s*\|\|\s*\{\}\)\s*\.then\(\(result\)\s*=>\s*respond\(id,\s*result\)\)\s*\.catch\(/.test(MCP) &&
+  !/const\s+result\s*=\s*await\s+handleTool\(/.test(MCP),
+);
+
 // ─── Final report ────────────────────────────────────────────────────────────
 
 let pass = 0;
