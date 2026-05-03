@@ -10,15 +10,15 @@
 
 | You want to … | Use this | Don't use |
 |---|---|---|
-| Run **one** Claude Code worker on a mission | `claws_worker` | `claws_create` + manual orchestration |
-| Run **N** Claude Code workers truly in parallel | **`claws_fleet`** (single MCP call, server-side `Promise.all`) | N×`claws_worker` from one assistant message — Claude Code's MCP client serializes those |
+| Run **one** Claude Code worker on a mission | `claws_worker` — **Non-blocking** (returns `terminal_id` immediately; poll via `claws_workers_wait`) | `claws_create` + manual orchestration |
+| Run **N** Claude Code workers truly in parallel | **`claws_fleet`** — **Non-blocking** (single MCP call, server-side `Promise.all`; returns `terminal_ids` in seconds) | N×`claws_worker` from one assistant message — Claude Code's MCP client serializes those |
 | Run a one-shot shell command and capture output | `claws_exec` | `claws_send` + `claws_read_log` (more code, same result) |
 | Send free-form text into an existing terminal | `claws_send` | `claws_exec` (use only when you need exit-code capture) |
 | Read what's currently in a wrapped terminal | `claws_read_log` | `claws_poll` — that's for shell-integration events, not pty contents |
 | List all live terminals | `claws_list` | grep `.claws/captures/` |
 | Close a terminal you created | `claws_close` | leave it dangling |
 | Create a terminal without launching anything in it | `claws_create` (then `claws_send` later) | `claws_worker` with `launch_claude=false` (heavier) |
-| Wave-army LEAD launching a sub-worker (TESTER/REVIEWER/AUDITOR/DOC) | `claws_dispatch_subworker` | `claws_worker` (works but doesn't register the sub-worker in the wave registry) |
+| Wave-army LEAD dispatching sub-workers (TESTER/REVIEWER/AUDITOR/DOC) | **`claws_fleet`** — single call fans out all sub-workers in parallel via `Promise.all` | `claws_dispatch_subworker` (BUG-08: serial; BUG-09: no auto-close) |
 | Server liveness check | `claws_ping` | open a raw socket |
 | Diagnose the server's full runtime state | `claws_introspect` | grep extension logs |
 | Check who's connected | `claws_peers` | introspect (peers is a subset) |
@@ -54,9 +54,34 @@
 |---|---|---|
 | **Single worker** | `claws_worker(name, mission, …)` | One independent task. Default for "run a Claude Code job and wait." |
 | **Fleet** (N parallel workers, no coordination between them) | `claws_fleet(workers: [{name, mission}, …])` | Independent parallel tasks (audits, file generation, multi-target validation). Server runs them all via `Promise.all` in one MCP call — bypasses Claude Code's client-side serialization. |
-| **Wave army** (LEAD + typed sub-workers with heartbeats and bus coordination) | `claws_wave_create` + `claws_dispatch_subworker` per role | Coordinated mission with role specialization (TESTER + REVIEWER + AUDITOR + DOC working together with the LEAD harvesting). Server tracks heartbeats and fires violation events on silence. |
+| **Wave army** (LEAD + typed sub-workers with heartbeats and bus coordination) | `claws_wave_create` then **`claws_fleet`** to dispatch sub-workers in parallel | Coordinated mission with role specialization (TESTER + REVIEWER + AUDITOR + DOC working together with the LEAD harvesting). Server tracks heartbeats and fires violation events on silence. |
 
 **The most common mistake:** trying to fan out by calling `claws_worker` N times in one assistant message and expecting parallelism. Claude Code's MCP client awaits each response before sending the next request — the calls serialize. **Use `claws_fleet` instead.**
+
+---
+
+## Non-blocking pattern (canonical workflow)
+
+`claws_fleet` and `claws_worker` are **non-blocking by default** — they spawn and return immediately. The MCP stdio transport cannot safely hold a response open for more than a few seconds. Always follow this 3-step pattern:
+
+**Step 1 — Fire `claws_fleet` or `claws_worker`** (returns `terminal_ids` in seconds):
+```
+claws_fleet(cwd="...", workers=[{name:"tester", mission:"..."}, {name:"reviewer", mission:"..."}])
+→ { fleet_size, terminal_ids, workers:[{terminal_id, name}, …] }
+```
+
+**Step 2 — Poll with `claws_workers_wait`** (safe to block here — workers run independently in their own terminals):
+```
+claws_workers_wait(terminal_ids=[…], timeout_ms=300000)
+→ { done: true/false, workers:[{terminal_id, status, marker_found}, …] }
+```
+
+**Step 3 — Read `.local/audits/*.md` for ground truth** (always lands on disk regardless of socket state):
+```
+ls .local/audits/   # each worker writes its own audit file on completion
+```
+
+Blocking modes (`wait:true` / `detach:false`) remain available behind an explicit opt-in flag but are flagged unsafe — only use when the caller's event loop can tolerate an indefinite hang.
 
 ---
 
@@ -108,8 +133,13 @@ Returns `{ fleet_size, wall_clock_ms, max_individual_ms, sum_individual_ms, work
 ```
 claws_hello(role="orchestrator", peerName="lead")
 claws_wave_create(waveId="payment-refactor-v1", roles=["TESTER","REVIEWER","AUDITOR","DOC"])
-claws_dispatch_subworker(waveId="…", role="TESTER",  mission="…", cwd="…")
-claws_dispatch_subworker(waveId="…", role="REVIEWER", mission="…", cwd="…")
+// Dispatch all sub-workers in parallel via claws_fleet (NOT claws_dispatch_subworker — BUG-08: serial, BUG-09: no auto-close):
+claws_fleet(cwd="…", workers=[
+  { name: "tester",   mission: "… print TESTER_DONE" },
+  { name: "reviewer", mission: "… print REVIEWER_DONE" },
+  { name: "auditor",  mission: "… print AUDITOR_DONE" },
+  { name: "doc",      mission: "… print DOC_DONE" },
+])
 // monitor:
 claws_subscribe(topic="wave.payment-refactor-v1.**")
 claws_drain_events(wait_ms=30000)

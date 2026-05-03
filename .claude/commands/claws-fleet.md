@@ -1,9 +1,30 @@
 ---
 name: claws-fleet
-description: Spawn N parallel workers from a task list. Each task gets its own wrapped terminal + monitor. Fleet-level orchestration for parallel autonomous work.
+description: Non-blocking by default. Spawn N parallel workers from a task list; returns terminal_ids immediately. Poll completion via claws_workers_wait. Each task gets its own wrapped terminal + monitor.
 ---
 
 # /claws-fleet <task-file-or-inline-json>
+
+**Non-blocking by default.** `claws_fleet` spawns all workers and returns `terminal_ids` within seconds — it does not hold the MCP socket open while workers run. Workers execute independently; the orchestrator polls for completion separately.
+
+## Canonical 3-step pattern
+
+**Step 1 — Fire `claws_fleet`** (returns `terminal_ids` in seconds, never blocks):
+```
+claws_fleet(cwd="...", workers=[{name:"a", mission:"..."}, {name:"b", mission:"..."}])
+→ { fleet_size, terminal_ids, workers:[{terminal_id, name}, …] }
+```
+
+**Step 2 — Poll with `claws_workers_wait`** (safe to block here — workers run independently):
+```
+claws_workers_wait(terminal_ids=[…], timeout_ms=300000)
+→ { done: true/false, workers:[{terminal_id, status, marker_found}, …] }
+```
+
+**Step 3 — Read audit files for ground truth** (always lands on disk regardless of socket state):
+```
+ls .local/audits/   # each worker writes its own audit file
+```
 
 Spawn a fleet of parallel workers. Each task in the list gets its own wrapped terminal, its own command, and its own monitor. The orchestrator watches all monitors and reports as each worker completes.
 

@@ -1,9 +1,30 @@
 ---
 name: claws-worker
-description: Spawn a Claude Code worker in a wrapped terminal. Boots Claude Code, sends a mission, attaches monitoring. Arguments — name (required), mission (required).
+description: Non-blocking by default. Spawn a Claude Code worker in a wrapped terminal; returns terminal_id immediately. Poll completion via claws_workers_wait. Arguments — name (required), mission (required).
 ---
 
 # /claws-worker <name> <mission>
+
+**Non-blocking by default.** `claws_worker` boots a Claude Code session, sends the mission, and returns `terminal_id` within seconds — it does not hold the MCP socket open while the worker runs. The worker executes autonomously; the orchestrator polls for completion separately.
+
+## Canonical 3-step pattern
+
+**Step 1 — Fire `claws_worker`** (returns `terminal_id` in seconds, never blocks):
+```
+claws_worker(name="worker-<name>", mission="<full mission text>. print MISSION_COMPLETE when done. go.")
+→ { terminal_id, name, status:"running" }
+```
+
+**Step 2 — Poll with `claws_workers_wait`** (safe to block here — worker runs independently):
+```
+claws_workers_wait(terminal_ids=[terminal_id], timeout_ms=300000)
+→ { done: true/false, workers:[{terminal_id, status, marker_found}, …] }
+```
+
+**Step 3 — Read audit files for ground truth** (always lands on disk regardless of socket state):
+```
+ls .local/audits/   # worker writes its audit file on completion
+```
 
 Spawn a Claude Code worker terminal. The worker hosts a real Claude Code instance running in `--dangerously-skip-permissions` mode and executes the mission autonomously.
 

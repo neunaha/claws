@@ -55,7 +55,7 @@ The installer is **project-local** — it writes `.mcp.json`, `.claws-bin/mcp_se
 
 ### Step 3 — Restart Claude Code in this project
 
-Exit your current Claude Code session and re-open `claude` from the project root so it picks up the project-local `.mcp.json` and registers the 14 Claws tools (8 terminal-control + 6 claws/2 multi-agent). If the tools don't appear, run `/claws-fix`.
+Exit your current Claude Code session and re-open `claude` from the project root so it picks up the project-local `.mcp.json` and registers the 38 Claws tools. If the tools don't appear, run `/claws-fix`.
 
 ### Step 4 — You're ready
 
@@ -213,7 +213,7 @@ Quick start: type `/claws-v2-orchestrate` in an orchestrator Claude session to s
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/ai-orchestration.png" alt="AI Orchestration" width="720">
 </p>
 
-`claws_worker` is a **single blocking tool call that runs the full worker lifecycle**: spawn a wrapped terminal → launch Claude Code with full permissions → detect boot → send mission → poll the capture buffer for `MISSION_COMPLETE` (or a custom marker) → harvest the last N lines → auto-close the terminal → return a structured result.
+`claws_worker` is **non-blocking by default; returns `terminal_id` immediately, poll completion via `claws_workers_wait`**: spawn a wrapped terminal → launch Claude Code with full permissions → detect boot → send mission → poll the capture buffer for `MISSION_COMPLETE` (or a custom marker) → harvest the last N lines → auto-close the terminal → return a structured result.
 
 ```json
 {
@@ -274,7 +274,23 @@ Set `CLAWS_GLOBAL_CONFIG=1` to mirror the per-project config into `~/.claude/`. 
 
 ### Uninstall
 
-Machine-wide: `rm -rf ~/.claws-src`, remove the extension symlink, remove the shell-hook line. Project-level: `rm -rf .claws-bin .claude/commands/claws-*.md .claude/rules/claws-default-behavior.md .claude/skills/claws-* .mcp.json` and delete the fenced block from `CLAUDE.md`.
+Run the uninstall script (from any project you have Claws installed in):
+
+```bash
+bash ~/.claws-src/scripts/uninstall.sh
+```
+
+Then uninstall the VS Code extension manually:
+
+```bash
+code --uninstall-extension neunaha.claws
+```
+
+The uninstall script removes: lifecycle hooks from `~/.claude/settings.json`, the `CLAWS:BEGIN` block from `CLAUDE.md`, the shell hook line from `.zshrc`/`.bashrc`, and `.claws-bin/` and `.claws/` from the project root. It is idempotent — safe to re-run.
+
+### Windows
+
+**Windows native install is not supported.** Use WSL2 (Windows Subsystem for Linux) and follow the Unix install steps above. Install WSL2 via: `wsl --install` in an elevated PowerShell, then open a WSL terminal and run the `install.sh` command.
 
 ---
 
