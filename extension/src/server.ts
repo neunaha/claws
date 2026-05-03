@@ -844,25 +844,6 @@ export class ClawsServer {
     return null;
   }
 
-  /**
-   * Reject a request if the peer has declared a non-empty capability set that
-   * does not include the required capability. Peers that declared an empty
-   * capability list (or omitted capabilities in hello) are allowed through for
-   * backward compatibility — capability enforcement only kicks in when the peer
-   * has explicitly opted into the negotiation by declaring at least one capability.
-   */
-  // Retained for future re-introduction; underscore prefix tells TS it's intentionally unused.
-  private _requireCapability(ctx: ConnCtx, capability: string): ClawsResponse | null {
-    const pid = ctx.getPeerId();
-    if (!pid) return { ok: false, error: 'call hello first' };
-    const peer = this.peers.get(pid);
-    if (!peer) return { ok: false, error: 'peer unknown' };
-    if (peer.capabilities.length > 0 && !peer.capabilities.includes(capability)) {
-      return { ok: false, error: 'capability:required', required: capability };
-    }
-    return null;
-  }
-
   private async handle(req: ClawsRequest, ctx: ConnCtx): Promise<ClawsResponse> {
     const { cmd } = req;
     const tm = this.opts.terminalManager;

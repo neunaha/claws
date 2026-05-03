@@ -10,7 +10,7 @@
 // DEPLOY→OBSERVE when first worker progresses, OBSERVE→HARVEST when done
 // (mode-aware), CLEANUP→REFLECT when all terminals closed.
 
-import type { LifecycleStore, Phase } from './lifecycle-store';
+import type { LifecycleStore } from './lifecycle-store';
 import { canTransition, canReflect, nextAutoPhase } from './lifecycle-rules';
 
 export interface LifecycleEngineDeps {

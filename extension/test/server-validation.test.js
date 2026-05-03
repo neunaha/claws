@@ -301,7 +301,7 @@ function rpc(payload) {
   });
 
   // ── 4. Strict mode: invalid envelope → hard rejected ────────────────────
-  await check('strict mode: invalid envelope → rejected with envelope:invalid', async () => {
+  await check('strict mode: invalid envelope → rejected with payload:invalid', async () => {
     strictEventValidation = true;
     const pub = connect();
     await new Promise((r) => { pub.socket.on('connect', r); });
@@ -314,7 +314,7 @@ function rpc(payload) {
     await waitFor(() => pub.responses.has(2));
     const resp = pub.responses.get(2);
     assert.strictEqual(resp.ok, false, `strict mode should reject, got: ${JSON.stringify(resp)}`);
-    assert.strictEqual(resp.error, 'envelope:invalid', `expected envelope:invalid, got: ${resp.error}`);
+    assert.strictEqual(resp.error, 'payload:invalid', `expected payload:invalid, got: ${resp.error}`);
     assert.ok(Array.isArray(resp.details), 'details should be an array of issues');
     pub.socket.destroy();
     strictEventValidation = false;

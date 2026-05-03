@@ -155,13 +155,13 @@ check(
 
 check(
   'claws_fleet supports detach mode (additive — default behavior unchanged)',
-  /const\s+detach\s*=\s*args\.detach\s*===\s*true/.test(MCP) &&
+  /const\s+detach\s*=\s*args\.detach\s*!==\s*false/.test(MCP) &&
   /detach\s*\?\s*\{\s*detach:\s*true\s*\}/.test(MCP),
 );
 check(
   'claws_workers_wait handler present (non-blocking companion to detach)',
   /if\s*\(\s*name\s*===\s*'claws_workers_wait'\s*\)/.test(MCP) &&
-  /scanText\.includes\(completeMarker\)/.test(MCP),
+  /findStandaloneMarker\(scanText, completeMarker\)/.test(MCP),
 );
 
 // ─── Final report ────────────────────────────────────────────────────────────

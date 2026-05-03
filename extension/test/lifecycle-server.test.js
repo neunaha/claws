@@ -198,7 +198,7 @@ function check(name, fn) {
     assert(resp.state, 'expected state field');
     assert.strictEqual(resp.state.phase, 'PLAN');
     assert.strictEqual(resp.state.plan, 'test mission');
-    assert.deepStrictEqual(resp.state.phases_completed, ['PLAN']);
+    assert.deepStrictEqual(resp.state.phases_completed, ['SESSION-BOOT', 'PLAN']);
     const sf = path.join(workspaceRoot, '.claws', 'lifecycle-state.json');
     assert(fs.existsSync(sf), 'state file should exist on disk');
     const onDisk = JSON.parse(fs.readFileSync(sf, 'utf8'));

@@ -170,8 +170,15 @@ const CMD_TEXT_RE = /^\[CLAWS_CMD seq=\d+ r=r1\] approve_request/;
 
   setup.socket.write(JSON.stringify({
     id: 50, cmd: 'lifecycle.plan', plan: 'reverse-channel integration test',
+    workerMode: 'single', expectedWorkers: 2,
   }) + '\n');
   await waitFor(() => setup.responses.has(50), 2000);
+
+  // SPAWN phase required for create per canSpawn() gate.
+  setup.socket.write(JSON.stringify({
+    id: 51.5, cmd: 'lifecycle.advance', to: 'SPAWN',
+  }) + '\n');
+  await waitFor(() => setup.responses.has(51.5), 2000);
 
   setup.socket.write(JSON.stringify({
     id: 51, cmd: 'create', name: 'rc-test-worker', wrapped: true,
