@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HB-L4 fix: heartbeat wiring moved from runBlockingWorker → fast-path watcher (the default for claws_worker). L4 verification now works. Reload VS Code + /mcp + spawn a claws_worker to see kind=heartbeat events every 30s.
 - HB-L4 polish: dropped cost_usd from heartbeat (was bogus — showed orchestrator's overall session cost ~$2376, not per-worker cost). Tokens (in/out) remain. Fixed BOOTING→READY transition to fire on bypass-permissions detection alone (was waiting for prompt-idle which never happens during active work).
 - HB-L4 cascade fix: READY→WORKING now uses cumulative toolCount (idempotent across ticks), no longer stuck at READY when boot+tool land in the same observe() tick.
+- FIX-MON: canonical monitor pattern streams heartbeats + auto-exits on completion — orchestrator's `monitor_arm_command` now subscribes to `worker.<termId>.heartbeat,system.worker.*` and uses `awk '{print; fflush()} /system\.worker\.completed/{exit}'` instead of a completion-only `grep -m1`. Eliminates the blind window between spawn and completion; single awk wrapper emits each heartbeat line immediately AND exits cleanly on completion via SIGPIPE cascade. Five sites updated; new test: `extension/test/monitor-pattern.test.js`.
 
 ---
 
