@@ -136,7 +136,7 @@ See `.local/README.md` for the full rubric.
 
 ## Current state
 
-- **Version**: 0.6.1 — behavioral injection enforcement overhaul (Waves 1–3). Imperative templates, three injector scripts, three hook scripts, install.sh wiring. See `.local/audits/lifecycle-enforcement-gap.md` for the gap analysis this closes.
+- **Version**: 0.7.10 — behavioral injection enforcement overhaul (Waves 1–3). Imperative templates, three injector scripts, three hook scripts, install.sh wiring. See `.local/audits/lifecycle-enforcement-gap.md` for the gap analysis this closes.
 - **Previous**: 0.6.0 — claws/2 Agentic SDLC Protocol (Phase A + B). Peer registry, pub/sub message bus, task registry, 6 new MCP tools. 33 new checks → 90 total across 11 suites.
 - **Phase**: 2 (complete) + Phase A/B (claws/2). All Phase 2 items landed. Phase A: peer registry + pub/sub. Phase B: task registry + MCP tools. Marketplace publish and WebSocket transport are Phase 3.
 - **Transport**: Unix socket only (per-folder sockets for multi-root workspaces). WebSocket transport planned (Phase 3).
@@ -234,9 +234,14 @@ Hooks are registered by `inject-settings-hooks.js` (called from `install.sh`). A
 2. **`parallel: true` must be enforced, not advisory** — if the extension claims parallel dispatch, it must actually dispatch concurrently. Advisory flags create invisible regressions.
 3. **Safety gate should warn, not block** — the whole point is sending prompts into Claude Code TUIs. Hard-blocking defeats the use case. Warn + proceed is the right default; `strict=true` for opt-in blocking.
 4. **Bracketed paste for multi-line sends** — `\x1b[200~text\x1b[201~` prevents line-by-line fragmentation in shells. Essential for sending prompts.
-5. **Monitor pattern for observation** — `tail -F logfile | strip-ansi | grep --line-buffered pattern` piped into a persistent listener is the right cadence for pair-programmer-style observation. Polling is a fallback, not a primary.
+5. **Monitor pattern for observation — bus-stream subscription, NOT file polling.** Claws is built on pub/sub event streaming. The Monitor tool consumes that stream directly via `scripts/stream-events.js` (a thin sidecar that subscribes to the claws/2 bus and emits each push frame as one stdout line). The `tail -F file | grep` pattern is a passive idle wait — Claude Code's background-process supervisor kills it with SIGURG (exit 144) within ~30s of inactivity. The bus-stream pattern emits constantly (heartbeats every ≤60s, system.metrics, every worker event, every tool invocation) — sub-100ms event latency, no SIGURG kill, and `each push frame becomes one Monitor notification` (literally what stream-events.js was designed for). Per-worker monitor command pattern:
+   ```
+   Monitor(command="CLAWS_TOPIC='system.worker.*' CLAWS_PEER_NAME='monitor-term-<id>' CLAWS_ROLE='observer' node <claws>/scripts/stream-events.js | grep --line-buffered '\"correlation_id\":\"<UUID>\"' | grep --line-buffered -m1 'system\\.worker\\.completed'", description="claws monitor | term=<id> | corr=<short>", timeout_ms=600000, persistent=false)
+   ```
+   `correlation_id` (Wave A D+F) filters to one worker; `grep -m1` exits on first completion → SIGPIPE closes stream-events.js → Monitor self-exits cleanly. Polling and `tail -F | grep` are anti-patterns — DO NOT use them.
 6. **Auto-cleanup is mandatory** — every terminal the extension creates must be closeable + cleaned up when the orchestrator session ends. Stale terminals are a UX bug.
 7. **File-based exec over shell integration** — VS Code's `onDidEndTerminalShellExecution` is unreliable in wrapped terminals. `{ cmd; } > /tmp/out 2>&1; echo $? > /tmp/done` with polling for the done file is robust across all terminal types.
+8. **Non-blocking by default** — `claws_fleet` and `claws_worker` never hold the MCP socket open; they spawn terminals and return immediately with `terminal_ids`. The MCP stdio transport cannot safely hold a response open for more than a few seconds. Orchestrators poll completion via `claws_workers_wait` or by reading audit files written to `.local/audits/` on disk. Blocking modes (`wait:true` / `detach:false`) remain available behind an explicit opt-in but are flagged unsafe — use only when the caller's event loop can tolerate an indefinite hang.
 
 ## What this project is NOT
 
