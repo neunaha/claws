@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed (post-validation small bugs)
 - **BUG-A** — `nextAutoPhase` had cases for SPAWN, DEPLOY, OBSERVE, CLEANUP but missing HARVEST. Engine cascaded 4 transitions then stopped. Now adds HARVEST→CLEANUP transition (gated by `canCleanup`), enabling 5-transition auto-cascade through the mission cycle.
+- **BUG-B** — Detach watchers in `mcp_server.js` (4 callsites: runBlockingWorker, blocking-worker happy-path, fast-path watcher, dispatch_subworker) auto-closed terminals on marker match but never notified the lifecycle store of closure. `workers[].closed` stayed false, blocking `canReflect` gate forever. Fix: after successful close, call `lifecycle.mark-worker-status` with `status='closed'` so the lifecycle store flips the flag. Now CLEANUP→REFLECT can auto-advance once all spawns are closed.
 
 ### Changed
 - **Wave B — bus-stream Monitor primitive in all spawn-class tool responses**: `monitor_arm_command` strings returned by `claws_create`, `claws_worker`, `runBlockingWorker`/`claws_fleet`, and `claws_dispatch_subworker` now use the canonical `Monitor + stream-events.js` pattern (CLAUDE.md principle #5). Subscribes directly to the pub/sub bus, filters by `correlation_id`, exits on first `system.worker.completed` event (`grep -m1`). Sub-100ms latency, immune to SIGURG idle-kill, appears as 'monitor' in the Claude Code task panel. The old `Bash(until grep -qE…events.log)` passive polling pattern is fully removed.

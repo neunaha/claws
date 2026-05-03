@@ -707,6 +707,8 @@ async function runBlockingWorker(sock, args) {
           try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status }); } catch (e) { /* non-fatal */ }
           if (opt.close_on_complete !== false) {
             try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {}
+            // BUG-B fix: notify lifecycle store so workers[].closed flips to true.
+            try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
           }
         }
       } catch (e) { log('detach watcher tick error: ' + (e && e.message || e)); }
@@ -783,6 +785,8 @@ async function runBlockingWorker(sock, args) {
   if (opt.close_on_complete) {
     const cl = await clawsRpc(sock, { cmd: 'close', id: termId });
     cleanedUp = !!cl.ok;
+    // BUG-B fix: notify lifecycle store so workers[].closed flips to true.
+    try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
   }
 
   return {
@@ -1458,6 +1462,8 @@ async function _dispatchTool(name, args, sock) {
           try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: _fpStatus }); } catch (e) { /* non-fatal */ }
           if (_fpOpt.close_on_complete) {
             try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {}
+            // BUG-B fix: notify lifecycle store so workers[].closed flips to true.
+            try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
           }
         }
       } catch (e) { log('fast-path watcher tick error: ' + (e && e.message || e)); }
@@ -1887,7 +1893,11 @@ async function _dispatchTool(name, args, sock) {
                   payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _dswStartedAt, marker_line: null, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId } });
               } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
               try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
-              if (_dswCloseOnComplete) { try { await clawsRpc(_dswSock, { cmd: 'close', id: termId }); } catch {} }
+              if (_dswCloseOnComplete) {
+                try { await clawsRpc(_dswSock, { cmd: 'close', id: termId }); } catch {}
+                // BUG-B fix: notify lifecycle store so workers[].closed flips to true.
+                try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
+              }
               return;
             }
             const snap = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
@@ -1916,7 +1926,11 @@ async function _dispatchTool(name, args, sock) {
                   payload: { terminal_id: termId, status: _dswStatus, duration_ms: Date.now() - _dswStartedAt, marker_line: _dswMarkerLine, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId } });
               } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
               try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: _dswStatus }); } catch (e) { /* non-fatal */ }
-              if (_dswCloseOnComplete) { try { await clawsRpc(_dswSock, { cmd: 'close', id: termId }); } catch {} }
+              if (_dswCloseOnComplete) {
+                try { await clawsRpc(_dswSock, { cmd: 'close', id: termId }); } catch {}
+                // BUG-B fix: notify lifecycle store so workers[].closed flips to true.
+                try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
+              }
             }
           } catch (e) { log('dsw watcher tick error: ' + (e && e.message || e)); }
         };
