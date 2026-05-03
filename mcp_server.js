@@ -457,6 +457,45 @@ async function _scanAndPublishCLAWSPUB(newText, sockPath) {
   }
 }
 
+// ─── Multi-signal completion detector (Task #58) ─────────────────────────────
+// Pure function. Returns { status, line, signal } if any signal fires, else null.
+// signal in {'marker','error','pub_complete','idle'}
+// Priority: marker > error > pub_complete > idle.
+//
+// Idle requires: now - state.startedAt >= opt.min_runtime_ms
+//                AND state.firstActivityAt !== null
+//                AND now - state.lastGrowthAt >= opt.idle_timeout_ms.
+//
+// Caller must update state on every call BEFORE invoking:
+//   if (text.length > state.lastLen) {
+//     if (state.firstActivityAt === null) state.firstActivityAt = now;
+//     state.lastGrowthAt = now;
+//     state.lastLen = text.length;
+//   }
+function detectCompletion(text, opt, state, termId, now) {
+  // 1. marker
+  const m = findStandaloneMarker(text, opt.complete_marker);
+  if (m !== null) return { status: 'completed', line: m, signal: 'marker' };
+  // 2. error
+  for (const em of (opt.error_markers || [])) {
+    const e = em ? findStandaloneMarker(text, em) : null;
+    if (e !== null) return { status: 'failed', line: e, signal: 'error' };
+  }
+  // 3. explicit pub-complete: [CLAWS_PUB] topic=worker.<termId>.complete
+  const pubTopic = `worker.${termId}.complete`;
+  const pubLine = findStandaloneMarker(text, `[CLAWS_PUB] topic=${pubTopic}`);
+  if (pubLine !== null) return { status: 'completed', line: pubLine, signal: 'pub_complete' };
+  // 4. idle
+  const idleMs = typeof opt.idle_timeout_ms === 'number' ? opt.idle_timeout_ms : 30000;
+  const minMs  = typeof opt.min_runtime_ms  === 'number' ? opt.min_runtime_ms  : 30000;
+  if (now - state.startedAt >= minMs &&
+      state.firstActivityAt !== null &&
+      now - state.lastGrowthAt >= idleMs) {
+    return { status: 'completed', line: null, signal: 'idle' };
+  }
+  return null;
+}
+
 async function runBlockingWorker(sock, args) {
   const DEFAULTS = {
     timeout_ms: 5 * 60 * 1000,
@@ -472,6 +511,8 @@ async function runBlockingWorker(sock, args) {
     harvest_lines: 200,
     close_on_complete: true,
     model: 'claude-sonnet-4-6',
+    idle_timeout_ms: 30000,
+    min_runtime_ms: 30000,
   };
   const opt = { ...DEFAULTS, ...args };
   if (!/^[a-zA-Z0-9._-]+$/.test(opt.model)) {
@@ -660,6 +701,8 @@ async function runBlockingWorker(sock, args) {
     let pubScanOffset = markerScanFrom;
     let status = 'timeout';
     let markerLine = null;
+    let completionSignal = null;
+    const _msState = { firstActivityAt: null, lastLen: 0, lastGrowthAt: Date.now(), startedAt };
     const timeoutDeadline = startedAt + opt.timeout_ms;
     const tick = async () => {
       try {
@@ -671,7 +714,7 @@ async function runBlockingWorker(sock, args) {
             await _pconnWrite({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.worker.completed',
-              payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true, correlation_id: _bCorrId },
+              payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true, correlation_id: _bCorrId, completion_signal: completionSignal },
             });
           } catch (e) { log('detach watcher publish failed: ' + (e && e.message || e)); }
           try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
@@ -683,15 +726,17 @@ async function runBlockingWorker(sock, args) {
         const scanStart = Math.min(pubScanOffset, text.length);
         if (text.length > scanStart) await _scanAndPublishCLAWSPUB(text.slice(scanStart), sock);
         pubScanOffset = text.length;
-        const _completeLine = findStandaloneMarker(scanText, opt.complete_marker);
-        if (_completeLine !== null) {
-          status = 'completed';
-          markerLine = _completeLine;
-        } else {
-          for (const em of opt.error_markers) {
-            const _errLine = em ? findStandaloneMarker(scanText, em) : null;
-            if (_errLine !== null) { status = 'failed'; markerLine = _errLine; break; }
-          }
+        const _now = Date.now();
+        if (text.length > _msState.lastLen) {
+          if (_msState.firstActivityAt === null) _msState.firstActivityAt = _now;
+          _msState.lastGrowthAt = _now;
+          _msState.lastLen = text.length;
+        }
+        const _det = detectCompletion(scanText, opt, _msState, String(termId), _now);
+        if (_det !== null) {
+          status = _det.status;
+          markerLine = _det.line;
+          completionSignal = _det.signal;
         }
         if (status !== 'timeout') {
           clearInterval(intervalId);
@@ -701,7 +746,7 @@ async function runBlockingWorker(sock, args) {
             await _pconnWrite({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.worker.completed',
-              payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true, correlation_id: _bCorrId },
+              payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true, correlation_id: _bCorrId, completion_signal: completionSignal },
             });
           } catch (e) { log('detach watcher publish failed: ' + (e && e.message || e)); }
           try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status }); } catch (e) { /* non-fatal */ }
@@ -722,7 +767,9 @@ async function runBlockingWorker(sock, args) {
   const timeoutDeadline = startedAt + opt.timeout_ms;
   let status = 'timeout';
   let markerLine = null;
+  let completionSignal = null;
   let pubScanOffset = markerScanFrom; // start CLAWS_PUB scan from the same offset
+  const _bMsState = { firstActivityAt: null, lastLen: 0, lastGrowthAt: Date.now(), startedAt };
   while (Date.now() < timeoutDeadline) {
     const snap = await clawsRpc(sock, {
       cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024,
@@ -741,23 +788,19 @@ async function runBlockingWorker(sock, args) {
     }
     pubScanOffset = text.length;
 
-    const _bCompleteLine = findStandaloneMarker(scanText, opt.complete_marker);
-    if (_bCompleteLine !== null) {
-      status = 'completed';
-      markerLine = _bCompleteLine;
+    const _bNow = Date.now();
+    if (text.length > _bMsState.lastLen) {
+      if (_bMsState.firstActivityAt === null) _bMsState.firstActivityAt = _bNow;
+      _bMsState.lastGrowthAt = _bNow;
+      _bMsState.lastLen = text.length;
+    }
+    const _bDet = detectCompletion(scanText, opt, _bMsState, String(termId), _bNow);
+    if (_bDet !== null) {
+      status = _bDet.status;
+      markerLine = _bDet.line;
+      completionSignal = _bDet.signal;
       break;
     }
-    let failed = false;
-    for (const em of opt.error_markers) {
-      const _bErrLine = em ? findStandaloneMarker(scanText, em) : null;
-      if (_bErrLine !== null) {
-        status = 'failed';
-        markerLine = _bErrLine;
-        failed = true;
-        break;
-      }
-    }
-    if (failed) break;
 
     await sleep(opt.poll_interval_ms);
   }
@@ -768,7 +811,7 @@ async function runBlockingWorker(sock, args) {
     await _pconnWrite({
       cmd: 'publish', protocol: 'claws/2',
       topic: 'system.worker.completed',
-      payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, correlation_id: _bCorrId },
+      payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, correlation_id: _bCorrId, completion_signal: completionSignal },
     });
   } catch (e) { log('system.worker.completed publish failed: ' + (e && e.message || e)); }
   try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status }); } catch (e) { /* non-fatal */ }
@@ -798,6 +841,7 @@ async function runBlockingWorker(sock, args) {
     cleaned_up: cleanedUp,
     harvest,
     correlation_id: _bCorrId,
+    completion_signal: completionSignal,
   };
 }
 
@@ -1420,8 +1464,11 @@ async function _dispatchTool(name, args, sock) {
       timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : 5 * 60 * 1000,
       poll_interval_ms: typeof args.poll_interval_ms === 'number' ? args.poll_interval_ms : 1500,
       close_on_complete: args.close_on_complete !== false,
+      idle_timeout_ms: typeof args.idle_timeout_ms === 'number' ? args.idle_timeout_ms : 30000,
+      min_runtime_ms: typeof args.min_runtime_ms === 'number' ? args.min_runtime_ms : 30000,
     };
     let _fpScanOffset = 0;
+    const _fpMsState = { firstActivityAt: null, lastLen: 0, lastGrowthAt: Date.now(), startedAt: _fpStartedAt };
     const _fpTick = async () => {
       try {
         if (Date.now() > _fpStartedAt + _fpOpt.timeout_ms) {
@@ -1430,7 +1477,7 @@ async function _dispatchTool(name, args, sock) {
           try {
             await _pconnEnsureRegistered(sock);
             await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-              payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _fpStartedAt, marker_line: null, booted: launchClaude, detach: true, correlation_id: _fpCorrId } });
+              payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _fpStartedAt, marker_line: null, booted: launchClaude, detach: true, correlation_id: _fpCorrId, completion_signal: null } });
           } catch (e) { log('fast-path watcher publish failed: ' + (e && e.message || e)); }
           try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
           return;
@@ -1439,25 +1486,23 @@ async function _dispatchTool(name, args, sock) {
         const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
         if (text.length > _fpScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_fpScanOffset), sock);
         _fpScanOffset = text.length;
-        let _fpStatus = 'timeout';
-        let _fpMarkerLine = null;
-        const _fpCompleteLine = findStandaloneMarker(text, _fpOpt.complete_marker);
-        if (_fpCompleteLine !== null) {
-          _fpStatus = 'completed';
-          _fpMarkerLine = _fpCompleteLine;
-        } else {
-          for (const em of _fpOpt.error_markers) {
-            const _fpErrLine = em ? findStandaloneMarker(text, em) : null;
-            if (_fpErrLine !== null) { _fpStatus = 'failed'; _fpMarkerLine = _fpErrLine; break; }
-          }
+        const _fpNow = Date.now();
+        if (text.length > _fpMsState.lastLen) {
+          if (_fpMsState.firstActivityAt === null) _fpMsState.firstActivityAt = _fpNow;
+          _fpMsState.lastGrowthAt = _fpNow;
+          _fpMsState.lastLen = text.length;
         }
-        if (_fpStatus !== 'timeout') {
+        const _fpDet = detectCompletion(text, _fpOpt, _fpMsState, String(termId), _fpNow);
+        const _fpStatus = _fpDet ? _fpDet.status : null;
+        const _fpMarkerLine = _fpDet ? _fpDet.line : null;
+        const _fpSignal = _fpDet ? _fpDet.signal : null;
+        if (_fpStatus !== null) {
           clearInterval(_fpIntervalId);
           _detachWatchers.delete(termId);
           try {
             await _pconnEnsureRegistered(sock);
             await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-              payload: { terminal_id: termId, status: _fpStatus, duration_ms: Date.now() - _fpStartedAt, marker_line: _fpMarkerLine, booted: launchClaude, detach: true, correlation_id: _fpCorrId } });
+              payload: { terminal_id: termId, status: _fpStatus, duration_ms: Date.now() - _fpStartedAt, marker_line: _fpMarkerLine, booted: launchClaude, detach: true, correlation_id: _fpCorrId, completion_signal: _fpSignal } });
           } catch (e) { log('fast-path watcher publish failed: ' + (e && e.message || e)); }
           try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: _fpStatus }); } catch (e) { /* non-fatal */ }
           if (_fpOpt.close_on_complete) {
@@ -1853,6 +1898,8 @@ async function _dispatchTool(name, args, sock) {
     const _dswTimeoutMs = typeof args.timeout_ms === 'number' ? args.timeout_ms : 5 * 60 * 1000;
     const _dswPollMs = typeof args.poll_interval_ms === 'number' ? args.poll_interval_ms : 1500;
     const _dswCloseOnComplete = args.close_on_complete !== false;
+    const _dswIdleTimeoutMs = typeof args.idle_timeout_ms === 'number' ? args.idle_timeout_ms : 30000;
+    const _dswMinRuntimeMs = typeof args.min_runtime_ms === 'number' ? args.min_runtime_ms : 30000;
     setImmediate(async () => {
       try {
         await sleep(400);
@@ -1882,6 +1929,8 @@ async function _dispatchTool(name, args, sock) {
         // BUG-09: register auto-close watcher mirroring the fast-path detach watcher pattern.
         const _dswStartedAt = Date.now();
         let _dswScanOffset = 0;
+        const _dswMsState = { firstActivityAt: null, lastLen: 0, lastGrowthAt: _dswStartedAt, startedAt: _dswStartedAt };
+        const _dswOpt = { complete_marker: _dswCompleteMarker, error_markers: _dswErrorMarkers, timeout_ms: _dswTimeoutMs, poll_interval_ms: _dswPollMs, close_on_complete: _dswCloseOnComplete, idle_timeout_ms: _dswIdleTimeoutMs, min_runtime_ms: _dswMinRuntimeMs };
         const _dswTick = async () => {
           try {
             if (Date.now() > _dswStartedAt + _dswTimeoutMs) {
@@ -1890,7 +1939,7 @@ async function _dispatchTool(name, args, sock) {
               try {
                 await _pconnEnsureRegistered(_dswSock);
                 await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-                  payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _dswStartedAt, marker_line: null, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId } });
+                  payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _dswStartedAt, marker_line: null, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId, completion_signal: null } });
               } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
               try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
               if (_dswCloseOnComplete) {
@@ -1904,26 +1953,23 @@ async function _dispatchTool(name, args, sock) {
             const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
             if (text.length > _dswScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_dswScanOffset), _dswSock);
             _dswScanOffset = text.length;
-            const scanText = text.slice(_dswScanOffset - Math.max(0, text.length - _dswScanOffset));
-            let _dswStatus = null;
-            let _dswMarkerLine = null;
-            const _dswCompleteLine = findStandaloneMarker(text, _dswCompleteMarker);
-            if (_dswCompleteLine !== null) {
-              _dswStatus = 'completed';
-              _dswMarkerLine = _dswCompleteLine;
-            } else {
-              for (const em of _dswErrorMarkers) {
-                const _dswErrLine = em ? findStandaloneMarker(text, em) : null;
-                if (_dswErrLine !== null) { _dswStatus = 'failed'; _dswMarkerLine = _dswErrLine; break; }
-              }
+            const _dswNow = Date.now();
+            if (text.length > _dswMsState.lastLen) {
+              if (_dswMsState.firstActivityAt === null) _dswMsState.firstActivityAt = _dswNow;
+              _dswMsState.lastGrowthAt = _dswNow;
+              _dswMsState.lastLen = text.length;
             }
+            const _dswDet = detectCompletion(text, _dswOpt, _dswMsState, String(termId), _dswNow);
+            const _dswStatus = _dswDet ? _dswDet.status : null;
+            const _dswMarkerLine = _dswDet ? _dswDet.line : null;
+            const _dswSignal = _dswDet ? _dswDet.signal : null;
             if (_dswStatus) {
               clearInterval(_dswIntervalId);
               _detachWatchers.delete(termId);
               try {
                 await _pconnEnsureRegistered(_dswSock);
                 await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-                  payload: { terminal_id: termId, status: _dswStatus, duration_ms: Date.now() - _dswStartedAt, marker_line: _dswMarkerLine, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId } });
+                  payload: { terminal_id: termId, status: _dswStatus, duration_ms: Date.now() - _dswStartedAt, marker_line: _dswMarkerLine, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId, completion_signal: _dswSignal } });
               } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
               try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: _dswStatus }); } catch (e) { /* non-fatal */ }
               if (_dswCloseOnComplete) {
@@ -1935,7 +1981,7 @@ async function _dispatchTool(name, args, sock) {
           } catch (e) { log('dsw watcher tick error: ' + (e && e.message || e)); }
         };
         const _dswIntervalId = setInterval(_dswTick, _dswPollMs);
-        _detachWatchers.set(termId, { intervalId: _dswIntervalId, opt: { complete_marker: _dswCompleteMarker, error_markers: _dswErrorMarkers, timeout_ms: _dswTimeoutMs, poll_interval_ms: _dswPollMs, close_on_complete: _dswCloseOnComplete }, startedAt: _dswStartedAt });
+        _detachWatchers.set(termId, { intervalId: _dswIntervalId, opt: _dswOpt, startedAt: _dswStartedAt });
       } catch (e) { log('claws_dispatch_subworker background boot error: ' + (e && e.message || e)); }
     });
 
@@ -2099,3 +2145,8 @@ async function main() {
 }
 
 main().catch(console.error);
+
+// Export pure helpers for unit testing (Task #58).
+if (typeof module !== 'undefined') {
+  module.exports = { detectCompletion, findStandaloneMarker };
+}
