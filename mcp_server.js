@@ -798,8 +798,8 @@ class WorkerHeartbeatStateMachine {
       }
 
     } else if (this.state === 'READY') {
-      // READY → WORKING: first tool call observed
-      if (tools.length > 0) {
+      // READY → WORKING: first tool call observed (cumulative so cascade tick still fires)
+      if (this.toolCount > 0) {
         detected.push(this._transition('READY', 'WORKING', 'first-tool-call', now));
       }
 

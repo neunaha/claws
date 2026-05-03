@@ -134,6 +134,25 @@ check('observe: READY→WORKING on first tool call, toolCount=1', () => {
   assert.strictEqual(m.firstActivityAt, 10);
 });
 
+// ─── Test 4b: cascade fix — boot+tool in same tick, next tick (no new tools) still transitions ───
+
+check('observe: READY→WORKING fires on next tick via cumulative toolCount (cascade fix)', () => {
+  const sm = new WorkerHeartbeatStateMachine({ terminalId: 99, correlationId: 'test-cascade' });
+
+  // Tick 1: boot text + first tool indicator both present in same observe() call
+  const tick1Text = 'Welcome to Claude\n⏵⏵ bypass permissions on\n⏺ Bash(git status)\n';
+  sm.observe(tick1Text, 1000);
+  // BOOTING→READY fires (else-if means READY→WORKING was gated this tick)
+  assert.strictEqual(sm.state, 'READY', 'expected READY after boot text + tool in same tick');
+  assert.strictEqual(sm.toolCount, 1, 'tool was counted even though READY→WORKING was skipped');
+
+  // Tick 2: only sleep output — no new tool indicators (tools.length===0 this tick)
+  const tick2Text = tick1Text + 'sleep started\n';
+  sm.observe(tick2Text, 31000);
+  // With the cascade fix (this.toolCount > 0), READY→WORKING fires here
+  assert.strictEqual(sm.state, 'WORKING', 'expected WORKING: cumulative toolCount>0 catches the skipped transition');
+});
+
 // ─── Test 5: spinner active keeps state WORKING ───────────────────────────────
 
 check('observe: spinner active → stays WORKING, updates lastSpinnerAt', () => {
