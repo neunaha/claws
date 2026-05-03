@@ -77,6 +77,36 @@ check('returns null when no signal fires', () => {
   assert.strictEqual(result, null);
 });
 
+// ── 7. terminated signal via terminatedSet ────────────────────────────────────
+check('terminated signal fires when termId is in terminatedSet', () => {
+  const termId = '99';
+  const terminatedSet = new Set([termId]);
+  const text = 'worker completed work but skipped printf';
+  const result = detectCompletion(text, BASE_OPT, termId, terminatedSet);
+  assert.ok(result !== null, 'expected non-null result');
+  assert.strictEqual(result.status, 'terminated');
+  assert.strictEqual(result.signal, 'terminated');
+  assert.strictEqual(result.line, null, 'line should be null for terminated signal');
+});
+
+// ── 8. terminated does NOT fire when termId not in terminatedSet ──────────────
+check('terminated does NOT fire when termId absent from terminatedSet', () => {
+  const terminatedSet = new Set(['42', '55']);
+  const text = 'worker output';
+  const result = detectCompletion(text, BASE_OPT, '99', terminatedSet);
+  assert.strictEqual(result, null, 'should not fire for non-matching termId');
+});
+
+// ── 9. marker takes priority over terminated ──────────────────────────────────
+check('marker takes priority over terminated signal', () => {
+  const termId = '7';
+  const terminatedSet = new Set([termId]);
+  const text = 'MISSION_COMPLETE\nsome more output';
+  const result = detectCompletion(text, BASE_OPT, termId, terminatedSet);
+  assert.ok(result !== null);
+  assert.strictEqual(result.signal, 'marker', 'marker must win over terminated');
+});
+
 // ── Results ───────────────────────────────────────────────────────────────────
 let failed = 0;
 for (const c of checks) {

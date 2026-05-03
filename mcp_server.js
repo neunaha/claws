@@ -166,6 +166,12 @@ const _eventBuffer = {
 };
 
 let _pconnConnecting = null; // Promise | null — guards concurrent connect attempts
+
+// Wave D — terminal IDs (strings) for which system.worker.terminated was received.
+// Populated by _pconnHandleData; read by detectCompletion as 4th completion signal.
+const _workerTerminatedSet = new Set();
+// True once _pconn has subscribed to system.worker.terminated.
+let _workerTerminatedSubscribed = false;
 let _helloInFlight   = null; // Promise | null — deduplicates concurrent hello sends
 
 // Circuit breaker for _pconnEnsureRegistered and _scanAndPublishCLAWSPUB.
@@ -212,6 +218,10 @@ function _pconnHandleData(data) {
           sequence: msg.sequence != null ? msg.sequence : null,
         };
         _eventBuffer.ring.push(entry);
+        // Wave D: track terminated terminals so detectCompletion can use them.
+        if (entry.topic === 'system.worker.terminated' && entry.payload && entry.payload.terminal_id) {
+          _workerTerminatedSet.add(String(entry.payload.terminal_id));
+        }
         if (_eventBuffer.ring.length > _eventBuffer.maxSize) {
           _eventBuffer.ring.shift();
           // Emit ring-overflow once per eviction so callers know events were dropped.
@@ -244,6 +254,7 @@ function _pconnHandleClose() {
   _pconn.buf = '';
   _pconn.peerId = null;
   _eventBuffer.subscribed = false; // reconnect requires fresh auto-subscribe
+  _workerTerminatedSubscribed = false; // reconnect requires re-subscribe
   for (const [, { reject, timer }] of _pconn.pending) {
     clearTimeout(timer);
     reject(new Error('persistent socket closed'));
@@ -466,7 +477,7 @@ async function _scanAndPublishCLAWSPUB(newText, sockPath) {
 // workers mid-thinking and contradicted the pub/sub event-driven architecture.
 // Proper completion fallback will come from VS Code's onDidCloseTerminal →
 // system.worker.terminated bus event (planned).
-function detectCompletion(text, opt, termId) {
+function detectCompletion(text, opt, termId, terminatedSet) {
   // 1. marker
   const m = findStandaloneMarker(text, opt.complete_marker);
   if (m !== null) return { status: 'completed', line: m, signal: 'marker' };
@@ -479,6 +490,11 @@ function detectCompletion(text, opt, termId) {
   const pubTopic = `worker.${termId}.complete`;
   const pubLine = findStandaloneMarker(text, `[CLAWS_PUB] topic=${pubTopic}`);
   if (pubLine !== null) return { status: 'completed', line: pubLine, signal: 'pub_complete' };
+  // 4. terminated: VS Code onDidCloseTerminal → system.worker.terminated bus event.
+  //    Belt-and-suspenders for workers that succeed but skip the printf marker.
+  if (terminatedSet && terminatedSet.has(String(termId))) {
+    return { status: 'terminated', line: null, signal: 'terminated' };
+  }
   return null;
 }
 
@@ -716,7 +732,7 @@ async function runBlockingWorker(sock, args) {
           _msState.lastGrowthAt = _now;
           _msState.lastLen = text.length;
         }
-        const _det = detectCompletion(scanText, opt, _msState, String(termId), _now);
+        const _det = detectCompletion(scanText, opt, String(termId), _workerTerminatedSet);
         if (_det !== null) {
           status = _det.status;
           markerLine = _det.line;
@@ -773,7 +789,7 @@ async function runBlockingWorker(sock, args) {
     pubScanOffset = text.length;
 
     const _bNow = Date.now();
-    const _bDet = detectCompletion(scanText, opt, String(termId));
+    const _bDet = detectCompletion(scanText, opt, String(termId), _workerTerminatedSet);
     if (_bDet !== null) {
       status = _bDet.status;
       markerLine = _bDet.line;
@@ -979,6 +995,14 @@ async function _pconnEnsureRegistered(sockPath) {
       _circuitBreaker.scanConsecutiveErrors = 0;
       log('auto-registered as peer ' + hr.peerId + ' role=orchestrator');
     }
+  }
+  // Wave D: subscribe to system.worker.terminated once registered so push frames
+  // arrive and populate _workerTerminatedSet for the terminated completion signal.
+  if (_pconn.peerId && !_workerTerminatedSubscribed) {
+    try {
+      const sr = await _pconnWrite({ cmd: 'subscribe', protocol: 'claws/2', topic: 'system.worker.terminated' }, 5000);
+      if (sr && sr.ok) _workerTerminatedSubscribed = true;
+    } catch { /* non-fatal; watcher falls back to marker/error/pub_complete signals */ }
   }
 }
 
@@ -1464,7 +1488,7 @@ async function _dispatchTool(name, args, sock) {
         if (text.length > _fpScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_fpScanOffset), sock);
         _fpScanOffset = text.length;
         const _fpNow = Date.now();
-        const _fpDet = detectCompletion(text, _fpOpt, String(termId));
+        const _fpDet = detectCompletion(text, _fpOpt, String(termId), _workerTerminatedSet);
         const _fpStatus = _fpDet ? _fpDet.status : null;
         const _fpMarkerLine = _fpDet ? _fpDet.line : null;
         const _fpSignal = _fpDet ? _fpDet.signal : null;
@@ -1924,7 +1948,7 @@ async function _dispatchTool(name, args, sock) {
             if (text.length > _dswScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_dswScanOffset), _dswSock);
             _dswScanOffset = text.length;
             const _dswNow = Date.now();
-            const _dswDet = detectCompletion(text, _dswOpt, String(termId));
+            const _dswDet = detectCompletion(text, _dswOpt, String(termId), _workerTerminatedSet);
             const _dswStatus = _dswDet ? _dswDet.status : null;
             const _dswMarkerLine = _dswDet ? _dswDet.line : null;
             const _dswSignal = _dswDet ? _dswDet.signal : null;
