@@ -130,16 +130,23 @@ try {
 
         if (enforceNow) {
           const { spawnSync } = require('child_process');
-          const pg = spawnSync('pgrep', ['-f', 'tail.*\\.claws/events\\.log'], { stdio: 'ignore' });
-          if (pg.status !== 0) {
-            const eventsLog = path.join(cwd, '.claws', 'events.log');
+          // Wave C (Task #63): accept canonical bus-stream sidecar as satisfier.
+          // stream-events.js is auto-spawned by SessionStart and never goes idle
+          // (constant heartbeat traffic) so it is never SIGURG'd. tail -F is kept
+          // as a deprecated fallback for one release. See ARCHITECTURE.md P9 + A1.
+          const pgSidecar = spawnSync('pgrep', ['-f', 'stream-events\\.js'],            { stdio: 'ignore' });
+          const pgTail    = spawnSync('pgrep', ['-f', 'tail.*\\.claws/events\\.log'], { stdio: 'ignore' });
+          if (pgSidecar.status !== 0 && pgTail.status !== 0) {
             try {
               process.stdout.write(JSON.stringify({
                 hookSpecificOutput: {
                   hookEventName: 'PreToolUse',
                   permissionDecision: 'deny',
                   permissionDecisionReason:
-                    `Monitor not armed on .claws/events.log. Run: Bash(command="tail -F ${eventsLog}", run_in_background=true) FIRST, then retry this MCP call. (This is required per the Claws lifecycle contract.)`,
+                    `Monitor not armed. The canonical satisfier is the stream-events.js sidecar ` +
+                    `(auto-spawned by SessionStart hook). If missing, arm it with: ` +
+                    `Monitor(command="node <claws>/scripts/stream-events.js | grep --line-buffered ...", ...). ` +
+                    `(Per ARCHITECTURE.md P9 — tail -F is deprecated as Monitor satisfier.)`,
                 },
               }) + '\n');
             } catch {}

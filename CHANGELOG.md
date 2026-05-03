@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.10] - 2026-05-03 — 10-phase lifecycle (W1+Wave A+Wave B+Wave D) + auto-advance engine + claws_worker fast-path boot detection
 
 ### Fixed (post-validation small bugs)
+- fix(v0.7.10) — Wave C SIGURG resolution (Task #63): `pre-tool-use-claws.js` now accepts the canonical `stream-events.js` sidecar (auto-spawned by SessionStart) as a valid Monitor satisfier. Eliminates the recurring "Hook satisfier failed exit 144" task notifications. Old `tail -F` check kept as deprecated fallback for one release. Per ARCHITECTURE.md P9 + anti-pattern A1. New regression test: `test:pre-tool-use-sidecar-recognized` (7 assertions).
 - **BUG-A** — `nextAutoPhase` had cases for SPAWN, DEPLOY, OBSERVE, CLEANUP but missing HARVEST. Engine cascaded 4 transitions then stopped. Now adds HARVEST→CLEANUP transition (gated by `canCleanup`), enabling 5-transition auto-cascade through the mission cycle.
 - **BUG-B** — Detach watchers in `mcp_server.js` (4 callsites: runBlockingWorker, blocking-worker happy-path, fast-path watcher, dispatch_subworker) auto-closed terminals on marker match but never notified the lifecycle store of closure. `workers[].closed` stayed false, blocking `canReflect` gate forever. Fix: after successful close, call `lifecycle.mark-worker-status` with `status='closed'` so the lifecycle store flips the flag. Now CLEANUP→REFLECT can auto-advance once all spawns are closed.
 
