@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.10] - 2026-05-03 — 10-phase lifecycle (Wave A+B+C+D) + auto-advance engine + event-driven completion
 
+### Fixed (post-release hotfix, force-tagged)
+- **Install blocker**: `extension/native/.metadata.json` was tracked in git but rewritten with a fresh `bundledAt` timestamp on every native rebuild. Every user's second install hit the P3 hygiene guard ("uncommitted changes — refusing to git reset --hard"). Now gitignored and untracked. `git rm --cached` removes it from the index; existing installs that pull this fix will silently drop the tracked copy. Per ARCHITECTURE.md P4 (build artifacts shouldn't be tracked).
+
 ### Added
 - **`docs/ARCHITECTURE.md`** (NEW): comprehensive canonical architecture anchor — 10 principles, system map (extension ↔ MCP server ↔ lifecycle engine), anti-patterns catalog (A1–A5), known-gaps roadmap §IX. Commit d831820. All architectural changes must pass §X anchoring protocol before landing.
 - **Wave C closure — PostToolUse hook fail-closes spawn → monitor race** (`scripts/hooks/post-tool-use-claws.js`, NEW): after every spawn-class MCP tool call returns, waits up to ~5 s for `lifecycle.monitors[terminal_id]` to be registered. If missing, publishes `wave.violation` event (kind=monitor-missing) and auto-closes the orphaned terminal with a stderr warning. `inject-settings-hooks.js` registers four explicit PostToolUse matchers (claws_create/worker/fleet/dispatch_subworker), tagged `_source:'claws'`, dual-form canonical+fallback. Closes the spawn → monitor race window flagged in ARCHITECTURE.md §VI. New `extension/test/post-tool-use-monitor-gate.test.js` (15 checks): no-socket bail, non-spawn-class no-op, no-terminal-id no-op, monitor registered → pass, monitor missing → violate+close, 5 s self-kill.
