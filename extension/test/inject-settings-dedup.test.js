@@ -94,8 +94,14 @@ function runInject(home) {
     }
   });
 
-  // 2. Claws hook is idempotent: running twice produces only one Claws entry per event
-  await check('Claws hook idempotent: two runs → one entry per event', () => {
+  // 2. Claws hook is idempotent: running twice produces the expected number of
+  //    Claws entries per event (no duplicates, no missing).
+  //    Counts reflect the multi-matcher design (belt-and-suspenders per spawn tool):
+  //      SessionStart: 1  (* matcher)
+  //      PreToolUse:   5  (* + 4 per-tool matchers)
+  //      PostToolUse:  4  (4 per-tool matchers — Wave C monitor gate)
+  //      Stop:         1  (* matcher)
+  await check('Claws hook idempotent: two runs → correct entry count per event', () => {
     const tmp = makeTmpDir();
     try {
       const claudeDir = path.join(tmp, '.claude');
@@ -109,9 +115,15 @@ function runInject(home) {
       assert.strictEqual(r.status, 0, `Second inject must succeed: ${r.stderr}`);
 
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      for (const event of ['SessionStart', 'PreToolUse', 'Stop']) {
+      const expectedCounts = {
+        SessionStart: 1,
+        PreToolUse:   5, // '*' matcher + claws_create/worker/fleet/dispatch_subworker
+        PostToolUse:  4, // claws_create/worker/fleet/dispatch_subworker (Wave C monitor gate)
+        Stop:         1,
+      };
+      for (const [event, expected] of Object.entries(expectedCounts)) {
         const clawsEntries = (settings.hooks[event] || []).filter(e => e._source === 'claws');
-        assert.strictEqual(clawsEntries.length, 1, `${event} must have exactly 1 Claws entry after two runs; got ${clawsEntries.length}`);
+        assert.strictEqual(clawsEntries.length, expected, `${event} must have exactly ${expected} Claws entries after two runs; got ${clawsEntries.length}`);
       }
     } finally {
       cleanTmpDir(tmp);

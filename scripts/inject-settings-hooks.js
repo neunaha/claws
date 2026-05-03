@@ -6,13 +6,16 @@
 // Usage: node inject-settings-hooks.js [claws-bin-dir] [--dry-run] [--remove]
 //
 // Adds hooks (all tagged _source:"claws" for clean uninstall):
-//   SessionStart — emits lifecycle reminder when .claws/claws.sock detected
-//   PreToolUse   — long-running Bash guard + Edit/Write mcp_server.js guard
+//   SessionStart  — emits lifecycle reminder when .claws/claws.sock detected
+//   PreToolUse    — long-running Bash guard + Edit/Write mcp_server.js guard
 //   PreToolUse (MCP spawn-class) — BUG-28: explicit matchers for claws_create /
 //     claws_worker / claws_fleet / claws_dispatch_subworker so Monitor arm gate
 //     fires even if Claude Code does not propagate the '*' hook to MCP tools.
-//   Stop         — reminds model to close terminals before session ends
-// (PostToolUse removed in v0.6.5 — lifecycle gate moved server-side)
+//   PostToolUse (MCP spawn-class) — Wave C: fail-close spawn → monitor race window.
+//     After any spawn-class tool succeeds, waits up to 5s for lifecycle.monitors
+//     to register the terminal. If missing, publishes wave.violation + auto-closes.
+//     Explicit per-tool matchers (belt-and-suspenders, matching PreToolUse pattern).
+//   Stop          — kills sidecar, kills tail -F, reminds model to close terminals
 //
 // Idempotent: running twice produces the same result.
 // --remove: strips all _source:"claws" hooks without touching others.
@@ -131,12 +134,20 @@ function makeHookEntry(matcher, scriptName) {
     // Claude Code may not propagate the '*' PreToolUse hook to MCP tool calls in all
     // versions. These explicit per-tool matchers guarantee the Monitor gate fires for
     // every spawn-class call regardless of Claude Code's hook-dispatch behavior.
-    { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('mcp__claws__claws_create',             'pre-tool-use-claws.js') },
-    { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('mcp__claws__claws_worker',             'pre-tool-use-claws.js') },
-    { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('mcp__claws__claws_fleet',              'pre-tool-use-claws.js') },
-    { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('mcp__claws__claws_dispatch_subworker', 'pre-tool-use-claws.js') },
+    { event: 'PreToolUse',  scriptName: 'pre-tool-use-claws.js',       entry: makeHookEntry('mcp__claws__claws_create',             'pre-tool-use-claws.js') },
+    { event: 'PreToolUse',  scriptName: 'pre-tool-use-claws.js',       entry: makeHookEntry('mcp__claws__claws_worker',             'pre-tool-use-claws.js') },
+    { event: 'PreToolUse',  scriptName: 'pre-tool-use-claws.js',       entry: makeHookEntry('mcp__claws__claws_fleet',              'pre-tool-use-claws.js') },
+    { event: 'PreToolUse',  scriptName: 'pre-tool-use-claws.js',       entry: makeHookEntry('mcp__claws__claws_dispatch_subworker', 'pre-tool-use-claws.js') },
+    // Wave C: PostToolUse spawn-class matchers — fail-close the spawn → monitor race window.
+    // Explicit per-tool matchers (belt-and-suspenders, same rationale as PreToolUse above).
+    // After each successful spawn, waits up to ~5s for lifecycle.monitors to register the
+    // terminal. If missing, publishes wave.violation and auto-closes the orphaned terminal.
+    { event: 'PostToolUse', scriptName: 'post-tool-use-claws.js', entry: makeHookEntry('mcp__claws__claws_create',             'post-tool-use-claws.js') },
+    { event: 'PostToolUse', scriptName: 'post-tool-use-claws.js', entry: makeHookEntry('mcp__claws__claws_worker',             'post-tool-use-claws.js') },
+    { event: 'PostToolUse', scriptName: 'post-tool-use-claws.js', entry: makeHookEntry('mcp__claws__claws_fleet',              'post-tool-use-claws.js') },
+    { event: 'PostToolUse', scriptName: 'post-tool-use-claws.js', entry: makeHookEntry('mcp__claws__claws_dispatch_subworker', 'post-tool-use-claws.js') },
     // Stop: kills stream-events.js sidecar + reminds model to close terminals / complete REFLECT
-    { event: 'Stop',         scriptName: 'stop-claws.js',          entry: makeHookEntry('*', 'stop-claws.js') },
+    { event: 'Stop',        scriptName: 'stop-claws.js',          entry: makeHookEntry('*', 'stop-claws.js') },
   ];
 
   if (DRY_RUN) {

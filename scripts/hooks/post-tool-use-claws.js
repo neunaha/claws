@@ -1,0 +1,189 @@
+#!/usr/bin/env node
+// Claws PostToolUse hook — fail-closes the spawn → monitor race window.
+//
+// Fires after every MCP tool call. Only acts on spawn-class tools
+// (claws_create/worker/fleet/dispatch_subworker) where the call succeeded
+// and returned a terminal_id. Waits up to ~4s for lifecycle.monitors to
+// register the terminal (4s nominal so cleanup has ~1s before the 5s self-kill).
+// If missing, publishes wave.violation event + auto-closes the orphaned terminal.
+//
+// SAFETY CONTRACT (P5): never crash, never block, never exit non-zero.
+// Errors silently swallowed unless CLAWS_DEBUG=1.
+'use strict';
+
+// M-24: gate error handlers on CLAWS_DEBUG — when CLAWS_DEBUG=1, errors
+// propagate visibly for debugging instead of being silently swallowed.
+if (!process.env.CLAWS_DEBUG) {
+  process.on('uncaughtException', () => { try { process.exit(0); } catch {} });
+  process.on('unhandledRejection', () => { try { process.exit(0); } catch {} });
+}
+
+// M-13: 5-second self-kill safety timer — hook can never hang the parent process.
+setTimeout(() => { process.exit(0); }, 5000).unref();
+
+const SPAWN_CLASS = new Set([
+  'mcp__claws__claws_create',
+  'mcp__claws__claws_worker',
+  'mcp__claws__claws_fleet',
+  'mcp__claws__claws_dispatch_subworker',
+]);
+
+// Monitor wait window: 4000 ms (< 5 s self-kill) leaves ~1 s for violation
+// cleanup (publish + close) before the self-kill fires.
+const MONITOR_WAIT_MS = 4000;
+const MONITOR_POLL_MS = 500;
+
+let input = '';
+// M-13: single try block for both 'data' and 'end' — fail together or not at all.
+try {
+  process.stdin.on('data', d => { input += d; });
+  process.stdin.on('end', () => {
+    run(input).catch(() => { try { process.exit(0); } catch {} });
+  });
+} catch {
+  process.exit(0);
+}
+
+async function run(raw) {
+  try {
+    const fs   = require('fs');
+    const path = require('path');
+
+    let data = {};
+    try { data = JSON.parse(raw); } catch { process.exit(0); return; }
+
+    const toolName = data.tool_name || '';
+    if (!SPAWN_CLASS.has(toolName)) { process.exit(0); return; }
+
+    const resp = data.tool_response || {};
+    if (!resp.ok) { process.exit(0); return; }
+
+    const terminalIds = extractTerminalIds(resp);
+    if (terminalIds.length === 0) { process.exit(0); return; }
+
+    const cwd = data.cwd || process.cwd();
+    const socketPath = findSocket(cwd);
+    if (!socketPath) { process.exit(0); return; }
+
+    for (const tid of terminalIds) {
+      await checkOne(socketPath, tid, toolName);
+    }
+    process.exit(0);
+  } catch {
+    process.exit(0);
+  }
+}
+
+function extractTerminalIds(resp) {
+  if (Array.isArray(resp.terminal_ids)) {
+    return resp.terminal_ids.filter(id => id != null);
+  }
+  if (resp.terminal_id != null) return [resp.terminal_id];
+  // claws_create returns { id, logPath? } — use id as fallback
+  if (resp.id != null) return [resp.id];
+  // claws_fleet: { workers: [{terminal_id, ...}] }
+  if (Array.isArray(resp.workers)) {
+    return resp.workers
+      .filter(w => w && (w.terminal_id != null || w.id != null))
+      .map(w => (w.terminal_id != null ? w.terminal_id : w.id));
+  }
+  return [];
+}
+
+async function checkOne(socketPath, terminalId, toolName) {
+  const registered = await waitForMonitor(socketPath, terminalId, MONITOR_WAIT_MS, MONITOR_POLL_MS);
+  if (registered) return;
+
+  try {
+    process.stderr.write(
+      `[claws] PostToolUse: monitor not registered for terminal ${terminalId} within 5s.` +
+      ` Auto-cancelling spawn (use Monitor + scripts/stream-events.js | grep pattern next time).\n`
+    );
+  } catch {}
+
+  try {
+    await sendCmd(socketPath, {
+      cmd: 'publish',
+      topic: 'wave.violation',
+      payload: { kind: 'monitor-missing', terminal_id: terminalId, tool_name: toolName, ts: new Date().toISOString() },
+    });
+  } catch {}
+
+  try {
+    await sendCmd(socketPath, { cmd: 'close', id: terminalId });
+  } catch {}
+}
+
+async function waitForMonitor(socketPath, terminalId, maxWaitMs, intervalMs) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    try {
+      const snap = await sendCmd(socketPath, { cmd: 'lifecycle.snapshot' });
+      if (monitorPresent(snap, terminalId)) return true;
+    } catch { /* socket error — retry */ }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(intervalMs, remaining));
+  }
+  return false;
+}
+
+function monitorPresent(snap, terminalId) {
+  if (!snap || !snap.ok) return false;
+  const state = snap.state || snap;
+  const monitors = state.monitors;
+  if (!monitors) return false;
+  if (Array.isArray(monitors)) {
+    return monitors.some(m => m && String(m.terminal_id) === String(terminalId));
+  }
+  return Object.prototype.hasOwnProperty.call(monitors, String(terminalId));
+}
+
+function sendCmd(socketPath, obj) {
+  return new Promise((resolve, reject) => {
+    const net = require('net');
+    const id  = Math.random().toString(36).slice(2);
+    const msg = JSON.stringify({ id, ...obj }) + '\n';
+    let buf  = '';
+    let done = false;
+    const sock = net.createConnection(socketPath);
+    const timer = setTimeout(() => {
+      if (!done) { done = true; try { sock.destroy(); } catch {} reject(new Error('timeout')); }
+    }, 2000);
+    sock.on('connect', () => {
+      try { sock.write(msg); } catch (e) {
+        if (!done) { done = true; clearTimeout(timer); reject(e); }
+      }
+    });
+    sock.on('data', chunk => {
+      buf += chunk;
+      const nl = buf.indexOf('\n');
+      if (nl !== -1 && !done) {
+        done = true;
+        clearTimeout(timer);
+        try { sock.destroy(); } catch {}
+        try { resolve(JSON.parse(buf.slice(0, nl))); } catch (e) { reject(e); }
+      }
+    });
+    sock.on('error', e => { if (!done) { done = true; clearTimeout(timer); reject(e); } });
+    sock.on('close', () => { if (!done) { done = true; clearTimeout(timer); reject(new Error('closed')); } });
+  });
+}
+
+function findSocket(startDir) {
+  const path = require('path');
+  const fs   = require('fs');
+  let dir = startDir;
+  for (let i = 0; i < 10; i++) {
+    const candidate = path.join(dir, '.claws', 'claws.sock');
+    try { if (fs.existsSync(candidate)) return candidate; } catch {}
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
