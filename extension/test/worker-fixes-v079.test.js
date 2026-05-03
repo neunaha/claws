@@ -58,7 +58,7 @@ check(
 check(
   'poll loop scans scanText slice for completion marker (NOT the full text)',
   /scanText\s*=\s*text\.length\s*>\s*markerScanFrom\s*\?\s*text\.slice\(markerScanFrom\)/.test(MCP) &&
-  /scanText\.includes\(opt\.complete_marker\)/.test(MCP),
+  /detectCompletion\(scanText,\s*opt/.test(MCP),
 );
 
 // Mission must be sent as a direct user prompt to Claude Code's input. No

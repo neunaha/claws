@@ -1711,6 +1711,7 @@ Key additions (all new commands are additive — `claws/1` clients continue to w
 - Example scripts: basic orchestrator, parallel workers
 
 - docs(architecture) — comprehensive ARCHITECTURE.md as the canonical anchor: charter, 10 architectural principles (event-driven only, atomic writes, hooks safety, no orchestrator-side patches, etc.), full system layer map, protocol specs, lifecycle architecture, 5-layer enforcement chain, test invariants, anti-patterns catalog (10 burned-in lessons), known gaps + roadmap, and an anchoring protocol for future PRs.
+- fix(v0.7.10) — worker-fixes-v079.test: sync scanText check to detectCompletion(scanText,opt) (replaces scanText.includes pattern removed when findStandaloneMarker was introduced); restore 17/17 pass.
 - fix(v0.7.10) — claws-v2-vehicle-state.test: add workerMode:single+expectedWorkers:1 to lifecycle.plan call and lifecycle.advance to SPAWN before create (canSpawn gate, schema v3 required fields).
 - fix(v0.7.10) — lifecycle-store.ts: add M-43 sentinel comment to flushToDisk() (fsyncSync-before-renameSync parity with M-29; fixes lifecycle-store-fsync test).
 - feat(v0.7.10) — scripts: install.sh dev-mode symlink branch (eliminates source/.claws-bin drift), F-11 .electron-abi cache, dynamic EXPECTED_MIN_VERSION, .gitignore auto-additions, backup pruning; install.ps1 stub directs Windows to WSL2; update.sh Linux Electron ABI detection + BUG-28 health check; uninstall.sh idempotent 5-step removal.
