@@ -709,6 +709,163 @@ function parseErrorIndicators(text, sinceOffset) {
   return results;
 }
 
+// ─── HB-L3: WorkerHeartbeatStateMachine ──────────────────────────────────────
+// Per docs/heartbeat-architecture.md §V.C and docs/heartbeat-action-plan.md
+// §II.A3 Layer 3. Pure state-tracking logic — uses L1 parsers, derives
+// transitions, but does NOT publish anything (that's HB-L4+).
+
+/**
+ * Heartbeat state machine for one worker terminal. Observes pty bytes,
+ * derives state transitions, surfaces transition events. Does NOT publish
+ * to the bus (that's HB-L4+). Pure logic.
+ *
+ * States: BOOTING → READY → WORKING → POST_WORK → COMPLETE
+ * (with WORKING ↔ POST_WORK loop if Claude resumes during grace)
+ *
+ * Per docs/heartbeat-architecture.md §V.C.
+ */
+class WorkerHeartbeatStateMachine {
+  constructor({ terminalId, correlationId }) {
+    this.terminalId = terminalId;
+    this.correlationId = correlationId;
+    this.state = 'BOOTING';
+    this.scanOffset = 0;
+    this.firstActivityAt = null;    // first time we saw any tool
+    this.lastSpinnerAt = null;      // last timestamp spinner was active
+    this.lastToolAt = null;         // last timestamp a tool indicator was seen
+    this.lastNewBytesAt = null;     // last timestamp new pty bytes arrived
+    this.toolCount = 0;             // total tools observed (mission_complete gate requires ≥1)
+    this.postWorkEnteredAt = null;  // when POST_WORK conditions first held
+    this.startedAt = Date.now();
+    this.cumulative = { tokens_in: 0, tokens_out: 0, cost_usd: 0 };
+    this.todoItems = null;          // last TodoWrite seen
+    this.lastErrors = [];           // accumulator for error events
+    this.transitions = [];          // log of all state transitions for inspection
+  }
+
+  /**
+   * Observe new pty content. Updates state, returns transitions detected this tick.
+   * @param {string} text — full pty log (ANSI-stripped)
+   * @param {number} [now] — current timestamp (injectable for deterministic testing)
+   * @returns {Array<{from: string, to: string, reason: string, at: number}>}
+   */
+  observe(text, now = Date.now()) {
+    if (!text || typeof text !== 'string') return [];
+
+    const prevOffset = this.scanOffset;
+    const detected = [];
+
+    // 1. Track new bytes
+    if (text.length > prevOffset) {
+      this.lastNewBytesAt = now;
+    }
+
+    // 2. Run L1 parsers on new bytes since prevOffset
+
+    const spinnerResult = parseSpinnerActivity(text, prevOffset);
+    if (spinnerResult.lastSpinnerAt !== null) {
+      this.lastSpinnerAt = now;
+    }
+
+    const tools = parseToolIndicators(text, prevOffset);
+    if (tools.length > 0) {
+      if (this.firstActivityAt === null) this.firstActivityAt = now;
+      this.lastToolAt = now;
+      this.toolCount += tools.length;
+    }
+
+    const footer = parseCostFooter(text);
+    if (footer) {
+      this.cumulative.tokens_in = footer.tokens_in;
+      this.cumulative.tokens_out = footer.tokens_out;
+      this.cumulative.cost_usd = footer.cost_usd;
+    }
+
+    const todo = parseTodoWrite(text, prevOffset);
+    if (todo) {
+      this.todoItems = todo.todoItems;
+    }
+
+    const errors = parseErrorIndicators(text, prevOffset);
+    for (const err of errors) {
+      this.lastErrors.push(err);
+    }
+
+    // 3. State machine transitions (one transition per observe() tick max per branch)
+    if (this.state === 'BOOTING') {
+      // BOOTING → READY: bypass permissions active + cursor at ❯ prompt
+      if (text.includes('bypass permissions') && parsePromptIdle(text)) {
+        detected.push(this._transition('BOOTING', 'READY', 'bypass-permissions-detected', now));
+      }
+
+    } else if (this.state === 'READY') {
+      // READY → WORKING: first tool call observed
+      if (tools.length > 0) {
+        detected.push(this._transition('READY', 'WORKING', 'first-tool-call', now));
+      }
+
+    } else if (this.state === 'WORKING') {
+      // WORKING → POST_WORK: all four conditions must hold simultaneously
+      // 1) spinner absent (no spinner seen in last 5s)
+      // 2) cursor at ❯ prompt (final assistant message rendered)
+      // 3) no new pty bytes in last 5s (render is complete)
+      const spinnerStopped = this.lastSpinnerAt === null || (now - this.lastSpinnerAt > 5000);
+      const bytesIdle = this.lastNewBytesAt === null || (now - this.lastNewBytesAt > 5000);
+      const promptIdle = parsePromptIdle(text);
+      if (spinnerStopped && bytesIdle && promptIdle) {
+        this.postWorkEnteredAt = now;
+        detected.push(this._transition('WORKING', 'POST_WORK', 'spinner-stopped+prompt-idle+bytes-idle', now));
+      }
+
+    } else if (this.state === 'POST_WORK') {
+      // POST_WORK → WORKING: Claude resumed (spinner or new tool call)
+      const spinnerResumed = spinnerResult.lastSpinnerAt !== null;
+      const toolResumed = tools.length > 0;
+      if (spinnerResumed || toolResumed) {
+        this.postWorkEnteredAt = null;
+        const reason = spinnerResumed ? 'spinner-resumed' : 'tool-call-resumed';
+        detected.push(this._transition('POST_WORK', 'WORKING', reason, now));
+      } else if (
+        this.postWorkEnteredAt !== null &&
+        now - this.postWorkEnteredAt >= 20000 &&
+        this.toolCount >= 1  // gate: prevent false-fire on workers that never did work
+      ) {
+        // POST_WORK → COMPLETE: sustained idle ≥20s with confirmed tool work
+        detected.push(this._transition('POST_WORK', 'COMPLETE', 'post-work-sustained-20s', now));
+      }
+    }
+
+    // 4. Advance scan offset to avoid re-parsing seen bytes
+    this.scanOffset = text.length;
+
+    return detected;
+  }
+
+  _transition(from, to, reason, at) {
+    this.state = to;
+    const t = { from, to, reason, at };
+    this.transitions.push(t);
+    return t;
+  }
+
+  /** Snapshot current state for debugging / tests. */
+  snapshot() {
+    return {
+      state: this.state,
+      toolCount: this.toolCount,
+      lastSpinnerAt: this.lastSpinnerAt,
+      lastToolAt: this.lastToolAt,
+      lastNewBytesAt: this.lastNewBytesAt,
+      firstActivityAt: this.firstActivityAt,
+      postWorkEnteredAt: this.postWorkEnteredAt,
+      durationMs: Date.now() - this.startedAt,
+      cumulative: { ...this.cumulative },
+      todoItems: this.todoItems,
+      errorsCount: this.lastErrors.length,
+    };
+  }
+}
+
 // ─── Multi-signal completion detector (Task #58 — idle-timeout removed) ──────
 // Pure function. Returns { status, line, signal } if an event-driven signal
 // fires, else null. signal in {'marker','error','pub_complete'}.
@@ -2376,7 +2533,7 @@ async function main() {
 
 main().catch(console.error);
 
-// Export pure helpers for unit testing (Task #58).
+// Export pure helpers for unit testing (Task #58 + HB-L3).
 if (typeof module !== 'undefined') {
-  module.exports = { detectCompletion, findStandaloneMarker };
+  module.exports = { detectCompletion, findStandaloneMarker, WorkerHeartbeatStateMachine };
 }
