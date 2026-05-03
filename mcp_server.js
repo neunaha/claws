@@ -1102,12 +1102,6 @@ async function runBlockingWorker(sock, args) {
     let completionSignal = null;
     const _msState = { firstActivityAt: null, lastLen: 0, lastGrowthAt: Date.now(), startedAt };
     const timeoutDeadline = startedAt + opt.timeout_ms;
-    // HB-L4: one state machine per worker, lives for the full watcher lifetime.
-    const _hbState = new WorkerHeartbeatStateMachine({
-      terminalId: termId,
-      correlationId: _bCorrId,
-    });
-    let _hbLastPublishedAt = Date.now();
     const tick = async () => {
       try {
         if (Date.now() > timeoutDeadline) {
@@ -1126,39 +1120,6 @@ async function runBlockingWorker(sock, args) {
         }
         const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
         const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
-        // HB-L4: state machine observes pty for backstop heartbeat publishing.
-        // L5+ will add progress/approach/error/mission_complete kinds; this layer is liveness only.
-        try {
-          _hbState.observe(text);
-          const _hbNow = Date.now();
-          // Backstop heartbeat: every 30s of no other publish (L4 only fires backstop;
-          // future layers will publish other kinds and reset this timer).
-          if (_hbNow - _hbLastPublishedAt >= 30000) {
-            const hbSnap = _hbState.snapshot();
-            const elapsedSec = Math.floor(hbSnap.durationMs / 1000);
-            const summary = `still active · ${elapsedSec}s elapsed${hbSnap.cumulative.cost_usd > 0 ? ` · $${hbSnap.cumulative.cost_usd.toFixed(2)}` : ''}`;
-            await _pconnEnsureRegistered(sock);
-            await _pconnWrite({
-              cmd: 'publish', protocol: 'claws/2',
-              topic: `worker.${termId}.heartbeat`,
-              payload: {
-                kind: 'heartbeat',
-                summary,
-                current_action: hbSnap.state,
-                duration_ms: hbSnap.durationMs,
-                tokens_in: hbSnap.cumulative.tokens_in || undefined,
-                tokens_out: hbSnap.cumulative.tokens_out || undefined,
-                cost_usd: hbSnap.cumulative.cost_usd || undefined,
-                captured_at: new Date().toISOString(),
-                correlation_id: _bCorrId,
-              },
-            });
-            _hbLastPublishedAt = _hbNow;
-          }
-        } catch (e) {
-          // Heartbeat publish failure must not break the watcher.
-          log('hb-l4 backstop publish failed: ' + (e && e.message || e));
-        }
         const scanText = text.length > markerScanFrom ? text.slice(markerScanFrom) : '';
         const scanStart = Math.min(pubScanOffset, text.length);
         if (text.length > scanStart) await _scanAndPublishCLAWSPUB(text.slice(scanStart), sock);
@@ -1906,6 +1867,12 @@ async function _dispatchTool(name, args, sock) {
       close_on_complete: args.close_on_complete !== false,
     };
     let _fpScanOffset = 0;
+    // HB-L4-fix: one state machine per worker, lives for the full fast-path watcher lifetime.
+    const _fpHbState = new WorkerHeartbeatStateMachine({
+      terminalId: termId,
+      correlationId: _fpCorrId,
+    });
+    let _fpHbLastPublishedAt = Date.now();
 
     const _fpTick = async () => {
       try {
@@ -1922,6 +1889,36 @@ async function _dispatchTool(name, args, sock) {
         }
         const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
         const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
+        // HB-L4-fix: state machine observes pty for backstop heartbeat publishing.
+        // L5+ will add progress/approach/error/mission_complete kinds; this layer is liveness only.
+        try {
+          _fpHbState.observe(text);
+          const _fpHbNow = Date.now();
+          if (_fpHbNow - _fpHbLastPublishedAt >= 30000) {
+            const fpHbSnap = _fpHbState.snapshot();
+            const elapsedSec = Math.floor(fpHbSnap.durationMs / 1000);
+            const summary = `still active · ${elapsedSec}s elapsed${fpHbSnap.cumulative.cost_usd > 0 ? ` · $${fpHbSnap.cumulative.cost_usd.toFixed(2)}` : ''}`;
+            await _pconnEnsureRegistered(sock);
+            await _pconnWrite({
+              cmd: 'publish', protocol: 'claws/2',
+              topic: `worker.${termId}.heartbeat`,
+              payload: {
+                kind: 'heartbeat',
+                summary,
+                current_action: fpHbSnap.state,
+                duration_ms: fpHbSnap.durationMs,
+                tokens_in: fpHbSnap.cumulative.tokens_in || undefined,
+                tokens_out: fpHbSnap.cumulative.tokens_out || undefined,
+                cost_usd: fpHbSnap.cumulative.cost_usd || undefined,
+                captured_at: new Date().toISOString(),
+                correlation_id: _fpCorrId,
+              },
+            });
+            _fpHbLastPublishedAt = _fpHbNow;
+          }
+        } catch (e) {
+          log('hb-l4 fast-path backstop publish failed: ' + (e && e.message || e));
+        }
         if (text.length > _fpScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_fpScanOffset), sock);
         _fpScanOffset = text.length;
         const _fpNow = Date.now();

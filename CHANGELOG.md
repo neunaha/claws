@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HB-L1 (in progress for v0.7.12): heartbeat parser primitives added — pure functions in mcp_server.js for TUI state detection. No runtime change yet; foundation for state machine in HB-L3+. Functions: parseToolIndicators, parseCostFooter, parseSpinnerActivity, parsePromptIdle, parseTodoWrite, parseErrorIndicators. Anchor: docs/heartbeat-architecture.md §V.E.
 - HB-L2 (in progress for v0.7.12): WorkerHeartbeatV1 extended with optional kind/summary/cost/etc fields. Backward-compat additive. No runtime change yet.
 - HB-L3 (in progress for v0.7.12): WorkerHeartbeatStateMachine class added to mcp_server.js. Tracks BOOTING/READY/WORKING/POST_WORK/COMPLETE transitions from pty observation. Not yet wired (L4 next).
-- HB-L4 (in progress for v0.7.12): state machine wired into runBlockingWorker detach branch. Publishes kind=heartbeat backstop every 30s. First observable heartbeat behavior — reload VS Code + /mcp + spawn a worker to see live events.
+- HB-L4 fix: heartbeat wiring moved from runBlockingWorker → fast-path watcher (the default for claws_worker). L4 verification now works. Reload VS Code + /mcp + spawn a claws_worker to see kind=heartbeat events every 30s.
 
 ---
 
