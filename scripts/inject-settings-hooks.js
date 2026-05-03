@@ -5,9 +5,12 @@
 //
 // Usage: node inject-settings-hooks.js [claws-bin-dir] [--dry-run] [--remove]
 //
-// Adds three hooks (all tagged _source:"claws" for clean uninstall):
+// Adds hooks (all tagged _source:"claws" for clean uninstall):
 //   SessionStart — emits lifecycle reminder when .claws/claws.sock detected
-//   PreToolUse   — nudges long-running Bash commands toward claws_create
+//   PreToolUse   — long-running Bash guard + Edit/Write mcp_server.js guard
+//   PreToolUse (MCP spawn-class) — BUG-28: explicit matchers for claws_create /
+//     claws_worker / claws_fleet / claws_dispatch_subworker so Monitor arm gate
+//     fires even if Claude Code does not propagate the '*' hook to MCP tools.
 //   Stop         — reminds model to close terminals before session ends
 // (PostToolUse removed in v0.6.5 — lifecycle gate moved server-side)
 //
@@ -120,8 +123,19 @@ function makeHookEntry(matcher, scriptName) {
   const { mergeIntoFile, parseJsonSafe } = await import(HELPERS_URL);
 
   const HOOKS_TO_ADD = [
+    // SessionStart: emits lifecycle reminder + spawns stream-events.js sidecar (idempotent)
     { event: 'SessionStart', scriptName: 'session-start-claws.js', entry: makeHookEntry('*', 'session-start-claws.js') },
+    // PreToolUse '*': Bash long-running guard + Edit/Write mcp_server.js guard
     { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('*', 'pre-tool-use-claws.js') },
+    // BUG-28: Explicit MCP spawn-class matchers — Monitor arm gate belt-and-suspenders.
+    // Claude Code may not propagate the '*' PreToolUse hook to MCP tool calls in all
+    // versions. These explicit per-tool matchers guarantee the Monitor gate fires for
+    // every spawn-class call regardless of Claude Code's hook-dispatch behavior.
+    { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('mcp__claws__claws_create',             'pre-tool-use-claws.js') },
+    { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('mcp__claws__claws_worker',             'pre-tool-use-claws.js') },
+    { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('mcp__claws__claws_fleet',              'pre-tool-use-claws.js') },
+    { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('mcp__claws__claws_dispatch_subworker', 'pre-tool-use-claws.js') },
+    // Stop: kills stream-events.js sidecar + reminds model to close terminals / complete REFLECT
     { event: 'Stop',         scriptName: 'stop-claws.js',          entry: makeHookEntry('*', 'stop-claws.js') },
   ];
 

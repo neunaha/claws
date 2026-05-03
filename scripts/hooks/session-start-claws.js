@@ -37,7 +37,60 @@ try {
       const socketPath = path.join(cwd, '.claws', 'claws.sock');
       if (!fs.existsSync(socketPath)) { process.exit(0); return; }
 
+      // events.log: bus push events from the sidecar are piped here so the
+      // orchestrator can arm a Monitor on it and receive real-time notifications.
+      const logPath = path.join(cwd, '.claws', 'events.log');
+
+      // Spawn stream-events.js sidecar daemon if not already running (idempotent).
+      // SIM2B-P2b: include socket path in pgrep pattern so per-project sidecars are
+      // distinct — a stale sidecar from a different project won't block this session.
+      // pgrep exit 0 = found (running), non-zero = not found.
+      try {
+        const { spawnSync, spawn } = require('child_process');
+        const sidecarPath = path.join(__dirname, '..', 'stream-events.js');
+        if (fs.existsSync(sidecarPath)) {
+          // Escape regex metacharacters in the socket path for the pgrep pattern.
+          const escapedSocket = socketPath.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+          const pg = spawnSync('pgrep', ['-f', `stream-events\\.js.*--auto-sidecar.*${escapedSocket}`], { stdio: 'ignore' });
+          if (pg.status !== 0) {
+            // Pre-create events.log so 'tail -F' has a file to watch immediately
+            // (sidecar writes the first event only after the first publish arrives).
+            fs.mkdirSync(path.dirname(logPath), { recursive: true });
+            try { fs.writeFileSync(logPath, '', { flag: 'a' }); } catch {}
+            let logFd = null;
+            try { logFd = fs.openSync(logPath, 'a'); } catch {}
+            const sidecar = spawn(process.execPath, [sidecarPath, '--auto-sidecar', socketPath], {
+              detached: true,
+              stdio: ['ignore', logFd !== null ? logFd : 'ignore', 'ignore'],
+              cwd,
+            });
+            sidecar.unref();
+            // Close the fd in the parent — the child has its own copy after fork.
+            if (logFd !== null) { try { fs.closeSync(logFd); } catch {} }
+          }
+        }
+      } catch { /* sidecar spawn failure must never block the hook */ }
+
+      // BUG-29: lifecycle-bound Monitor description — include session start timestamp
+      // so stale Monitors from prior sessions are visually distinguishable.
+      // Format: "claws bus | sess=<ISO-hour>" — add plan slug once lifecycle plan is active.
+      const sessTs = new Date().toISOString().slice(0, 13); // "2026-05-02T04"
+
       const reminder = [
+        '## FIRST ACTION (MANDATORY)',
+        '',
+        'Before any other tool call, arm the Monitor on the events log:',
+        '',
+        `  Bash(command="tail -F ${logPath}", run_in_background=true, description="claws bus | sess=${sessTs}")`,
+        '',
+        'Update description with plan slug once lifecycle plan is active:',
+        '  description="claws bus | plan=<slug> | sess=<ts>"',
+        '',
+        'This gives you push notifications for every worker spawn, completion, and bus event.',
+        'Verify Monitor is alive: pgrep -f "tail.*events.log" (exit 0 = running)',
+        '',
+        '---',
+        '',
         '## Claws Active — Terminal Orchestration MANDATORY',
         '',
         'The Claws MCP server is running. You MUST follow these rules:',
@@ -63,7 +116,7 @@ try {
         'If your mission includes a waveId and subWorkerRole you are a Wave Army sub-worker. You MUST:',
         '  • Call claws_hello with waveId + subWorkerRole within 60 s of boot.',
         '  • Publish wave.<waveId>.<role>.boot immediately after hello.',
-        '  • Publish worker.*.heartbeat every 20 s — silence >25 s triggers a server violation event.',
+        '  • Publish worker.<peerId>.heartbeat every 20 s — silence >25 s triggers a server violation event.',
         '  • Publish worker.*.phase on every lifecycle transition.',
         '  • Publish worker.*.event kind=ERROR for any blocking failure; never swallow errors silently.',
         '  • NEVER commit with --no-verify. Every commit must pass pre-commit hooks.',

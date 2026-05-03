@@ -39,6 +39,38 @@ try {
       const socketPath = path.join(cwd, '.claws', 'claws.sock');
       if (!fs.existsSync(socketPath)) { process.exit(0); return; }
 
+      // Kill stream-events.js sidecar daemon spawned by session-start-claws.js
+      try {
+        const { spawnSync } = require('child_process');
+        const pg = spawnSync('pgrep', ['-f', 'stream-events\\.js.*--auto-sidecar'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        if (pg.status === 0 && pg.stdout) {
+          const pids = pg.stdout.trim().split('\n').filter(Boolean);
+          for (const pid of pids) {
+            try { spawnSync('kill', ['-TERM', pid.trim()], { stdio: 'ignore' }); } catch {}
+          }
+        }
+      } catch { /* sidecar kill failure must never block the hook */ }
+
+      // Kill orphan tail -F processes monitoring events.log spawned this session.
+      try {
+        const { spawnSync } = require('child_process');
+        const pg2 = spawnSync('pgrep', ['-f', 'tail.*\\.claws/events\\.log'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        if (pg2.status === 0 && pg2.stdout) {
+          const pids = pg2.stdout.trim().split('\n').filter(Boolean);
+          for (const pid of pids) {
+            try { spawnSync('kill', ['-TERM', pid.trim()], { stdio: 'ignore' }); } catch {}
+          }
+        }
+      } catch { /* tail kill failure must never block the hook */ }
+
+      // Remove the pre-tool-use grace file so the next session starts with a
+      // fresh 60 s window and the Monitor-arm enforcement resets cleanly.
+      try {
+        const cwdKey = Buffer.from(cwd).toString('base64').replace(/[+/=]/g, '_').slice(0, 12);
+        const graceFile = `/tmp/claws-pretooluse-grace-${cwdKey}`;
+        if (fs.existsSync(graceFile)) fs.unlinkSync(graceFile);
+      } catch { /* grace file removal must never block the hook */ }
+
       const state = readState ? (function () { try { return readState(cwd); } catch { return null; } })() : null;
 
       if (!state) {
