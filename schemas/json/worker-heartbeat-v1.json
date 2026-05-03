@@ -48,16 +48,65 @@
           "items": {
             "type": "string"
           }
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "progress",
+            "heartbeat",
+            "approach",
+            "error",
+            "mission_complete",
+            "mission_failed"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "current_action": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens_in": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens_out": {
+          "type": "number",
+          "minimum": 0
+        },
+        "total_cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "total_duration_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "total_tool_calls": {
+          "type": "number",
+          "minimum": 0
+        },
+        "captured_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "correlation_id": {
+          "type": "string"
+        },
+        "error_detail": {
+          "type": "string"
+        },
+        "approach_detail": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
-      "required": [
-        "current_phase",
-        "time_in_phase_ms",
-        "tokens_used",
-        "cost_usd",
-        "last_event_id",
-        "active_sub_workers"
-      ],
       "additionalProperties": false
     }
   }

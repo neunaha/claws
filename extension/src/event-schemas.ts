@@ -23,6 +23,12 @@ export const RESULT_KINDS = ['ok', 'failed', 'cancelled'] as const;
 export const ResultEnum = z.enum(RESULT_KINDS);
 export type ResultKind = z.infer<typeof ResultEnum>;
 
+export const HEARTBEAT_KINDS = [
+  'progress', 'heartbeat', 'approach', 'error', 'mission_complete', 'mission_failed',
+] as const;
+export const HeartbeatKindEnum = z.enum(HEARTBEAT_KINDS);
+export type HeartbeatKind = z.infer<typeof HeartbeatKindEnum>;
+
 export const SEVERITY_LEVELS = ['info', 'warn', 'error', 'fatal'] as const;
 export const SeverityEnum = z.enum(SEVERITY_LEVELS);
 export type SeverityLevel = z.infer<typeof SeverityEnum>;
@@ -86,12 +92,28 @@ export const WorkerEventV1 = z.object({
 export type WorkerEvent = z.infer<typeof WorkerEventV1>;
 
 export const WorkerHeartbeatV1 = z.object({
-  current_phase:      PhaseEnum,
-  time_in_phase_ms:   z.number().nonnegative(),
-  tokens_used:        z.number().nonnegative(),
-  cost_usd:           z.number().nonnegative(),
-  last_event_id:      z.string().uuid().nullable(),
-  active_sub_workers: z.array(z.string()),
+  // ── Existing fields (now all optional for backward compat) ──
+  current_phase:      PhaseEnum.optional(),
+  time_in_phase_ms:   z.number().nonnegative().optional(),
+  tokens_used:        z.number().nonnegative().optional(),
+  cost_usd:           z.number().nonnegative().optional(),
+  last_event_id:      z.string().uuid().nullable().optional(),
+  active_sub_workers: z.array(z.string()).optional(),
+
+  // ── New fields (v0.7.12+ heartbeat-as-conversation) ──
+  kind:               HeartbeatKindEnum.optional(),
+  summary:            z.string().optional(),
+  current_action:     z.string().optional(),
+  duration_ms:        z.number().nonnegative().optional(),
+  tokens_in:          z.number().nonnegative().optional(),
+  tokens_out:         z.number().nonnegative().optional(),
+  total_cost_usd:     z.number().nonnegative().optional(),
+  total_duration_ms:  z.number().nonnegative().optional(),
+  total_tool_calls:   z.number().nonnegative().optional(),
+  captured_at:        z.string().datetime().optional(),
+  correlation_id:     z.string().optional(),
+  error_detail:       z.string().optional(),
+  approach_detail:    z.array(z.string()).optional(),
 });
 export type WorkerHeartbeat = z.infer<typeof WorkerHeartbeatV1>;
 
