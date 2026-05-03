@@ -51,6 +51,26 @@ When you receive a Wave Army mission you are a sub-worker. You MUST:
    - Print the role sentinel ONLY AFTER the complete event is published. The LEAD waits on this
      event via `claws_drain_events`; if the sentinel appears before the event, the LEAD may time out.
 
+### Worker final-actions convention (F1/F2/F3)
+
+**IMPORTANT**: Claude TUI workers frequently skip the printf marker — they finish writing the Final Report as a plain assistant message and stop without running the required Bash tool call. The watcher then reports a misleading "timeout" even though the work succeeded.
+
+The primary fix is Wave D (`onDidCloseTerminal → system.worker.terminated`), which makes completion truly event-driven. The F1/F2/F3 convention is the belt-and-suspenders layer that reduces the skip rate.
+
+Every worker mission MUST end with these exact Bash tool calls **in order**:
+
+```
+F1: git status --short          (verify clean working tree)
+F2: git log --oneline -5        (verify your commits landed)
+F3: printf '%s\n' 'MARK_M??_OK_COLOR'   (REQUIRED — watcher completion signal)
+```
+
+**Why numbered steps matter**: framing these as a numbered checklist of explicit Bash tool calls — not as "print this string" — prevents Claude from substituting an assistant-message-only summary. The model must execute tool calls, not just narrate them.
+
+**Why F3 must never be an assistant message**: the watcher scans pty output, not conversation text. A printf in an assistant message is invisible to the watcher. Only a Bash tool execution that writes to pty stdout is detected.
+
+**Wave D safety net**: even if F3 is skipped, when the worker exits, VS Code fires `onDidCloseTerminal` → the extension publishes `system.worker.terminated` → the watcher receives it and fires `system.worker.completed` with `completion_signal:'terminated'`. This means late-running missions are no longer stuck waiting 25 minutes for timeout.
+
 ### Sidecar is mandatory
 
 When `.claws/claws.sock` exists, the orchestrator MUST have an active `stream-events.js` sidecar Monitor running. The `SessionStart` hook auto-spawns one with `--auto-sidecar` flag and `detached:true` so it outlives the hook. If the sidecar dies during a session, re-spawn it before making any worker call:
