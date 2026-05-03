@@ -141,6 +141,11 @@ export function nextAutoPhase(state: LifecycleState | null): Phase | null {
       if (state.worker_mode === 'fleet'  && terminalStatuses.length >= state.expected_workers) return 'HARVEST';
       return null;
     }
+    case 'HARVEST':
+      // BUG-A fix: HARVEST→CLEANUP auto when all workers reached terminal status.
+      // (canCleanup gate enforces it; engine just needed the explicit transition.)
+      if (canCleanup(state).ok) return 'CLEANUP';
+      return null;
     case 'CLEANUP':
       if (canReflect(state).ok) return 'REFLECT';
       return null;

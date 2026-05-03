@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.10] - 2026-05-03 — 10-phase lifecycle (W1+Wave A+Wave B+Wave D) + auto-advance engine + claws_worker fast-path boot detection
 
+### Fixed (post-validation small bugs)
+- **BUG-A** — `nextAutoPhase` had cases for SPAWN, DEPLOY, OBSERVE, CLEANUP but missing HARVEST. Engine cascaded 4 transitions then stopped. Now adds HARVEST→CLEANUP transition (gated by `canCleanup`), enabling 5-transition auto-cascade through the mission cycle.
+
 ### Changed
 - **Wave B — bus-stream Monitor primitive in all spawn-class tool responses**: `monitor_arm_command` strings returned by `claws_create`, `claws_worker`, `runBlockingWorker`/`claws_fleet`, and `claws_dispatch_subworker` now use the canonical `Monitor + stream-events.js` pattern (CLAUDE.md principle #5). Subscribes directly to the pub/sub bus, filters by `correlation_id`, exits on first `system.worker.completed` event (`grep -m1`). Sub-100ms latency, immune to SIGURG idle-kill, appears as 'monitor' in the Claude Code task panel. The old `Bash(until grep -qE…events.log)` passive polling pattern is fully removed.
 
