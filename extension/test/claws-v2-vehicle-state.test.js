@@ -202,7 +202,7 @@ async function check(name, fn) {
 
   // Set up lifecycle plan (required by server gate before create)
   await check('lifecycle.plan succeeds', async () => {
-    const r = await rpc({ cmd: 'lifecycle.plan', plan: 'W1/L4 vehicle state machine test' });
+    const r = await rpc({ cmd: 'lifecycle.plan', plan: 'W1/L4 vehicle state machine test', workerMode: 'single', expectedWorkers: 1 });
     assert.strictEqual(r.ok, true, `expected ok:true got: ${JSON.stringify(r)}`);
   });
 
@@ -215,6 +215,9 @@ async function check(name, fn) {
   });
 
   if (!sub) { console.error('FAIL: subscription setup failed'); process.exit(1); }
+
+  // Advance lifecycle to SPAWN so canSpawn gate allows terminal creation
+  await rpc({ cmd: 'lifecycle.advance', to: 'SPAWN' });
 
   // Create a wrapped terminal and observe state transitions
   let terminalId;
