@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HB-L2 (in progress for v0.7.12): WorkerHeartbeatV1 extended with optional kind/summary/cost/etc fields. Backward-compat additive. No runtime change yet.
 - HB-L3 (in progress for v0.7.12): WorkerHeartbeatStateMachine class added to mcp_server.js. Tracks BOOTING/READY/WORKING/POST_WORK/COMPLETE transitions from pty observation. Not yet wired (L4 next).
 - HB-L4 fix: heartbeat wiring moved from runBlockingWorker → fast-path watcher (the default for claws_worker). L4 verification now works. Reload VS Code + /mcp + spawn a claws_worker to see kind=heartbeat events every 30s.
+- HB-L4 polish: dropped cost_usd from heartbeat (was bogus — showed orchestrator's overall session cost ~$2376, not per-worker cost). Tokens (in/out) remain. Fixed BOOTING→READY transition to fire on bypass-permissions detection alone (was waiting for prompt-idle which never happens during active work).
 
 ---
 

@@ -737,7 +737,7 @@ class WorkerHeartbeatStateMachine {
     this.toolCount = 0;             // total tools observed (mission_complete gate requires ≥1)
     this.postWorkEnteredAt = null;  // when POST_WORK conditions first held
     this.startedAt = Date.now();
-    this.cumulative = { tokens_in: 0, tokens_out: 0, cost_usd: 0 };
+    this.cumulative = { tokens_in: 0, tokens_out: 0 };
     this.todoItems = null;          // last TodoWrite seen
     this.lastErrors = [];           // accumulator for error events
     this.transitions = [];          // log of all state transitions for inspection
@@ -778,7 +778,6 @@ class WorkerHeartbeatStateMachine {
     if (footer) {
       this.cumulative.tokens_in = footer.tokens_in;
       this.cumulative.tokens_out = footer.tokens_out;
-      this.cumulative.cost_usd = footer.cost_usd;
     }
 
     const todo = parseTodoWrite(text, prevOffset);
@@ -793,8 +792,8 @@ class WorkerHeartbeatStateMachine {
 
     // 3. State machine transitions (one transition per observe() tick max per branch)
     if (this.state === 'BOOTING') {
-      // BOOTING → READY: bypass permissions active + cursor at ❯ prompt
-      if (text.includes('bypass permissions') && parsePromptIdle(text)) {
+      // BOOTING → READY: bypass permissions text is the unambiguous boot signal
+      if (text.includes('bypass permissions')) {
         detected.push(this._transition('BOOTING', 'READY', 'bypass-permissions-detected', now));
       }
 
@@ -1897,7 +1896,7 @@ async function _dispatchTool(name, args, sock) {
           if (_fpHbNow - _fpHbLastPublishedAt >= 30000) {
             const fpHbSnap = _fpHbState.snapshot();
             const elapsedSec = Math.floor(fpHbSnap.durationMs / 1000);
-            const summary = `still active · ${elapsedSec}s elapsed${fpHbSnap.cumulative.cost_usd > 0 ? ` · $${fpHbSnap.cumulative.cost_usd.toFixed(2)}` : ''}`;
+            const summary = `still active · ${elapsedSec}s elapsed`;
             await _pconnEnsureRegistered(sock);
             await _pconnWrite({
               cmd: 'publish', protocol: 'claws/2',
@@ -1909,7 +1908,6 @@ async function _dispatchTool(name, args, sock) {
                 duration_ms: fpHbSnap.durationMs,
                 tokens_in: fpHbSnap.cumulative.tokens_in || undefined,
                 tokens_out: fpHbSnap.cumulative.tokens_out || undefined,
-                cost_usd: fpHbSnap.cumulative.cost_usd || undefined,
                 captured_at: new Date().toISOString(),
                 correlation_id: _fpCorrId,
               },

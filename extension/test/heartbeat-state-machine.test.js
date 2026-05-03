@@ -59,7 +59,6 @@ check('constructor: sets state=BOOTING, scanOffset=0, toolCount=0', () => {
   assert.strictEqual(m.postWorkEnteredAt, null);
   assert.strictEqual(m.cumulative.tokens_in, 0);
   assert.strictEqual(m.cumulative.tokens_out, 0);
-  assert.strictEqual(m.cumulative.cost_usd, 0);
   assert.strictEqual(m.todoItems, null);
   assert.strictEqual(m.lastErrors.length, 0);
   assert.strictEqual(m.transitions.length, 0);
@@ -106,12 +105,14 @@ check('observe: BOOTING stays BOOTING when no bypass permissions', () => {
   assert.strictEqual(m.state, 'BOOTING');
 });
 
-check('observe: BOOTING stays BOOTING when bypass present but no prompt idle', () => {
+check('observe: BOOTING→READY fires on bypass permissions without prompt idle', () => {
   const m = new WorkerHeartbeatStateMachine({ terminalId: 3, correlationId: 'x' });
-  // bypass permissions text present but last line is not ❯
+  // bypass permissions text present but last line is NOT ❯ — should still transition
   const t = m.observe('bypass permissions on this session.\nLoading tools...', 0);
-  assert.ok(Array.isArray(t) && t.length === 0, 'expected no transitions');
-  assert.strictEqual(m.state, 'BOOTING');
+  assert.strictEqual(t.length, 1, 'expected BOOTING→READY transition');
+  assert.strictEqual(t[0].from, 'BOOTING');
+  assert.strictEqual(t[0].to, 'READY');
+  assert.strictEqual(m.state, 'READY');
 });
 
 // ─── Test 4: READY → WORKING ─────────────────────────────────────────────────
@@ -260,13 +261,13 @@ check('observe: POST_WORK sustained ≥20s but toolCount=0 → does NOT complete
 check('observe: chunked text evolves state correctly across multiple calls', () => {
   const m = new WorkerHeartbeatStateMachine({ terminalId: 10, correlationId: 'x' });
 
-  // Chunk 1: partial — no prompt yet
+  // Chunk 1: bypass text alone → BOOTING→READY (no prompt-idle required)
   m.observe('bypass permissions on', 0);
-  assert.strictEqual(m.state, 'BOOTING', 'partial text: still BOOTING');
+  assert.strictEqual(m.state, 'READY', 'bypass text: READY immediately');
 
-  // Chunk 2: prompt appears → BOOTING→READY
+  // Chunk 2: prompt appears — already READY, no new transition
   m.observe('bypass permissions on\n❯', 100);
-  assert.strictEqual(m.state, 'READY', 'prompt appeared: READY');
+  assert.strictEqual(m.state, 'READY', 'already READY, stays READY');
 
   // Chunk 3: tool call appears → READY→WORKING
   m.observe('bypass permissions on\n❯\n⏺ Write(out.txt)\n', 200);
@@ -294,7 +295,6 @@ check('snapshot: returns all expected fields with correct types', () => {
   assert.ok(typeof snap.durationMs === 'number' && snap.durationMs >= 0, 'durationMs is non-negative number');
   assert.strictEqual(snap.cumulative.tokens_in, 0);
   assert.strictEqual(snap.cumulative.tokens_out, 0);
-  assert.strictEqual(snap.cumulative.cost_usd, 0);
   assert.strictEqual(snap.todoItems, null);
   assert.strictEqual(snap.errorsCount, 0);
   // snapshot cumulative is a copy, not the live reference
@@ -304,20 +304,18 @@ check('snapshot: returns all expected fields with correct types', () => {
 
 // ─── Test 12: cumulative tokens/cost from footer ──────────────────────────────
 
-check('observe: updates cumulative tokens/cost from cost footer', () => {
+check('observe: updates cumulative tokens from cost footer', () => {
   const m = new WorkerHeartbeatStateMachine({ terminalId: 12, correlationId: 'x' });
   const text = 'worker output\n[████░░░░░░] 40%  in:3.5k  out:12.8k  cost:$1.23\n❯';
   m.observe(text, 100);
   assert.strictEqual(m.cumulative.tokens_in, 3500);
   assert.strictEqual(m.cumulative.tokens_out, 12800);
-  assert.strictEqual(m.cumulative.cost_usd, 1.23);
 
   // Second update with higher values
   const text2 = text + '\nmore output\n[████████░░] 80%  in:6.0k  out:24.0k  cost:$2.46\n❯';
   m.observe(text2, 200);
   assert.strictEqual(m.cumulative.tokens_in, 6000);
   assert.strictEqual(m.cumulative.tokens_out, 24000);
-  assert.strictEqual(m.cumulative.cost_usd, 2.46);
 });
 
 // ─── Test 13: TodoWrite items captured ───────────────────────────────────────
