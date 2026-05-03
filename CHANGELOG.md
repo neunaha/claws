@@ -5,12 +5,13 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.10] - 2026-05-03 — 10-phase lifecycle (W1+Wave A+Wave B) + claws_worker fast-path boot detection
+## [0.7.10] - 2026-05-03 — 10-phase lifecycle (W1+Wave A+Wave B+Wave D) + auto-advance engine + claws_worker fast-path boot detection
 
 ### Changed
 - **Wave B — bus-stream Monitor primitive in all spawn-class tool responses**: `monitor_arm_command` strings returned by `claws_create`, `claws_worker`, `runBlockingWorker`/`claws_fleet`, and `claws_dispatch_subworker` now use the canonical `Monitor + stream-events.js` pattern (CLAUDE.md principle #5). Subscribes directly to the pub/sub bus, filters by `correlation_id`, exits on first `system.worker.completed` event (`grep -m1`). Sub-100ms latency, immune to SIGURG idle-kill, appears as 'monitor' in the Claude Code task panel. The old `Bash(until grep -qE…events.log)` passive polling pattern is fully removed.
 
 ### Added
+- **Wave D — LifecycleEngine** (`extension/src/lifecycle-engine.ts`, NEW): in-process auto-advance state machine. Wired into the three lifecycle mutation handlers (`register-spawn`, `register-monitor`, `mark-worker-status`). On each worker state change, calls `nextAutoPhase()` from `lifecycle-rules.ts`; if a transition is recommended and passes `canTransition` + gate checks, calls `store.setPhase(next)` and emits `lifecycle.phase-changed` on the bus. Cascades safely (safety loop of 10) for multi-step transitions (DEPLOY→OBSERVE→HARVEST in a single call). Eliminates orchestrator camping in SPAWN — phases self-progress as work happens.
 - **Lifecycle schema v3** (`extension/src/lifecycle-store.ts`): SESSION-BOOT through SESSION-END phases (10), `worker_mode` (single|fleet|army), `expected_workers`, `spawned_workers` map, `monitors` map, `registerSpawn`/`registerMonitor`/`markWorkerStatus` methods.
 - **`extension/src/lifecycle-rules.ts`** (NEW): pure validators for transitions, gates, auto-advance decisions.
 - **New lifecycle commands**: `lifecycle.register-spawn`, `lifecycle.register-monitor`, `lifecycle.mark-worker-status`.

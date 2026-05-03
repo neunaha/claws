@@ -17,6 +17,7 @@ import { PeerConnection, DisconnectedPeer, ClawsRole, allocPeerId, fingerprintPe
 import { TaskRecord, allocTaskId } from './task-registry';
 import { LifecycleStore } from './lifecycle-store';
 import { canTransition, explainIllegalTransition, canReflect } from './lifecycle-rules';
+import { LifecycleEngine } from './lifecycle-engine';
 import { EnvelopeV1, SCHEMA_BY_NAME } from './event-schemas';
 import { schemaForTopic } from './topic-registry';
 import { EventLogWriter, EventLogReader, parseCursor } from './event-log';
@@ -150,6 +151,8 @@ export class ClawsServer {
   private serverInFlight = 0;
   /** Server-owned lifecycle state. Gate checks and lifecycle.* commands use this. */
   private readonly lifecycleStore: LifecycleStore;
+  /** Auto-advance engine: subscribes to worker state changes, self-progresses phases. */
+  private readonly lifecycleEngine: LifecycleEngine;
   /** Wave army registry — tracks active waves, sub-worker heartbeats, and violation detection. */
   private readonly waveRegistry: WaveRegistry;
   /** Monotonic sequence counter for deliver-cmd frames. */
@@ -184,6 +187,11 @@ export class ClawsServer {
 
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
+    this.lifecycleEngine = new LifecycleEngine({
+      store: this.lifecycleStore,
+      emitEvent: (topic, payload) => this.emitServerEvent(topic, payload),
+      logger: opts.logger,
+    });
     this.waveRegistry = new WaveRegistry(
       (waveId, role, silentMs) => {
         void this.emitSystemEvent(`wave.${waveId}.violation`, {
@@ -1661,6 +1669,7 @@ export class ClawsServer {
       }
       try {
         const worker = this.lifecycleStore.registerSpawn(r.terminalId, r.correlationId, r.name);
+        this.lifecycleEngine.onWorkerEvent('register-spawn');
         return { ok: true, worker };
       } catch (err) {
         const msg = (err as Error).message;
@@ -1677,6 +1686,7 @@ export class ClawsServer {
       }
       try {
         const monitor = this.lifecycleStore.registerMonitor(r.terminalId, r.correlationId, r.command);
+        this.lifecycleEngine.onWorkerEvent('register-monitor');
         return { ok: true, monitor };
       } catch (err) {
         const msg = (err as Error).message;
@@ -1690,6 +1700,7 @@ export class ClawsServer {
         return { ok: false, error: 'lifecycle:mark-status-args', message: 'terminalId, status required' };
       }
       const updated = this.lifecycleStore.markWorkerStatus(r.terminalId, r.status as import('./lifecycle-store').WorkerStatus);
+      this.lifecycleEngine.onWorkerEvent('mark-worker-status:' + r.status);
       return { ok: true, worker: updated };
     }
 
