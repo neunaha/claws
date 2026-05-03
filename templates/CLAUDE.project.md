@@ -38,6 +38,37 @@ Step 7  claws_send id=<N> text="
 
 {CMDS_LIST}
 
+### Monitor arm (FIRST ACTION — run before any claws_worker / claws_fleet / claws_create call)
+
+MANDATORY — no exceptions. Use a lifecycle-bound description so stale Monitors from prior sessions are visually distinguishable:
+
+```
+Bash(command="tail -F .claws/events.log", run_in_background=true,
+     description="claws bus | plan=<slug> | sess=<ISO-hour>")
+```
+
+Example: `description="claws bus | plan=v0710-fix | sess=2026-05-02T04"`
+
+Without Monitor armed, the orchestrator is blind to worker events and must poll manually.
+The PreToolUse hook WILL REFUSE spawn-class MCP calls if Monitor is not armed (5 s grace window).
+
+**Verify Monitor is alive:** `pgrep -f "tail.*events.log"` — exit 0 = running, non-zero = dead.
+**Re-arm if dead:** run the Bash command above again (Monitor is idempotent — re-arm is safe).
+If `.claws/events.log` does not exist yet, the SessionStart hook creates it on sidecar spawn.
+`tail -F` handles file-not-yet-exists gracefully.
+
+**Per-worker Monitor pattern (v0.7.10+ — PREFERRED over single shared Monitor):**
+After `claws_fleet` or `claws_worker` returns, arm one Monitor per `terminal_id` using the
+`monitor_arm_command` field in the response. Each uses `grep -m1` and self-exits on completion:
+
+```
+Bash(command="tail -F .claws/events.log | grep -m1 'MISSION_COMPLETE.*<tid>'",
+     run_in_background=true, description="watch worker-<tid>")
+```
+
+Run N such Bash calls in parallel (one per worker). Isolation means one dying Monitor does not
+blind the orchestrator to the remaining workers. See the orchestration-engine SKILL.md for detail.
+
 ### Lifecycle phases (follow for every multi-terminal task)
 
 1. **PLAN** — outline terminals needed, assign roles, write missions
@@ -54,9 +85,9 @@ Step 7  claws_send id=<N> text="
 Every sub-worker spawned as part of a Wave Army MUST:
 
 1. **Boot event** — publish `wave.<waveId>.<role>.boot` within 60 s of receiving mission.
-2. **Heartbeat** — publish `worker.*.heartbeat` every 20 s while active. Silence > 25 s triggers a server-side violation event.
-3. **Phase events** — publish `worker.*.phase` on every phase transition (PLAN→SPAWN→DEPLOY→…→REFLECT).
-4. **Error events** — publish `worker.*.event` with `kind=ERROR` for any blocking failure; never silently swallow errors.
+2. **Heartbeat** — publish `worker.<peerId>.heartbeat` every 20 s while active. Silence > 25 s triggers a server-side violation event.
+3. **Phase events** — publish `worker.<peerId>.phase` on every phase transition (PLAN→SPAWN→DEPLOY→…→REFLECT).
+4. **Error events** — publish `worker.<peerId>.event` with `kind=ERROR` for any blocking failure; never silently swallow errors.
 5. **No --no-verify** — every commit must pass pre-commit hooks. Never bypass with `--no-verify` or `--no-gpg-sign`.
 6. **Complete event** — publish `wave.<waveId>.<role>.complete` as the final act, before closing the terminal.
 7. **Full suite before commit** — run `npm test` (or equivalent) and assert zero failures before every `git commit`.
