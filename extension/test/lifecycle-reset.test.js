@@ -46,7 +46,7 @@ function mkWorkspace() {
 // ─── full cycle helper ──────────────────────────────────────────────────────
 
 function runFullCycle(store, planText) {
-  store.plan(planText);
+  store.plan(planText, 'single', 1);
   store.advance('SPAWN');
   store.advance('DEPLOY');
   store.advance('OBSERVE');
@@ -71,7 +71,7 @@ check('plan() after REFLECT starts cycle N+1 with new plan text', () => {
   const ws = mkWorkspace();
   const store = new LifecycleStore(ws);
   runFullCycle(store, 'first cycle');
-  const s = store.plan('second cycle');
+  const s = store.plan('second cycle', 'single', 1);
   assert.strictEqual(s.plan, 'second cycle');
 });
 
@@ -80,7 +80,7 @@ check('plan() after REFLECT resets phases_completed to [\'PLAN\']', () => {
   const ws = mkWorkspace();
   const store = new LifecycleStore(ws);
   runFullCycle(store, 'first cycle');
-  const s = store.plan('second cycle');
+  const s = store.plan('second cycle', 'single', 1);
   assert.deepStrictEqual(s.phases_completed, ['PLAN']);
 });
 
@@ -89,7 +89,7 @@ check('plan() after REFLECT sets phase to PLAN', () => {
   const ws = mkWorkspace();
   const store = new LifecycleStore(ws);
   runFullCycle(store, 'first cycle');
-  const s = store.plan('second cycle');
+  const s = store.plan('second cycle', 'single', 1);
   assert.strictEqual(s.phase, 'PLAN');
 });
 
@@ -98,7 +98,7 @@ check('hasPlan() === true after plan() in cycle N+1', () => {
   const ws = mkWorkspace();
   const store = new LifecycleStore(ws);
   runFullCycle(store, 'first cycle');
-  store.plan('second cycle');
+  store.plan('second cycle', 'single', 1);
   assert.strictEqual(store.hasPlan(), true);
 });
 
@@ -107,7 +107,7 @@ check('cycle N+1 can advance PLAN→SPAWN after reset', () => {
   const ws = mkWorkspace();
   const store = new LifecycleStore(ws);
   runFullCycle(store, 'first cycle');
-  store.plan('second cycle');
+  store.plan('second cycle', 'single', 1);
   const s = store.advance('SPAWN');
   assert.strictEqual(s.phase, 'SPAWN');
 });
@@ -128,7 +128,7 @@ check('reflect text does not carry over into cycle N+1', () => {
   const ws = mkWorkspace();
   const store = new LifecycleStore(ws);
   runFullCycle(store, 'first cycle');
-  store.plan('second cycle');
+  store.plan('second cycle', 'single', 1);
   const s = store.snapshot();
   assert.strictEqual(s.reflect, undefined,
     'reflect field must not carry over from previous cycle');

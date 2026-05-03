@@ -299,10 +299,17 @@ export interface LifecycleState {
   reflect?: string;
 }
 
-/** Start or reset the lifecycle. plan text must be non-empty. */
+/**
+ * Start or reset the lifecycle. plan text must be non-empty.
+ * v0.7.10 (schema v3): workerMode + expectedWorkers REQUIRED — declares the
+ * mission shape upfront so OBSERVE→HARVEST routing and CLEANUP gate know
+ * what to expect. workerMode ∈ {single, fleet, army}.
+ */
 export interface LifecyclePlanRequest extends BaseRequest {
   cmd: 'lifecycle.plan';
   plan: string;
+  workerMode: 'single' | 'fleet' | 'army';
+  expectedWorkers: number;
 }
 
 /** Advance the phase state machine one step. */
@@ -321,6 +328,40 @@ export interface LifecycleSnapshotRequest extends BaseRequest {
 export interface LifecycleReflectRequest extends BaseRequest {
   cmd: 'lifecycle.reflect';
   reflect: string;
+}
+
+/**
+ * D+F (v0.7.10): register a newly-spawned worker. Called by mcp_server's
+ * spawn-class tool handlers atomically with terminal creation. correlationId
+ * is the orchestrator-supplied UUID matching the pre-armed Bash watcher.
+ */
+export interface LifecycleRegisterSpawnRequest extends BaseRequest {
+  cmd: 'lifecycle.register-spawn';
+  terminalId: string;
+  correlationId: string;
+  name: string;
+}
+
+/**
+ * D+F: register a per-worker monitor. Called atomically with register-spawn
+ * by mcp_server. The "command" is the verbatim Bash(...) command the
+ * orchestrator was instructed to arm — recorded for audit/diagnostics.
+ */
+export interface LifecycleRegisterMonitorRequest extends BaseRequest {
+  cmd: 'lifecycle.register-monitor';
+  terminalId: string;
+  correlationId: string;
+  command: string;
+}
+
+/**
+ * D+F: update a worker's status. Called by detach watcher when worker reaches
+ * terminal state (completed/failed/timeout/closed).
+ */
+export interface LifecycleMarkWorkerStatusRequest extends BaseRequest {
+  cmd: 'lifecycle.mark-worker-status';
+  terminalId: string;
+  status: 'spawned' | 'completed' | 'failed' | 'timeout' | 'closed';
 }
 
 /** Deliver a typed command envelope to a specific worker peer (orchestrator-only). */
@@ -410,6 +451,9 @@ export type ClawsRequest =
   | LifecycleAdvanceRequest
   | LifecycleSnapshotRequest
   | LifecycleReflectRequest
+  | LifecycleRegisterSpawnRequest
+  | LifecycleRegisterMonitorRequest
+  | LifecycleMarkWorkerStatusRequest
   | WaveCreateRequest
   | WaveCompleteRequest
   | WaveStatusRequest

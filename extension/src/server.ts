@@ -16,6 +16,7 @@ import {
 import { PeerConnection, DisconnectedPeer, ClawsRole, allocPeerId, fingerprintPeer, matchTopic } from './peer-registry';
 import { TaskRecord, allocTaskId } from './task-registry';
 import { LifecycleStore } from './lifecycle-store';
+import { canTransition, explainIllegalTransition, canReflect } from './lifecycle-rules';
 import { EnvelopeV1, SCHEMA_BY_NAME } from './event-schemas';
 import { schemaForTopic } from './topic-registry';
 import { EventLogWriter, EventLogReader, parseCursor } from './event-log';
@@ -129,6 +130,10 @@ export class ClawsServer {
   private readonly disconnectedPeers = new Map<string, DisconnectedPeer>();
   /** Set of peerIds whose socket is currently under backpressure (write returned false). */
   private readonly pausedPeers = new Set<string>();
+  /** BUG-21 fix: per-peer outbound queue for frames that arrive during backpressure.
+   *  Bounded at MAX_PENDING_FRAMES to prevent unbounded memory growth. */
+  private readonly pendingFrames = new Map<string, string[]>();
+  private static readonly MAX_PENDING_FRAMES = 500;
   /** Dropped push-frame counts per peerId during backpressure windows. */
   private readonly droppedFrames = new Map<string, number>();
   /** Per-peer rate-limit bucket: {count, windowStart} reset every 1000ms. */
@@ -614,6 +619,10 @@ export class ClawsServer {
     }
     // Notify wave registry so it can cancel violation timers for this peer.
     if (peerId) this.waveRegistry.handlePeerDisconnect(peerId);
+    // Clean up backpressure state for the disconnected peer.
+    this.pausedPeers.delete(peerId);
+    this.pendingFrames.delete(peerId);
+    this.droppedFrames.delete(peerId);
     // Close may fire after extension deactivate has torn down the output
     // channel; guard the logger so a teardown log line never crashes node.
     try { this.opts.logger(`[claws/2] peer disconnected: ${peerId}`); } catch { /* ignore */ }
@@ -642,10 +651,6 @@ export class ClawsServer {
     socket: net.Socket, topic: string, from: string, payload: unknown, sequence?: number,
   ): void {
     const targetPeerId = this.socketToPeer.get(socket);
-    if (targetPeerId && this.pausedPeers.has(targetPeerId)) {
-      this.droppedFrames.set(targetPeerId, (this.droppedFrames.get(targetPeerId) ?? 0) + 1);
-      return;
-    }
     const frame = JSON.stringify({
       push: 'message',
       protocol: PROTOCOL_VERSION_V2,
@@ -655,6 +660,20 @@ export class ClawsServer {
       sentAt: Date.now(),
       ...(sequence !== undefined ? { sequence } : {}),
     }) + '\n';
+
+    // BUG-21 fix: queue frames during backpressure instead of dropping them.
+    // wave.*.complete and other one-shot signals must not be silently lost.
+    if (targetPeerId && this.pausedPeers.has(targetPeerId)) {
+      const queue = this.pendingFrames.get(targetPeerId) ?? [];
+      if (queue.length < ClawsServer.MAX_PENDING_FRAMES) {
+        queue.push(frame);
+        this.pendingFrames.set(targetPeerId, queue);
+      } else {
+        this.droppedFrames.set(targetPeerId, (this.droppedFrames.get(targetPeerId) ?? 0) + 1);
+      }
+      return;
+    }
+
     try {
       const drained = socket.write(frame);
       if (!drained && targetPeerId && !this.pausedPeers.has(targetPeerId)) {
@@ -662,14 +681,23 @@ export class ClawsServer {
         this.opts.logger(`[claws/2] backpressure on push to ${targetPeerId}; pausing`);
         socket.once('drain', () => {
           this.pausedPeers.delete(targetPeerId);
+          // Flush frames that arrived during the backpressure window.
+          const queued = this.pendingFrames.get(targetPeerId) ?? [];
+          this.pendingFrames.delete(targetPeerId);
+          for (const qf of queued) {
+            try { socket.write(qf); } catch { /* socket may have closed */ }
+          }
           const dropped = this.droppedFrames.get(targetPeerId) ?? 0;
           if (dropped > 0) {
             if (dropped >= 100) {
-              this.opts.logger(`[claws/2] drain for ${targetPeerId}; ${dropped} frames dropped (threshold exceeded)`);
+              this.opts.logger(`[claws/2] drain for ${targetPeerId}; ${dropped} frames dropped (queue full)`);
             } else {
               this.opts.logger(`[claws/2] drain for ${targetPeerId}; ${dropped} frames dropped`);
             }
             this.droppedFrames.delete(targetPeerId);
+          }
+          if (queued.length > 0) {
+            this.opts.logger(`[claws/2] drain for ${targetPeerId}; flushed ${queued.length} queued frames`);
           }
         });
       }
@@ -815,7 +843,8 @@ export class ClawsServer {
    * backward compatibility — capability enforcement only kicks in when the peer
    * has explicitly opted into the negotiation by declaring at least one capability.
    */
-  private requireCapability(ctx: ConnCtx, capability: string): ClawsResponse | null {
+  // Retained for future re-introduction; underscore prefix tells TS it's intentionally unused.
+  private _requireCapability(ctx: ConnCtx, capability: string): ClawsResponse | null {
     const pid = ctx.getPeerId();
     if (!pid) return { ok: false, error: 'call hello first' };
     const peer = this.peers.get(pid);
@@ -845,12 +874,14 @@ export class ClawsServer {
       const r = req as ClawsRequest & {
         name?: string; cwd?: string; wrapped?: boolean; shellPath?: string;
         env?: Record<string, string>; show?: boolean; preserveFocus?: boolean;
+        // BUG-09: explicit wave affiliation for dispatch_subworker path (fallback when peer has no waveId)
+        waveId?: string; waveRole?: string;
       };
       // Wave affiliation from the calling peer's stored waveId (registered via hello).
       const callerPeerId3 = ctx.getPeerId();
       const callerPeer3 = callerPeerId3 ? this.peers.get(callerPeerId3) : undefined;
-      const callerWaveId = callerPeer3?.waveId;
-      const callerRole = callerPeer3?.subWorkerRole as SubWorkerRole | undefined;
+      const callerWaveId = callerPeer3?.waveId ?? r.waveId;
+      const callerRole = (callerPeer3?.subWorkerRole ?? r.waveRole) as SubWorkerRole | undefined;
 
       if (r.wrapped === true) {
         const { id } = tm.createWrapped(r);
@@ -992,6 +1023,22 @@ export class ClawsServer {
 
     if (cmd === 'close') {
       const r = req as ClawsRequest & { id: string | number };
+      // BUG-13: kill foreground process before disposing so Claude TUI
+      // processes don't orphan and keep publishing bus events.
+      const rec = tm.recordById(r.id);
+      if (rec?.pty) {
+        const fgPid = rec.pty.getForegroundProcess().pid ?? rec.pty.pid;
+        if (fgPid != null) {
+          try { process.kill(fgPid, 'SIGTERM'); } catch { /* already gone */ }
+          const killTimer = setTimeout(() => {
+            try {
+              process.kill(fgPid, 0); // throws if already gone
+              process.kill(fgPid, 'SIGKILL');
+            } catch { /* already gone */ }
+          }, 5000);
+          if (typeof killTimer.unref === 'function') killTimer.unref();
+        }
+      }
       const ok = tm.close(r.id);
       // Idempotent: closing an already-closed/unknown id is not an error.
       // Clients shouldn't need to track local state to avoid racing their
@@ -1078,6 +1125,23 @@ export class ClawsServer {
       // L18 AUTH — validate token before any other checks.
       const authErr = this.validateAuthToken(r);
       if (authErr) return { ok: false, error: authErr };
+
+      // BUG-03: idempotent hello — same socket re-registering updates capabilities and re-uses peerId
+      const existingPeerIdForSocket = ctx.getPeerId();
+      if (existingPeerIdForSocket) {
+        const existingPeer = this.peers.get(existingPeerIdForSocket);
+        if (existingPeer) {
+          if (r.capabilities !== undefined) existingPeer.capabilities = r.capabilities;
+          if (r.waveId !== undefined) existingPeer.waveId = r.waveId;
+          if (r.subWorkerRole !== undefined) existingPeer.subWorkerRole = r.subWorkerRole;
+          existingPeer.lastSeen = Date.now();
+          return {
+            ok: true, peerId: existingPeerIdForSocket, protocol: PROTOCOL_VERSION_V2,
+            serverCapabilities: ['push', 'broadcast', 'tasks'],
+            orchestratorPresent: this.hasOrchestrator(), restored: false, idempotent: true,
+          };
+        }
+      }
 
       if (r.role === 'orchestrator' && this.hasOrchestrator()) {
         return { ok: false, error: 'orchestrator already registered' };
@@ -1185,7 +1249,9 @@ export class ClawsServer {
         const socket = ctx.socket;
         setImmediate(() => { void this.replayFromCursor(cursor, topicPattern, subId, socket); });
       }
-      return { ok: true, subscriptionId: subId };
+      // Return the current event-log cursor so callers can detect what they may
+      // have missed before this subscription was established (BUG-21 mitigation).
+      return { ok: true, subscriptionId: subId, resumeCursor: this.eventLog.currentCursor() };
     }
 
     if (cmd === 'unsubscribe') {
@@ -1205,8 +1271,7 @@ export class ClawsServer {
     if (cmd === 'publish') {
       const denied = this.requireRole(ctx, ['orchestrator', 'worker', 'observer']);
       if (denied) return denied;
-      const capDenied = this.requireCapability(ctx, 'publish');
-      if (capDenied) return capDenied;
+      // BUG-03: removed requireCapability('publish') — roles already gate access; undocumented cap check blocked SDK-less workers
       const r = req as import('./protocol').PublishRequest;
       if (!r.topic || typeof r.topic !== 'string') return { ok: false, error: 'topic required' };
       const peerId = ctx.getPeerId()!;
@@ -1238,15 +1303,24 @@ export class ClawsServer {
       try {
         const strict = cfg.strictEventValidation;
         const dataSchema = schemaForTopic(r.topic);
+        // BUG-02: envelope is server-applied; auto-fill missing fields for SDK-less workers
+        let effectivePayload: unknown = r.payload;
         if (dataSchema !== null) {
           const envelopeResult = EnvelopeV1.safeParse(r.payload);
           if (!envelopeResult.success) {
-            this.opts.logger(`[claws/schema] malformed envelope from ${peerId} on ${r.topic}`);
-            await this.emitServerEvent('system.malformed.received', {
-              from: peerId, topic: r.topic, error: envelopeResult.error.issues,
-            });
-            if (strict) {
-              return { ok: false, error: 'envelope:invalid', details: envelopeResult.error.issues };
+            const senderPeer = this.peers.get(peerId);
+            effectivePayload = {
+              v: 1, id: randomUUID(), from_peer: peerId,
+              from_name: senderPeer?.peerName ?? peerId,
+              ts_published: new Date().toISOString(), schema: 'claws/2', data: r.payload,
+            };
+            const innerResult = dataSchema.safeParse(r.payload);
+            if (!innerResult.success) {
+              this.opts.logger(`[claws/schema] malformed data from ${peerId} on ${r.topic}`);
+              await this.emitServerEvent('system.malformed.received', {
+                from: peerId, topic: r.topic, error: innerResult.error.issues,
+              });
+              if (strict) return { ok: false, error: 'payload:invalid', details: innerResult.error.issues };
             }
           } else {
             const dataResult = dataSchema.safeParse(envelopeResult.data.data);
@@ -1273,14 +1347,22 @@ export class ClawsServer {
             topic: r.topic,
             from: peerId,
             ts_server: new Date().toISOString(),
-            payload: r.payload,
+            payload: effectivePayload,
           });
           sequence = logResult.sequence >= 0 ? logResult.sequence : undefined;
         } catch {
           return { ok: false, error: 'event-log:write-failed' };
         }
 
-        const delivered = this.fanOut(r.topic, peerId, r.payload, r.echo ?? false, sequence);
+        const delivered = this.fanOut(r.topic, peerId, effectivePayload, r.echo ?? false, sequence);
+
+        // BUG-06: heartbeat publishes reset wave violation timers (not just hello-time recordHeartbeat)
+        if (/^worker\.[^.]+\.heartbeat$/.test(r.topic)) {
+          const hbPeer = this.peers.get(peerId);
+          if (hbPeer?.waveId && hbPeer?.subWorkerRole) {
+            this.waveRegistry.recordHeartbeat(hbPeer.waveId, hbPeer.subWorkerRole as SubWorkerRole, peerId);
+          }
+        }
 
         // L16 TYPED-RPC: resolve any pending rpc.call waiting on this response topic.
         // Topic: rpc.response.<callerPeerId>.<requestId> — parts[3] is the requestId.
@@ -1494,28 +1576,54 @@ export class ClawsServer {
       if (!r.plan || !r.plan.trim()) {
         return { ok: false, error: 'lifecycle:plan-empty', message: 'plan text must be non-empty' };
       }
-      const existingState = this.lifecycleStore.snapshot();
-      const isResettingFromReflect = existingState !== null && existingState.phase === 'REFLECT';
-      const state = this.lifecycleStore.plan(r.plan);
-      const idempotent = existingState !== null && !isResettingFromReflect;
-      return { ok: true, state, idempotent };
-    }
-
-    if (cmd === 'lifecycle.advance') {
-      const r = req as import('./protocol').LifecycleAdvanceRequest;
+      if (!r.workerMode) {
+        return { ok: false, error: 'lifecycle:worker-mode-required', message: 'workerMode required (single|fleet|army)' };
+      }
+      if (typeof r.expectedWorkers !== 'number' || r.expectedWorkers < 1) {
+        return { ok: false, error: 'lifecycle:expected-workers-required', message: 'expectedWorkers must be positive integer' };
+      }
       try {
-        const prevPhase = this.lifecycleStore.snapshot()?.phase;
-        const state = this.lifecycleStore.advance(r.to as import('./lifecycle-store').Phase, r.reason);
-        // Return idempotent:true when the phase did not change (no-op transition)
-        if (prevPhase === r.to) return { ok: true, state, idempotent: true };
-        return { ok: true, state };
+        const existingState = this.lifecycleStore.snapshot();
+        const isResettingFromReflect = existingState !== null && existingState.phase === 'REFLECT';
+        const state = this.lifecycleStore.plan(r.plan, r.workerMode, r.expectedWorkers);
+        const inActiveMission = existingState !== null
+          && existingState.phase !== 'SESSION-BOOT'
+          && existingState.phase !== 'REFLECT'
+          && existingState.phase !== 'SESSION-END';
+        const idempotent = inActiveMission && !isResettingFromReflect;
+        return { ok: true, state, idempotent };
       } catch (err) {
-        // Split "lifecycle:code — human message" into stable code + readable detail (M1)
         const msg = (err as Error).message;
         const sepIdx = msg.indexOf(' — ');
         if (sepIdx !== -1) return { ok: false, error: msg.slice(0, sepIdx), message: msg.slice(sepIdx + 3) };
         return { ok: false, error: msg, message: msg };
       }
+    }
+
+    if (cmd === 'lifecycle.advance') {
+      const r = req as import('./protocol').LifecycleAdvanceRequest;
+      const cur = this.lifecycleStore.snapshot();
+      if (!cur) {
+        return { ok: false, error: 'lifecycle:plan-required', message: 'no lifecycle state — call lifecycle.plan first' };
+      }
+      const to = r.to as import('./lifecycle-store').Phase;
+      if (cur.phase === to) {
+        return { ok: true, state: cur, idempotent: true };
+      }
+      // Validate transition via pure rules
+      if (!canTransition(cur.phase, to)) {
+        const reason = explainIllegalTransition(cur.phase, to);
+        return { ok: false, error: 'lifecycle:invalid-transition', message: reason ?? `${cur.phase} → ${to} not allowed` };
+      }
+      // Gate-check REFLECT specifically (CLEANUP gate is enforced earlier when entering CLEANUP)
+      if (to === 'REFLECT') {
+        const gate = canReflect(cur);
+        if (!gate.ok) {
+          return { ok: false, error: 'lifecycle:reflect-gate', message: gate.reason };
+        }
+      }
+      const state = this.lifecycleStore.setPhase(to);
+      return { ok: true, state };
     }
 
     if (cmd === 'lifecycle.snapshot') {
@@ -1527,16 +1635,62 @@ export class ClawsServer {
       if (!r.reflect || !r.reflect.trim()) {
         return { ok: false, error: 'lifecycle:reflect-empty', message: 'reflect text must be non-empty' };
       }
+      const cur = this.lifecycleStore.snapshot();
+      if (!cur) {
+        return { ok: false, error: 'lifecycle:plan-required', message: 'no lifecycle state' };
+      }
+      // REFLECT must be reachable from current phase + reflect-gate must pass
+      if (!canTransition(cur.phase, 'REFLECT')) {
+        const reason = explainIllegalTransition(cur.phase, 'REFLECT');
+        return { ok: false, error: 'lifecycle:invalid-transition', message: reason ?? `cannot REFLECT from ${cur.phase}` };
+      }
+      const gate = canReflect(cur);
+      if (!gate.ok) {
+        return { ok: false, error: 'lifecycle:reflect-gate', message: gate.reason };
+      }
+      const state = this.lifecycleStore.reflect(r.reflect);
+      return { ok: true, state };
+    }
+
+    // ─── D+F: per-worker spawn + monitor registration (v0.7.10) ──────────────
+
+    if (cmd === 'lifecycle.register-spawn') {
+      const r = req as import('./protocol').LifecycleRegisterSpawnRequest;
+      if (!r.terminalId || !r.correlationId || !r.name) {
+        return { ok: false, error: 'lifecycle:register-spawn-args', message: 'terminalId, correlationId, name required' };
+      }
       try {
-        const state = this.lifecycleStore.reflect(r.reflect);
-        return { ok: true, state };
+        const worker = this.lifecycleStore.registerSpawn(r.terminalId, r.correlationId, r.name);
+        return { ok: true, worker };
       } catch (err) {
-        // Split "lifecycle:code — human message" into stable code + readable detail
         const msg = (err as Error).message;
         const sepIdx = msg.indexOf(' — ');
         if (sepIdx !== -1) return { ok: false, error: msg.slice(0, sepIdx), message: msg.slice(sepIdx + 3) };
         return { ok: false, error: msg, message: msg };
       }
+    }
+
+    if (cmd === 'lifecycle.register-monitor') {
+      const r = req as import('./protocol').LifecycleRegisterMonitorRequest;
+      if (!r.terminalId || !r.correlationId || !r.command) {
+        return { ok: false, error: 'lifecycle:register-monitor-args', message: 'terminalId, correlationId, command required' };
+      }
+      try {
+        const monitor = this.lifecycleStore.registerMonitor(r.terminalId, r.correlationId, r.command);
+        return { ok: true, monitor };
+      } catch (err) {
+        const msg = (err as Error).message;
+        return { ok: false, error: msg, message: msg };
+      }
+    }
+
+    if (cmd === 'lifecycle.mark-worker-status') {
+      const r = req as import('./protocol').LifecycleMarkWorkerStatusRequest;
+      if (!r.terminalId || !r.status) {
+        return { ok: false, error: 'lifecycle:mark-status-args', message: 'terminalId, status required' };
+      }
+      const updated = this.lifecycleStore.markWorkerStatus(r.terminalId, r.status as import('./lifecycle-store').WorkerStatus);
+      return { ok: true, worker: updated };
     }
 
     // ── Wave army commands ──────────────────────────────────────────────────

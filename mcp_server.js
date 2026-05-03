@@ -118,6 +118,7 @@ function clawsRpc(sockPath, req, timeout = 30000) {
     sock.on('error', (err) => {
       log('socket error [' + req.cmd + ']: ' + err.message);
       resolve({ ok: false, error: `socket error: ${err.message}` });
+      sock.destroy();
     });
     sock.on('timeout', () => {
       log('socket timeout [' + req.cmd + '] after ' + timeout + 'ms');
@@ -159,10 +160,13 @@ const _eventBuffer = {
   waiters: [],          // { resolve, timer } registered by drain with wait_ms > 0
   maxWaiters: 10,       // cap: reject new wait_ms requests beyond this
   subscribed: false,    // true once we've sent hello + subscribe("**") on _pconn
+  subscribeCursor: null, // event-log cursor at moment of subscription (Fix-D late-join detection)
   _overflowPending: false, // guards single system.bus.ring-overflow per eviction batch
+  seenSequences: new Set(), // BUG-01: dedup frames delivered twice by overlapping subscriptions
 };
 
 let _pconnConnecting = null; // Promise | null — guards concurrent connect attempts
+let _helloInFlight   = null; // Promise | null — deduplicates concurrent hello sends
 
 // Circuit breaker for _pconnEnsureRegistered and _scanAndPublishCLAWSPUB.
 // Prevents repeated expensive reconnect attempts when the extension socket is down.
@@ -189,6 +193,15 @@ function _pconnHandleData(data) {
         _pconn.pending.delete(rid);
         resolve(msg);
       } else if (rid == null && (msg.push === 'message' || msg.topic != null)) {
+        // BUG-01: skip duplicate delivery caused by overlapping subscriptions sharing a sequence.
+        if (msg.sequence != null) {
+          if (_eventBuffer.seenSequences.has(msg.sequence)) continue;
+          _eventBuffer.seenSequences.add(msg.sequence);
+          if (_eventBuffer.seenSequences.size > 2000) {
+            const _seqArr = [..._eventBuffer.seenSequences];
+            _eventBuffer.seenSequences = new Set(_seqArr.slice(-1000));
+          }
+        }
         // Push frame (no rid) — buffer for claws_drain_events.
         const entry = {
           absoluteIndex: ++_eventBuffer.totalReceived,
@@ -230,6 +243,7 @@ function _pconnHandleClose() {
   _pconn.socket = null;
   _pconn.buf = '';
   _pconn.peerId = null;
+  _eventBuffer.subscribed = false; // reconnect requires fresh auto-subscribe
   for (const [, { reject, timer }] of _pconn.pending) {
     clearTimeout(timer);
     reject(new Error('persistent socket closed'));
@@ -365,12 +379,39 @@ const TOOLS = require('./schemas/mcp-tools.json');
 
 // ─── Blocking worker lifecycle ─────────────────────────────────────────────
 
-function findMarkerLine(text, marker) {
-  const idx = text.indexOf(marker);
-  if (idx === -1) return null;
-  const lineStart = text.lastIndexOf('\n', idx) + 1;
-  const lineEnd = text.indexOf('\n', idx);
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Find marker only when it appears in tool/output context — never in prose.
+// Real Claude pty patterns the matcher MUST accept:
+//   • bare-shell printf:        "MARKER\n"
+//   • Claude text response:     "⏺MARKER<trailing-spaces>\r…"
+//   • Claude tool-result line:  "  ⎿  MARKER\r…"
+// Prose collisions the matcher MUST reject:
+//   • mission restatement:      "step 4. Echo MARKER on its own line."
+//   • shell command echo:       "% echo MARKER"
+//   • Claude action header:     "⏺Bash(echo 'MARKER')" — wait for the actual
+//                                tool result instead, never false-complete on
+//                                a Bash command that hasn't run yet.
+// Anchor: line start → optional whitespace → optional ⏺/⎿ indicator →
+//         optional whitespace → exact marker → whitespace/newline/EOT.
+function findStandaloneMarker(text, marker) {
+  if (!marker || typeof marker !== 'string' || !text) return null;
+  const re = new RegExp(
+    '(?:^|[\\r\\n])[\\t ]*[⏺⎿]?[\\t ]*' + escapeRegex(marker) + '(?=[\\t \\r\\n]|$)'
+  );
+  const m = re.exec(text);
+  if (m === null) return null;
+  const ls = text.lastIndexOf('\n', m.index);
+  const lineStart = ls === -1 ? 0 : ls + 1;
+  const lineEnd = text.indexOf('\n', lineStart);
   return text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trim();
+}
+
+// Backward-compat alias — internal callsites should prefer findStandaloneMarker.
+function findMarkerLine(text, marker) {
+  return findStandaloneMarker(text, marker);
 }
 
 // ─── [CLAWS_PUB] line scanner ─────────────────────────────────────────────────
@@ -402,7 +443,7 @@ async function _scanAndPublishCLAWSPUB(newText, sockPath) {
     }
     try {
       await _pconnEnsureRegistered(sockPath);
-      await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic, payload });
+      await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic, payload }, 3000);
       _circuitBreaker.scanConsecutiveErrors = 0;
     } catch (e) {
       _circuitBreaker.scanConsecutiveErrors++;
@@ -433,6 +474,9 @@ async function runBlockingWorker(sock, args) {
     model: 'claude-sonnet-4-6',
   };
   const opt = { ...DEFAULTS, ...args };
+  if (!/^[a-zA-Z0-9._-]+$/.test(opt.model)) {
+    return { status: 'error', error: `invalid model name '${opt.model}' — must match /^[a-zA-Z0-9._-]+$/` };
+  }
   const hasMission = typeof args.mission === 'string' && args.mission.length > 0;
   const hasCommand = typeof args.command === 'string' && args.command.length > 0;
   const launchClaude = args.launch_claude !== undefined
@@ -448,13 +492,14 @@ async function runBlockingWorker(sock, args) {
   // 1. Create wrapped terminal
   const cr = await clawsRpc(sock, {
     cmd: 'create', name: args.name || 'claws-worker', wrapped: true, show: true,
-    cwd: workerCwd,
+    cwd: workerCwd, env: { CLAWS_WORKER: '1' },
   });
-  if (!cr.ok) return { status: 'error', error: `create failed: ${cr.error}` };
+  if (!cr.ok) return { status: 'error', error: `create failed: ${_lifecycleErrMsg(cr.error)}` };
   const termId = cr.id;
   const startedAt = Date.now();
 
   // Publish system.worker.spawned — best-effort, never aborts on failure.
+  log(`runBlockingWorker: publishing system.worker.spawned for terminal ${termId}`);
   try {
     await _pconnEnsureRegistered(sock);
     await _pconnWrite({
@@ -462,7 +507,8 @@ async function runBlockingWorker(sock, args) {
       topic: 'system.worker.spawned',
       payload: { terminal_id: termId, name: args.name || 'claws-worker', wrapped: true, started_at: new Date(startedAt).toISOString() },
     });
-  } catch (e) { log('system.worker.spawned publish failed: ' + (e && e.message || e)); }
+    log(`runBlockingWorker: system.worker.spawned published ok for terminal ${termId}`);
+  } catch (e) { log('runBlockingWorker: system.worker.spawned publish FAILED: ' + (e && e.message || e)); }
 
   // 2. Give shell a moment to emit prompt
   await sleep(400);
@@ -479,20 +525,45 @@ async function runBlockingWorker(sock, args) {
       cmd: 'send', id: termId,
       text: `claude --dangerously-skip-permissions --model ${opt.model}`, newline: true,
     });
+    // Event-driven READINESS detection: ❯ alone exits too early — Claude's
+    // React/Ink renders the input prompt before MCP auth + render pipeline
+    // are finalized. Stricter check: require BOTH ❯ AND `cost:$` (cost line
+    // at bottom — only appears when Claude is fully idle and receptive).
+    // Stable for 3 polls (~900ms) before declaring ready.
     const bootDeadline = Date.now() + opt.boot_wait_ms;
+    let _promptStableCount = 0;
     while (Date.now() < bootDeadline) {
       const snap = await clawsRpc(sock, {
         cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024,
       });
-      if (snap.ok && typeof snap.bytes === 'string' && snap.bytes.includes(opt.boot_marker)) {
-        booted = true;
-        break;
+      const _bytes = (snap.ok && typeof snap.bytes === 'string') ? snap.bytes : '';
+      // Require: input prompt (❯) AND idle indicator (cost:$ shown only when ready)
+      const _hasPrompt = _bytes.includes('❯');
+      const _hasCostLine = _bytes.includes('cost:$') || _bytes.includes('cost: $');
+      if (_hasPrompt && _hasCostLine) {
+        _promptStableCount++;
+        if (_promptStableCount >= 3) { booted = true; break; }
+      } else {
+        _promptStableCount = 0;
       }
-      await sleep(400);
+      await sleep(300);
+    }
+    // BUG-07: secondary MCP auth check — bypass banner can appear before /mcp auth resolves.
+    if (booted) {
+      const _authSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+      if (_authSnap.ok && typeof _authSnap.bytes === 'string' &&
+          (_authSnap.bytes.includes('MCP server need') || _authSnap.bytes.includes(' /mcp'))) {
+        if (opt.close_on_complete) try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {}
+        return { status: 'error', error: `boot_marker seen but MCP auth banner active on terminal ${termId} — prompt is blocked. Spawn with minimal MCP config or pre-auth.` };
+      }
     }
     // Proceed even if marker missed — best-effort. Some users may have
     // customized the Claude Code TUI banner; the actual launch may have worked.
-    await sleep(500);
+    // POST-BOOT SETTLE: even after ❯ + cost:$ visible, Claude has a hidden async
+    // window (~5s) during which paste-submit gestures get lost. Manual claws_send
+    // testing proves 18s total wait works; programmatic boot is ~6.5s, so 5000ms
+    // extra settle brings us to ~11s — empirically reliable.
+    await sleep(5000);
   }
 
   // 4. Send the mission AS A USER PROMPT — direct, the way it works in v0.7.4.
@@ -503,23 +574,37 @@ async function runBlockingWorker(sock, args) {
   // DO NOT add a file-referrer pattern here. If a future contributor is tempted
   // to write the mission to /tmp and send a "Read <file>..." referrer to dodge
   // some pty quirk, the answer is NO. The mission is a user prompt. Period.
-  const payload = hasMission ? args.mission
+  // Strip bracketed-paste escape sequences so a crafted mission cannot break out of paste mode.
+  const safeMission = hasMission
+    ? args.mission.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
+    : args.mission;
+  // ROOT CAUSE FIX (2026-05-02): mission augmentation with CLAWS_PUB preamble was
+  // breaking Claude TUI multi-line submission. Preamble added ~5 extra lines +
+  // special chars (single quotes around topics), pushing total text past Claude's
+  // paste-collapse threshold. Multi-line input rendered expanded; single \r
+  // treated as newline-within-input, never submitted.
+  // Verified: identical mission via claws_send (no augmentation) submits ✓.
+  // Send mission DIRECTLY, no preamble.
+  const payload = hasMission ? safeMission
                 : hasCommand ? args.command
                 : '';
 
   if (payload) {
-    await clawsRpc(sock, {
-      cmd: 'send', id: termId, text: payload, newline: true,
-    });
     if (launchClaude) {
-      // Claude Code TUI sometimes needs an extra Enter to submit. The 800ms
-      // window lets Claude's paste-detect timer (auto-collapse for multi-line
-      // bursts in v2.x) close so the CR registers as Enter on the prompt
-      // rather than a keystroke inside a still-open paste buffer.
-      await sleep(800);
-      await clawsRpc(sock, {
-        cmd: 'send', id: termId, text: '\r', newline: false,
-      });
+      // Bracketed paste + writeInjected internal 30ms CR.
+      // VERIFIED 2026-05-02 by manual claws_create + claws_send test:
+      //   • single-line: paste:true + newline:true → text wrapped in
+      //     \x1b[200~...\x1b[201~, then \r 30ms later → SUBMITS ✓
+      //   • multi-line:  same pattern → SUBMITS ✓ (Claude paste-collapses or
+      //     accepts whole bracketed paste atomically; \r 30ms later submits)
+      //
+      // Without paste:true, multi-line text is typed raw and each \n becomes
+      // newline-within-input (Claude's multi-line input mode). Single \r at
+      // end then ALSO becomes newline-within-input, never submitting.
+      await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: true, paste: true });
+    } else {
+      // Bare shell command: no paste needed; trailing \n submits via the prompt.
+      await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: true });
     }
   }
 
@@ -528,40 +613,99 @@ async function runBlockingWorker(sock, args) {
   // significant buffer growth past pre-send length), then capture offset.
   // The 400ms fixed sleep was timing-fragile — Claude Code v2.x sometimes
   // delays input echo past that window.
+  // BUG-26: settle scan is Claude TUI boot detection only. For bare shell
+  // commands (launch_claude=false) the complete_marker may print before the
+  // first poll tick — setting markerScanFrom past the marker causes the detach
+  // watcher to never find it. Skip settle for non-Claude paths; markerScanFrom
+  // stays 0 so the watcher scans the full log from the start.
   let markerScanFrom = 0;
-  try {
-    const preSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
-    const preLen = (preSnap.ok && typeof preSnap.bytes === 'string') ? preSnap.bytes.length : 0;
-    const settleDeadline = Date.now() + 5000;
-    const settleIndicator = /Pasted text|tokens|thinking|Synthesizing|Combobulating|Prestidigitating|Brewed|Cogitated|Crunched|Ideating/;
-    while (Date.now() < settleDeadline) {
-      await sleep(200);
-      const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
-      if (snap.ok && typeof snap.bytes === 'string') {
-        const text = snap.bytes;
-        const newRegion = text.slice(preLen);
-        if (text.length > preLen + 200 || settleIndicator.test(newRegion)) {
-          markerScanFrom = text.length;
-          break;
+  if (launchClaude) {
+    try {
+      const preSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
+      const preLen = (preSnap.ok && typeof preSnap.bytes === 'string') ? preSnap.bytes.length : 0;
+      const settleDeadline = Date.now() + 5000;
+      const settleIndicator = /Pasted text|tokens|thinking|Synthesizing|Combobulating|Prestidigitating|Brewed|Cogitated|Crunched|Ideating/;
+      while (Date.now() < settleDeadline) {
+        await sleep(200);
+        const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
+        if (snap.ok && typeof snap.bytes === 'string') {
+          const text = snap.bytes;
+          const newRegion = text.slice(preLen);
+          if (text.length > preLen + 200 || settleIndicator.test(newRegion)) {
+            markerScanFrom = text.length;
+            break;
+          }
         }
       }
-    }
-    if (markerScanFrom === 0) {
-      const finalSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
-      if (finalSnap.ok && typeof finalSnap.bytes === 'string') {
-        markerScanFrom = finalSnap.bytes.length;
+      if (markerScanFrom === 0) {
+        const finalSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
+        if (finalSnap.ok && typeof finalSnap.bytes === 'string') {
+          markerScanFrom = finalSnap.bytes.length;
+        }
       }
-    }
-  } catch (e) { /* keep markerScanFrom=0; degraded but not fatal */ }
+    } catch (e) { /* keep markerScanFrom=0; degraded but not fatal */ }
+  }
 
-  // 5. Detach shortcut
+  // 5. Detach shortcut — register background watcher that runs the SAME poll
+  // body as the blocking path so [CLAWS_PUB] scanner, system.worker.completed
+  // publish, and auto-close all keep working in detach mode. Server-side only,
+  // never holds the MCP socket.
   if (args.detach === true) {
-    return {
-      status: 'spawned',
-      terminal_id: termId,
-      booted,
-      duration_ms: Date.now() - startedAt,
+    let pubScanOffset = markerScanFrom;
+    let status = 'timeout';
+    let markerLine = null;
+    const timeoutDeadline = startedAt + opt.timeout_ms;
+    const tick = async () => {
+      try {
+        if (Date.now() > timeoutDeadline) {
+          clearInterval(intervalId);
+          _detachWatchers.delete(termId);
+          try {
+            await _pconnEnsureRegistered(sock);
+            await _pconnWrite({
+              cmd: 'publish', protocol: 'claws/2',
+              topic: 'system.worker.completed',
+              payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true },
+            });
+          } catch (e) { log('detach watcher publish failed: ' + (e && e.message || e)); }
+          return;
+        }
+        const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
+        const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
+        const scanText = text.length > markerScanFrom ? text.slice(markerScanFrom) : '';
+        const scanStart = Math.min(pubScanOffset, text.length);
+        if (text.length > scanStart) await _scanAndPublishCLAWSPUB(text.slice(scanStart), sock);
+        pubScanOffset = text.length;
+        const _completeLine = findStandaloneMarker(scanText, opt.complete_marker);
+        if (_completeLine !== null) {
+          status = 'completed';
+          markerLine = _completeLine;
+        } else {
+          for (const em of opt.error_markers) {
+            const _errLine = em ? findStandaloneMarker(scanText, em) : null;
+            if (_errLine !== null) { status = 'failed'; markerLine = _errLine; break; }
+          }
+        }
+        if (status !== 'timeout') {
+          clearInterval(intervalId);
+          _detachWatchers.delete(termId);
+          try {
+            await _pconnEnsureRegistered(sock);
+            await _pconnWrite({
+              cmd: 'publish', protocol: 'claws/2',
+              topic: 'system.worker.completed',
+              payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true },
+            });
+          } catch (e) { log('detach watcher publish failed: ' + (e && e.message || e)); }
+          if (opt.close_on_complete !== false) {
+            try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {}
+          }
+        }
+      } catch (e) { log('detach watcher tick error: ' + (e && e.message || e)); }
     };
+    const intervalId = setInterval(tick, opt.poll_interval_ms);
+    _detachWatchers.set(termId, { intervalId, opt, startedAt });
+    return { status: 'spawned', terminal_id: termId, booted, duration_ms: Date.now() - startedAt };
   }
 
   // 6. Poll for completion / errors / timeout
@@ -587,16 +731,18 @@ async function runBlockingWorker(sock, args) {
     }
     pubScanOffset = text.length;
 
-    if (scanText.includes(opt.complete_marker)) {
+    const _bCompleteLine = findStandaloneMarker(scanText, opt.complete_marker);
+    if (_bCompleteLine !== null) {
       status = 'completed';
-      markerLine = findMarkerLine(scanText, opt.complete_marker);
+      markerLine = _bCompleteLine;
       break;
     }
     let failed = false;
     for (const em of opt.error_markers) {
-      if (em && scanText.includes(em)) {
+      const _bErrLine = em ? findStandaloneMarker(scanText, em) : null;
+      if (_bErrLine !== null) {
         status = 'failed';
-        markerLine = findMarkerLine(scanText, em);
+        markerLine = _bErrLine;
         failed = true;
         break;
       }
@@ -641,6 +787,125 @@ async function runBlockingWorker(sock, args) {
   };
 }
 
+// ─── Sidecar auto-spawn ───────────────────────────────────────────────────────
+let _sidecarPid        = null;
+let _sidecarSubscribed = false; // true only after sidecar.subscribed JSON confirmed
+let _sidecarStdout     = null;  // kept open to prevent SIGPIPE
+let _sidecarEnsureInFlight = null; // singleton in-flight Promise dedup
+
+function _isSidecarAlive() {
+  if (!_sidecarPid || !_sidecarSubscribed) return false;
+  try { process.kill(_sidecarPid, 0); return true; } catch { return false; }
+}
+
+async function _spawnAndVerifySidecar(maxWaitMs = 3000) {
+  const { spawn, spawnSync } = require('child_process');
+  // BUG-19 fix: __dirname resolves to repo root when .claws-bin/mcp_server.js is symlinked
+  // back to ../mcp_server.js (Wave A's dedup). Try multiple candidate locations.
+  const sidecarCandidates = [
+    path.join(__dirname, 'stream-events.js'),                  // .claws-bin layout (non-symlinked install)
+    path.join(__dirname, '.claws-bin', 'stream-events.js'),    // repo root + .claws-bin
+    path.join(__dirname, 'scripts', 'stream-events.js'),       // repo root + scripts (dev source)
+  ];
+  const sidecarPath = sidecarCandidates.find(p => fs.existsSync(p));
+  if (!sidecarPath) throw new Error('stream-events.js not found in any candidate: ' + sidecarCandidates.join(', '));
+
+  // GAP-A1: detect existing auto-sidecar (spawned by session-start hook) to avoid
+  // two concurrent sidecars both writing to events.log, causing 4x event duplication.
+  const socketPath = getSocket();
+  const escapedSocket = socketPath.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+  const pgResult = spawnSync('pgrep', ['-f', `stream-events\\.js.*--auto-sidecar.*${escapedSocket}`], { encoding: 'utf8' });
+  if (pgResult.status === 0) {
+    const existingPid = parseInt((pgResult.stdout || '').trim().split('\n')[0], 10);
+    if (!isNaN(existingPid)) {
+      log(`[sidecar] adopting existing auto-sidecar pid=${existingPid} (GAP-A1 dedup)`);
+      _sidecarPid        = existingPid;
+      _sidecarSubscribed = true;
+      return;
+    }
+  }
+
+  // Open events.log for appending — after verification confirmed, stdout is
+  // piped here so every sidecar push frame is persisted for tail-F monitoring.
+  const eventsLogDir = path.dirname(path.resolve(socketPath));
+  const eventsLogFilePath = path.join(eventsLogDir, 'events.log');
+  const eventsLogStream = fs.createWriteStream(eventsLogFilePath, { flags: 'a' });
+
+  // GAP-A1: pass --auto-sidecar + socketPath as args so session-start pgrep can detect us.
+  const child = spawn(process.execPath, [sidecarPath, '--auto-sidecar', socketPath], {
+    detached: true,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    env: { ...process.env, CLAWS_TOPIC: '**', CLAWS_PEER_NAME: 'auto-sidecar', CLAWS_ROLE: 'observer' },
+  });
+
+  if (!child.pid) throw new Error('sidecar spawn returned no pid (ENOENT or permission denied)');
+  _sidecarPid    = child.pid;
+  _sidecarStdout = child.stdout;
+
+  // Named drain — removed after verification so stdout can be piped to events.log.
+  function drainHandler() {}
+  child.stdout.on('data', drainHandler);
+  child.on('exit', (code) => {
+    log(`[sidecar] exited code=${code}`);
+    eventsLogStream.end();
+    _sidecarPid        = null;
+    _sidecarSubscribed = false;
+    _sidecarStdout     = null;
+  });
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.stdout.removeListener('data', verifyHandler);
+      reject(new Error(`sidecar did not reach SUBSCRIBED within ${maxWaitMs}ms`));
+    }, maxWaitMs);
+
+    let buf = '';
+    function verifyHandler(chunk) {
+      buf += chunk.toString('utf8');
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        try {
+          const obj = JSON.parse(line);
+          if (obj.type === 'sidecar.subscribed' && obj.ok !== false) {
+            clearTimeout(timer);
+            child.stdout.removeListener('data', verifyHandler);
+            child.stdout.removeListener('data', drainHandler);
+            child.stdout.pipe(eventsLogStream);
+            child.unref();
+            _sidecarSubscribed = true;
+            log(`[sidecar] SUBSCRIBED confirmed — piping stdout to ${eventsLogFilePath}`);
+            resolve();
+            return;
+          }
+          if (obj.type === 'sidecar.error') {
+            clearTimeout(timer);
+            child.stdout.removeListener('data', verifyHandler);
+            reject(new Error('sidecar error: ' + obj.error));
+            return;
+          }
+        } catch { /* incomplete JSON line, skip */ }
+      }
+    }
+    child.stdout.on('data', verifyHandler);
+
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      child.stdout.removeListener('data', verifyHandler);
+      if (code !== 0) reject(new Error(`sidecar crashed (exit ${code}) before reaching SUBSCRIBED`));
+    });
+  });
+}
+
+async function _ensureSidecarOrThrow(maxWaitMs = 3000) {
+  if (_isSidecarAlive()) return;
+  if (!_sidecarEnsureInFlight) {
+    _sidecarEnsureInFlight = _spawnAndVerifySidecar(maxWaitMs)
+      .finally(() => { _sidecarEnsureInFlight = null; });
+  }
+  await _sidecarEnsureInFlight;
+}
+
 // ─── Persistent-socket identity helper ────────────────────────────────────────
 // Ensures the persistent socket is connected AND this process has a peerId.
 // If not yet registered, sends hello with role=orchestrator, peerName=mcp-orchestrator.
@@ -661,11 +926,14 @@ async function _pconnEnsureRegistered(sockPath) {
   // Reset failure timestamp on successful connect.
   _circuitBreaker.lastFailureTs = 0;
   if (!_pconn.peerId) {
-    const hr = await _pconnWrite({
-      cmd: 'hello', protocol: 'claws/2',
-      role: 'orchestrator', peerName: 'mcp-orchestrator',
-    }, 5000);
-    if (hr.ok) {
+    if (!_helloInFlight) {
+      _helloInFlight = _pconnWrite({
+        cmd: 'hello', protocol: 'claws/2',
+        role: 'orchestrator', peerName: 'mcp-orchestrator',
+      }, 5000).finally(() => { _helloInFlight = null; });
+    }
+    const hr = await _helloInFlight;
+    if (hr && hr.ok && !_pconn.peerId) {
       _pconn.peerId = hr.peerId;
       _pconn.role = 'orchestrator';
       _pconn.peerName = 'mcp-orchestrator';
@@ -709,8 +977,52 @@ function getSocket() {
   return envSock || '.claws/claws.sock';
 }
 
+const _detachWatchers = new Map(); // termId -> { intervalId, opt, startedAt }
+
+// Safety guard: cap any single blocking tool response to 8 s over MCP stdio.
+async function withMaxHold(promise, maxMs = 8000, partialBuilder) {
+  let timer;
+  const timeout = new Promise(r => { timer = setTimeout(() => r({ __maxHold: true }), maxMs); });
+  const winner = await Promise.race([promise, timeout]);
+  clearTimeout(timer);
+  if (winner && winner.__maxHold) return partialBuilder();
+  return winner;
+}
+
+// BUG-12: translate opaque lifecycle gate codes into actionable messages.
+function _lifecycleErrMsg(rawErr) {
+  if (typeof rawErr === 'string' && rawErr.startsWith('lifecycle:')) {
+    return `lifecycle gate active (${rawErr}) — call claws_lifecycle_plan to start a new cycle before spawning new terminals`;
+  }
+  return rawErr;
+}
+
 async function handleTool(name, args) {
   const sock = getSocket();
+  _ensureSidecarOrThrow(2000).catch(() => {}); // best-effort warm-up
+  const _t0 = Date.now();
+  try {
+    await _pconnEnsureRegistered(sock);
+    await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: `tool.${name}.invoked`, payload: { peerId: _pconn.peerId, args_keys: Object.keys(args) } });
+  } catch (_pe) { /* best-effort */ }
+  let _r;
+  try {
+    _r = await _dispatchTool(name, args, sock);
+  } catch (_te) {
+    try {
+      await _pconnEnsureRegistered(sock);
+      await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: `tool.${name}.failed`, payload: { duration_ms: Date.now() - _t0, error: _te && _te.message || String(_te) } });
+    } catch (_pe) { /* best-effort */ }
+    throw _te;
+  }
+  try {
+    await _pconnEnsureRegistered(sock);
+    await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: `tool.${name}.completed`, payload: { duration_ms: Date.now() - _t0 } });
+  } catch (_pe) { /* best-effort */ }
+  return _r;
+}
+
+async function _dispatchTool(name, args, sock) {
 
   if (name === 'claws_list') {
     const resp = await clawsRpc(sock, { cmd: 'list' });
@@ -744,14 +1056,28 @@ async function handleTool(name, args) {
   }
 
   if (name === 'claws_create') {
+    try { await _ensureSidecarOrThrow(); } catch (e) { return toolError('SPAWN REFUSED: sidecar unavailable — ' + e.message); }
+    const _createCorrId = (typeof args.correlation_id === 'string' && args.correlation_id) ? args.correlation_id : randomUUID();
     const resp = await clawsRpc(sock, {
       cmd: 'create', name: args.name || 'claws',
-      cwd: args.cwd, wrapped: args.wrapped !== false, show: true,
+      cwd: (typeof args.cwd === 'string' && args.cwd.length > 0) ? args.cwd : process.cwd(), wrapped: args.wrapped !== false, show: true,
     });
-    if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
-    let text = `created terminal id=${resp.id}`;
-    if (resp.logPath) text += ` wrapped logPath=${resp.logPath}`;
-    return { content: [{ type: 'text', text }] };
+    if (!resp.ok) return toolError(`ERROR: ${_lifecycleErrMsg(resp.error)}`);
+    const eventsLogPath = path.join(path.dirname(path.resolve(sock)), 'events.log');
+    const _createTermId = resp.id;
+    const _createMonitorCmd = `Bash(command="until grep -qE '\\"correlation_id\\":\\"${_createCorrId}\\".*system\\.worker\\.completed' .claws/events.log; do sleep 3; done", run_in_background=true, description="claws monitor | term=${_createTermId} | corr=${_createCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}")`;
+    // D+F: register spawn + monitor atomically before returning. Best-effort (lifecycle may not be in active mission).
+    try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(_createTermId), correlationId: _createCorrId, name: args.name || 'claws' }); } catch (e) { /* lifecycle not initialized — non-fatal for claws_create */ }
+    try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(_createTermId), correlationId: _createCorrId, command: _createMonitorCmd }); } catch (e) { /* non-fatal */ }
+    const createResult = {
+      ok: true, terminal_id: _createTermId,
+      correlation_id: _createCorrId,
+      ...(resp.logPath ? { log_path: resp.logPath } : {}),
+      monitor_arm_required: true,
+      monitor_arm_command: _createMonitorCmd,
+      events_log_path: eventsLogPath,
+    };
+    return { content: [{ type: 'text', text: JSON.stringify(createResult, null, 2) }] };
   }
 
   if (name === 'claws_send') {
@@ -772,13 +1098,18 @@ async function handleTool(name, args) {
 
   if (name === 'claws_exec') {
     const timeoutMs = args.timeout_ms || 180000;
-    const result = await fileExec(sock, args.id, args.command, timeoutMs);
-    if (!result.ok) {
-      let text = `ERROR: ${result.error}`;
-      if (result.partial) text += `\n[partial output]\n${result.partial}`;
-      return toolError(text);
-    }
-    return { content: [{ type: 'text', text: `exit ${result.exit_code}\n${result.output}` }] };
+    return withMaxHold(
+      fileExec(sock, args.id, args.command, timeoutMs).then((result) => {
+        if (!result.ok) {
+          let text = `ERROR: ${result.error}`;
+          if (result.partial) text += `\n[partial output]\n${result.partial}`;
+          return toolError(text);
+        }
+        return { content: [{ type: 'text', text: `exit ${result.exit_code}\n${result.output}` }] };
+      }),
+      8000,
+      () => ({ content: [{ type: 'text', text: JSON.stringify({ ok: true, partial: true, hint: 'use claws_workers_wait to monitor' }) }] }),
+    );
   }
 
   if (name === 'claws_read_log') {
@@ -863,7 +1194,7 @@ async function handleTool(name, args) {
   if (name === 'claws_subscribe') {
     const resp = await clawsRpcStateful(sock, { cmd: 'subscribe', topic: args.topic });
     if (!resp.ok) return toolError(`ERROR: ${resp.error || 'subscribe failed'}`);
-    return { content: [{ type: 'text', text: JSON.stringify({ subscriptionId: resp.subscriptionId }, null, 2) }] };
+    return { content: [{ type: 'text', text: JSON.stringify({ subscriptionId: resp.subscriptionId, resumeCursor: resp.resumeCursor ?? null }, null, 2) }] };
   }
 
   /**
@@ -944,42 +1275,207 @@ async function handleTool(name, args) {
   }
 
   if (name === 'claws_worker') {
-    const result = await runBlockingWorker(sock, args);
-
-    if (result.status === 'error') {
-      return toolError(`ERROR: ${result.error}`);
+    try { await _ensureSidecarOrThrow(); } catch (e) { return toolError('SPAWN REFUSED: sidecar unavailable — ' + e.message); }
+    // Blocking mode: explicit wait:true OR detach:false are both treated as blocking.
+    if (args.wait === true || args.detach === false) { // BUG-05: detach:false was ignored
+      // Legacy blocking path — guarded at 8 s to protect MCP stdio.
+      return withMaxHold(
+        runBlockingWorker(sock, args).then((result) => {
+          if (result.status === 'error') return toolError(`ERROR: ${result.error}`);
+          const header = [
+            `worker '${args.name}' ${result.status.toUpperCase()}`,
+            `  terminal:   ${result.terminal_id}`,
+            `  duration:   ${(result.duration_ms / 1000).toFixed(1)}s`,
+            `  booted:     ${result.booted}`,
+            `  cleaned_up: ${result.cleaned_up}`,
+          ];
+          if (result.marker_line) header.push(`  marker:     ${result.marker_line}`);
+          if (result.status === 'spawned') {
+            header.push('', `detached mode — use claws_read_log id=${result.terminal_id} and claws_close when done`);
+            return { content: [{ type: 'text', text: header.join('\n') }] };
+          }
+          const body = result.harvest || '';
+          return { content: [{ type: 'text', text: header.join('\n') + '\n\n── harvest (last lines) ──\n' + body }] };
+        }),
+        8000,
+        () => ({ content: [{ type: 'text', text: JSON.stringify({ ok: true, partial: true, hint: 'use claws_workers_wait to monitor' }) }] }),
+      );
     }
 
-    const header = [
-      `worker '${args.name}' ${result.status.toUpperCase()}`,
-      `  terminal:   ${result.terminal_id}`,
-      `  duration:   ${(result.duration_ms / 1000).toFixed(1)}s`,
-      `  booted:     ${result.booted}`,
-      `  cleaned_up: ${result.cleaned_up}`,
-    ];
-    if (result.marker_line) header.push(`  marker:     ${result.marker_line}`);
+    // Non-blocking fast path (default) — boots terminal, sends mission, returns terminal_id immediately.
+    const model = args.model || 'claude-sonnet-4-6';
+    if (!/^[a-zA-Z0-9._-]+$/.test(model)) {
+      return toolError(`ERROR: invalid model name '${model}' — must match /^[a-zA-Z0-9._-]+$/`);
+    }
+    const hasMission = typeof args.mission === 'string' && args.mission.length > 0;
+    const hasCommand = typeof args.command === 'string' && args.command.length > 0;
+    const launchClaude = args.launch_claude !== undefined ? !!args.launch_claude : hasMission;
+    const workerCwd = typeof args.cwd === 'string' && args.cwd.length > 0 ? args.cwd : process.cwd();
 
-    if (result.status === 'spawned') {
-      header.push('', `detached mode — use claws_read_log id=${result.terminal_id} and claws_close when done`);
-      return { content: [{ type: 'text', text: header.join('\n') }] };
+    const cr = await clawsRpc(sock, {
+      cmd: 'create', name: args.name || 'claws-worker', wrapped: true, show: true, cwd: workerCwd,
+      env: { CLAWS_WORKER: '1' },
+    });
+    if (!cr.ok) return toolError(`ERROR: create failed: ${_lifecycleErrMsg(cr.error)}`);
+    const termId = cr.id;
+    const _fpStartedAt = Date.now();
+
+    // BUG-23: publish system.worker.spawned on non-blocking fast path — best-effort.
+    try {
+      await _pconnEnsureRegistered(sock);
+      await _pconnWrite({
+        cmd: 'publish', protocol: 'claws/2',
+        topic: 'system.worker.spawned',
+        payload: { terminal_id: termId, name: args.name || 'claws-worker', wrapped: true, started_at: new Date(_fpStartedAt).toISOString() },
+      });
+    } catch (e) { log('system.worker.spawned publish failed: ' + (e && e.message || e)); }
+
+    await sleep(400);
+
+    if (launchClaude) {
+      await clawsRpc(sock, {
+        cmd: 'send', id: termId,
+        text: `claude --dangerously-skip-permissions --model ${model}`, newline: true,
+      });
+      // CRITICAL FIX (2026-05-02): wait for Claude TUI to be FULLY READY before
+      // sending mission paste. Without this, mission lands in shell prompt while
+      // Claude is still booting and the post-paste \r gets lost — mission sits
+      // in input box forever, never submitted.
+      // Event-driven: poll for ❯ (input prompt) + cost:$ (idle indicator).
+      // Stable for 3 polls (~900ms) before declaring ready, then 5000ms settle.
+      const _fpBootDeadline = Date.now() + (args.boot_wait_ms || 25000);
+      let _fpStable = 0;
+      while (Date.now() < _fpBootDeadline) {
+        const _bs = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+        const _bytes = (_bs.ok && typeof _bs.bytes === 'string') ? _bs.bytes : '';
+        if (_bytes.includes('❯') && (_bytes.includes('cost:$') || _bytes.includes('cost: $'))) {
+          _fpStable++;
+          if (_fpStable >= 3) break;
+        } else {
+          _fpStable = 0;
+        }
+        await sleep(300);
+      }
+      // Post-readiness settle: Claude has hidden async window after ❯+cost:$.
+      await sleep(5000);
     }
 
-    const body = result.harvest || '';
-    return { content: [{ type: 'text', text: header.join('\n') + '\n\n── harvest (last lines) ──\n' + body }] };
+    const payload = hasMission
+      ? args.mission.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
+      : hasCommand ? args.command : '';
+    if (payload) {
+      // Proven pattern from claws_dispatch_subworker (which submits reliably):
+      //   paste:true newline:false  →  sleep(300)  →  explicit \r
+      // The EXPLICIT CR after a 300ms gap is what actually submits — gives
+      // Claude's React/Ink renderer time to close paste-mode state, then the
+      // discrete \r registers as Enter (not as newline-within-input).
+      const _missionPreSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+      const _missionPreLen = (_missionPreSnap.ok && typeof _missionPreSnap.bytes === 'string') ? _missionPreSnap.bytes.length : 0;
+      await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: false, paste: true });
+      await sleep(300);
+      await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+      // Event-driven submit verification: poll for buffer growth (Claude processing).
+      // If no growth in 5s, send another explicit CR nudge.
+      const _submitDeadline = Date.now() + 5000;
+      let _submitVerified = false;
+      while (Date.now() < _submitDeadline) {
+        await sleep(150);
+        const _vs = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+        if (_vs.ok && typeof _vs.bytes === 'string' && _vs.bytes.length > _missionPreLen + payload.length + 200) {
+          _submitVerified = true; break;
+        }
+      }
+      if (!_submitVerified) {
+        log('mission submit not verified within 5s, sending another CR');
+        await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+      }
+    }
+
+    // BUG-24+25: register detach watcher so system.worker.completed is published
+    // and auto-close fires when complete_marker is detected — mirrors the
+    // runBlockingWorker(detach:true) watcher but without boot-polling overhead.
+    const _fpOpt = {
+      complete_marker: typeof args.complete_marker === 'string' ? args.complete_marker : 'MISSION_COMPLETE',
+      error_markers: Array.isArray(args.error_markers) ? args.error_markers : ['MISSION_FAILED'],
+      timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : 5 * 60 * 1000,
+      poll_interval_ms: typeof args.poll_interval_ms === 'number' ? args.poll_interval_ms : 1500,
+      close_on_complete: args.close_on_complete !== false,
+    };
+    let _fpScanOffset = 0;
+    const _fpTick = async () => {
+      try {
+        if (Date.now() > _fpStartedAt + _fpOpt.timeout_ms) {
+          clearInterval(_fpIntervalId);
+          _detachWatchers.delete(termId);
+          try {
+            await _pconnEnsureRegistered(sock);
+            await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
+              payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _fpStartedAt, marker_line: null, booted: launchClaude, detach: true } });
+          } catch (e) { log('fast-path watcher publish failed: ' + (e && e.message || e)); }
+          return;
+        }
+        const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
+        const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
+        if (text.length > _fpScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_fpScanOffset), sock);
+        _fpScanOffset = text.length;
+        let _fpStatus = 'timeout';
+        let _fpMarkerLine = null;
+        const _fpCompleteLine = findStandaloneMarker(text, _fpOpt.complete_marker);
+        if (_fpCompleteLine !== null) {
+          _fpStatus = 'completed';
+          _fpMarkerLine = _fpCompleteLine;
+        } else {
+          for (const em of _fpOpt.error_markers) {
+            const _fpErrLine = em ? findStandaloneMarker(text, em) : null;
+            if (_fpErrLine !== null) { _fpStatus = 'failed'; _fpMarkerLine = _fpErrLine; break; }
+          }
+        }
+        if (_fpStatus !== 'timeout') {
+          clearInterval(_fpIntervalId);
+          _detachWatchers.delete(termId);
+          try {
+            await _pconnEnsureRegistered(sock);
+            await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
+              payload: { terminal_id: termId, status: _fpStatus, duration_ms: Date.now() - _fpStartedAt, marker_line: _fpMarkerLine, booted: launchClaude, detach: true } });
+          } catch (e) { log('fast-path watcher publish failed: ' + (e && e.message || e)); }
+          if (_fpOpt.close_on_complete) {
+            try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {}
+          }
+        }
+      } catch (e) { log('fast-path watcher tick error: ' + (e && e.message || e)); }
+    };
+    const _fpIntervalId = setInterval(_fpTick, _fpOpt.poll_interval_ms);
+    _detachWatchers.set(termId, { intervalId: _fpIntervalId, opt: _fpOpt, startedAt: _fpStartedAt });
+
+    const run_token = randomUUID().slice(0, 12);
+    const workerEventsLogPath = path.join(path.dirname(path.resolve(sock)), 'events.log');
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        ok: true, terminal_id: termId,
+        name: args.name || 'claws-worker',
+        run_token,
+        hint: 'use claws_workers_wait to poll completion',
+        monitor_arm_required: true,
+        monitor_arm_command: `Bash(command="until grep -qE '\\"terminal_id\\":\\"${termId}\\".*system\\.worker\\.completed' .claws/events.log; do sleep 3; done", run_in_background=true, description="claws monitor | term=${termId} | sess=${new Date().toISOString().slice(0,13)}")`,
+        events_log_path: workerEventsLogPath,
+      }, null, 2) }],
+    };
   }
 
   if (name === 'claws_fleet') {
+    try { await _ensureSidecarOrThrow(); } catch (e) { return toolError('SPAWN REFUSED: sidecar unavailable — ' + e.message); }
     const fleetWorkers = Array.isArray(args.workers) ? args.workers : [];
     if (fleetWorkers.length === 0) {
       return toolError('ERROR: workers must be a non-empty array of worker configs');
     }
-    const detach = args.detach === true;
+    // detach default flipped to true in v0.7.10 — blocking mode unsafe over MCP stdio
+    const detach = args.detach !== false;
     const sharedDefaults = {};
     for (const k of ['cwd', 'model', 'timeout_ms', 'boot_wait_ms', 'poll_interval_ms', 'harvest_lines', 'close_on_complete']) {
       if (args[k] !== undefined) sharedDefaults[k] = args[k];
     }
     const fleetStartedAt = Date.now();
-    const settled = await Promise.allSettled(
+    const fleetPromise = Promise.allSettled(
       fleetWorkers.map((w) => {
         const wClean = {};
         for (const [k, v] of Object.entries(w)) {
@@ -987,25 +1483,42 @@ async function handleTool(name, args) {
         }
         return runBlockingWorker(sock, { ...sharedDefaults, ...wClean, ...(detach ? { detach: true } : {}) });
       }),
-    );
-    const results = settled.map((s) => s.status === 'fulfilled'
-      ? s.value
-      : { status: 'error', error: String(s.reason && s.reason.message || s.reason || 'unknown') });
-    const summary = {
-      fleet_size: results.length,
-      detach,
-      wall_clock_ms: Date.now() - fleetStartedAt,
-      max_individual_ms: Math.max(...results.map((r) => r.duration_ms || 0), 0),
-      sum_individual_ms: results.reduce((a, r) => a + (r.duration_ms || 0), 0),
-      workers: results.map((r, i) => ({
-        name: fleetWorkers[i] && fleetWorkers[i].name,
-        status: r.status,
-        terminal_id: r.terminal_id,
-        duration_ms: r.duration_ms,
-        marker_line: r.marker_line,
-      })),
-    };
-    return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
+    ).then((settled) => {
+      const results = settled.map((s) => s.status === 'fulfilled'
+        ? s.value
+        : { status: 'error', error: String(s.reason && s.reason.message || s.reason || 'unknown') });
+      const fleetEventsLogPath = path.join(path.dirname(path.resolve(sock)), 'events.log');
+      const summary = {
+        fleet_size: results.length,
+        detach,
+        wall_clock_ms: Date.now() - fleetStartedAt,
+        max_individual_ms: Math.max(...results.map((r) => r.duration_ms || 0), 0),
+        sum_individual_ms: results.reduce((a, r) => a + (r.duration_ms || 0), 0),
+        workers: results.map((r, i) => {
+          const _fTermId = r.terminal_id;
+          return {
+            name: fleetWorkers[i] && fleetWorkers[i].name,
+            status: r.status,
+            terminal_id: _fTermId,
+            duration_ms: r.duration_ms,
+            marker_line: r.marker_line,
+            monitor_arm_command: _fTermId
+              ? `Bash(command="until grep -qE '\\"terminal_id\\":\\"${_fTermId}\\".*system\\.worker\\.completed' .claws/events.log; do sleep 3; done", run_in_background=true, description="claws monitor | term=${_fTermId} | sess=${new Date().toISOString().slice(0,13)}")`
+              : null,
+          };
+        }),
+        monitor_arm_required: true,
+        monitor_arm_command: 'arm one monitor_arm_command per worker entry above',
+        events_log_path: fleetEventsLogPath,
+      };
+      return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
+    });
+    // Detach:true (default) returns quickly; detach:false legacy path gets the guard.
+    return detach
+      ? fleetPromise
+      : withMaxHold(fleetPromise, 8000, () => ({
+          content: [{ type: 'text', text: JSON.stringify({ ok: true, partial: true, hint: 'use claws_workers_wait to monitor' }) }],
+        }));
   }
 
   if (name === 'claws_workers_wait') {
@@ -1038,16 +1551,18 @@ async function handleTool(name, args) {
           const snap = await clawsRpc(sock, { cmd: 'readLog', id: s.id, strip: true, limit: 64 * 1024 });
           const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
           const scanText = text.length > s.scanFrom ? text.slice(s.scanFrom) : '';
-          if (scanText.includes(completeMarker)) {
+          const _flCompleteLine = findStandaloneMarker(scanText, completeMarker);
+          if (_flCompleteLine !== null) {
             s.status = 'completed';
-            s.marker_line = findMarkerLine(scanText, completeMarker);
+            s.marker_line = _flCompleteLine;
             s.duration_ms = Date.now() - startedAt;
             continue;
           }
           for (const em of errorMarkers) {
-            if (em && scanText.includes(em)) {
+            const _flErrLine = em ? findStandaloneMarker(scanText, em) : null;
+            if (_flErrLine !== null) {
               s.status = 'failed';
-              s.marker_line = findMarkerLine(scanText, em);
+              s.marker_line = _flErrLine;
               s.duration_ms = Date.now() - startedAt;
               break;
             }
@@ -1087,7 +1602,10 @@ async function handleTool(name, args) {
       try {
         await _pconnEnsureRegistered(sock);
         const sr = await _pconnWrite({ cmd: 'subscribe', topic: '**' }, 5000);
-        if (sr.ok) _eventBuffer.subscribed = true;
+        if (sr.ok) {
+          _eventBuffer.subscribed = true;
+          _eventBuffer.subscribeCursor = sr.resumeCursor ?? null;
+        }
       } catch (err) {
         log('claws_drain_events: auto-subscribe failed: ' + (err && err.message || err));
       }
@@ -1120,13 +1638,15 @@ async function handleTool(name, args) {
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({ events: filtered, total_received: totalReceived, dropped }, null, 2),
+        text: JSON.stringify({ events: filtered, total_received: totalReceived, dropped, subscribe_cursor: _eventBuffer.subscribeCursor }, null, 2),
       }],
     };
   }
 
   if (name === 'claws_lifecycle_plan') {
-    const resp = await clawsRpc(sock, { cmd: 'lifecycle.plan', plan: args.plan });
+    const _planMode = (typeof args.worker_mode === 'string') ? args.worker_mode : 'single';
+    const _planExpected = (Number.isInteger(args.expected_workers) && args.expected_workers > 0) ? args.expected_workers : 1;
+    const resp = await clawsRpc(sock, { cmd: 'lifecycle.plan', plan: args.plan, workerMode: _planMode, expectedWorkers: _planExpected });
     if (!resp.ok) return toolError(`ERROR: ${resp.error}\n${resp.message || ''}`);
     const out = { state: resp.state, idempotent: !!resp.idempotent };
     return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] };
@@ -1199,7 +1719,7 @@ async function handleTool(name, args) {
 
   if (name === 'claws_deliver_cmd') {
     const payload = typeof args.payload === 'string' ? JSON.parse(args.payload) : args.payload;
-    const resp = await clawsRpc(sock, {
+    const resp = await clawsRpcStateful(sock, {
       cmd: 'deliver-cmd',
       protocol: 'claws/2',
       targetPeerId: args.targetPeerId,
@@ -1221,7 +1741,7 @@ async function handleTool(name, args) {
   }
 
   if (name === 'claws_cmd_ack') {
-    const resp = await clawsRpc(sock, {
+    const resp = await clawsRpcStateful(sock, {
       cmd: 'cmd.ack',
       protocol: 'claws/2',
       seq: args.seq,
@@ -1234,7 +1754,7 @@ async function handleTool(name, args) {
 
   if (name === 'claws_pipeline_create') {
     const steps = typeof args.steps === 'string' ? JSON.parse(args.steps) : args.steps;
-    const resp = await clawsRpc(sock, {
+    const resp = await clawsRpcStateful(sock, {
       cmd: 'pipeline.create',
       name: args.name || 'pipeline',
       steps,
@@ -1255,54 +1775,137 @@ async function handleTool(name, args) {
   }
 
   if (name === 'claws_pipeline_close') {
-    const resp = await clawsRpc(sock, { cmd: 'pipeline.close', pipelineId: args.pipelineId });
+    const resp = await clawsRpcStateful(sock, { cmd: 'pipeline.close', pipelineId: args.pipelineId }); // BUG-04: stateful socket carries peerId
     if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
     return { content: [{ type: 'text', text: JSON.stringify({ ok: true, pipelineId: resp.pipelineId }, null, 2) }] };
   }
 
   if (name === 'claws_dispatch_subworker') {
+    try { await _ensureSidecarOrThrow(); } catch (e) { return toolError('SPAWN REFUSED: sidecar unavailable — ' + e.message); }
+    // FIX 3: Verify wave was created via claws_wave_create before spawning sub-worker.
+    const waveCheck = await clawsRpc(sock, { cmd: 'wave.status', waveId: args.waveId });
+    if (!waveCheck.ok && typeof waveCheck.error === 'string' && waveCheck.error.includes('not-found')) {
+      return toolError(`SPAWN REFUSED: wave.not-registered — call claws_wave_create({waveId:'${args.waveId}', manifest:[...]}) first`);
+    }
     const workerName = `wave-${args.waveId}-${args.role}`;
     const cr = await clawsRpc(sock, {
       cmd: 'create', name: workerName, wrapped: true, show: true,
-      ...(args.cwd ? { cwd: args.cwd } : {}),
+      cwd: typeof args.cwd === 'string' && args.cwd.length > 0 ? args.cwd : process.cwd(),
+      waveId: args.waveId, waveRole: args.role, env: { CLAWS_WORKER: '1' },
     });
-    if (!cr.ok) return toolError(`ERROR: create failed: ${cr.error}`);
+    if (!cr.ok) return toolError(`ERROR: create failed: ${_lifecycleErrMsg(cr.error)}`);
     const termId = cr.id;
 
-    await sleep(400);
-    await clawsRpc(sock, {
-      cmd: 'send', id: termId,
-      text: 'claude --model claude-sonnet-4-6 --dangerously-skip-permissions', newline: true,
+    // BUG-A: publish system.worker.spawned for sub-workers — best-effort.
+    log(`dispatch_subworker: publishing system.worker.spawned for terminal ${termId}`);
+    try {
+      await _pconnEnsureRegistered(sock);
+      await _pconnWrite({
+        cmd: 'publish', protocol: 'claws/2',
+        topic: 'system.worker.spawned',
+        payload: { terminal_id: termId, waveId: args.waveId, role: args.role, name: workerName, wrapped: true, started_at: new Date().toISOString() },
+      });
+      log(`dispatch_subworker: system.worker.spawned published ok for terminal ${termId}`);
+    } catch (e) { log('dispatch_subworker: system.worker.spawned publish FAILED: ' + (e && e.message || e)); }
+
+    // BUG-08: fire-and-forget — return after create so parallel dispatch_subworker calls don't serialize.
+    const _dswSock = sock;
+    // GAP-D1: strip bracketed-paste escapes from mission to prevent keystroke injection.
+    const _dswMission = (args.mission || '').replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
+    const _dswWid = args.waveId;
+    const _dswRole = args.role;
+    // BUG-09: capture watcher options for auto-close watcher registered after mission send.
+    const _dswCompleteMarker = typeof args.complete_marker === 'string' ? args.complete_marker : 'MISSION_COMPLETE';
+    const _dswErrorMarkers = Array.isArray(args.error_markers) ? args.error_markers : ['MISSION_FAILED'];
+    const _dswTimeoutMs = typeof args.timeout_ms === 'number' ? args.timeout_ms : 5 * 60 * 1000;
+    const _dswPollMs = typeof args.poll_interval_ms === 'number' ? args.poll_interval_ms : 1500;
+    const _dswCloseOnComplete = args.close_on_complete !== false;
+    setImmediate(async () => {
+      try {
+        await sleep(400);
+        await clawsRpc(_dswSock, {
+          cmd: 'send', id: termId,
+          text: 'claude --model claude-sonnet-4-6 --dangerously-skip-permissions', newline: true,
+        });
+        // Poll for trust prompt (~25 s), tracking log offset to avoid re-reading.
+        let bootOk = false;
+        let logOffset = 0;
+        const bootDeadline = Date.now() + 25_000;
+        while (Date.now() < bootDeadline) {
+          const snap = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, offset: logOffset, limit: 32 * 1024 });
+          if (snap.ok && typeof snap.bytes === 'string') {
+            if (snap.bytes.includes('trust')) { bootOk = true; break; }
+            if (typeof snap.nextOffset === 'number') logOffset = snap.nextOffset;
+          }
+          await sleep(500);
+        }
+        if (!bootOk) log(`claws_dispatch_subworker: trust prompt not seen for ${workerName} — continuing anyway`);
+        await clawsRpc(_dswSock, { cmd: 'send', id: termId, text: '1', newline: false });
+        await sleep(1000);
+        // GAP-D1: _dswMission already sanitized above — send as-is.
+        // Single call: see claws_worker comment for rationale.
+        await clawsRpc(_dswSock, { cmd: 'send', id: termId, text: _dswMission, newline: true, paste: true });
+
+        // BUG-09: register auto-close watcher mirroring the fast-path detach watcher pattern.
+        const _dswStartedAt = Date.now();
+        let _dswScanOffset = 0;
+        const _dswTick = async () => {
+          try {
+            if (Date.now() > _dswStartedAt + _dswTimeoutMs) {
+              clearInterval(_dswIntervalId);
+              _detachWatchers.delete(termId);
+              try {
+                await _pconnEnsureRegistered(_dswSock);
+                await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
+                  payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _dswStartedAt, marker_line: null, waveId: _dswWid, role: _dswRole, detach: true } });
+              } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
+              if (_dswCloseOnComplete) { try { await clawsRpc(_dswSock, { cmd: 'close', id: termId }); } catch {} }
+              return;
+            }
+            const snap = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
+            const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
+            if (text.length > _dswScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_dswScanOffset), _dswSock);
+            _dswScanOffset = text.length;
+            const scanText = text.slice(_dswScanOffset - Math.max(0, text.length - _dswScanOffset));
+            let _dswStatus = null;
+            let _dswMarkerLine = null;
+            const _dswCompleteLine = findStandaloneMarker(text, _dswCompleteMarker);
+            if (_dswCompleteLine !== null) {
+              _dswStatus = 'completed';
+              _dswMarkerLine = _dswCompleteLine;
+            } else {
+              for (const em of _dswErrorMarkers) {
+                const _dswErrLine = em ? findStandaloneMarker(text, em) : null;
+                if (_dswErrLine !== null) { _dswStatus = 'failed'; _dswMarkerLine = _dswErrLine; break; }
+              }
+            }
+            if (_dswStatus) {
+              clearInterval(_dswIntervalId);
+              _detachWatchers.delete(termId);
+              try {
+                await _pconnEnsureRegistered(_dswSock);
+                await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
+                  payload: { terminal_id: termId, status: _dswStatus, duration_ms: Date.now() - _dswStartedAt, marker_line: _dswMarkerLine, waveId: _dswWid, role: _dswRole, detach: true } });
+              } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
+              if (_dswCloseOnComplete) { try { await clawsRpc(_dswSock, { cmd: 'close', id: termId }); } catch {} }
+            }
+          } catch (e) { log('dsw watcher tick error: ' + (e && e.message || e)); }
+        };
+        const _dswIntervalId = setInterval(_dswTick, _dswPollMs);
+        _detachWatchers.set(termId, { intervalId: _dswIntervalId, opt: { complete_marker: _dswCompleteMarker, error_markers: _dswErrorMarkers, timeout_ms: _dswTimeoutMs, poll_interval_ms: _dswPollMs, close_on_complete: _dswCloseOnComplete }, startedAt: _dswStartedAt });
+      } catch (e) { log('claws_dispatch_subworker background boot error: ' + (e && e.message || e)); }
     });
 
-    // Poll for trust prompt (~25 s), tracking log offset to avoid re-reading.
-    let bootOk = false;
-    let logOffset = 0;
-    const bootDeadline = Date.now() + 25_000;
-    while (Date.now() < bootDeadline) {
-      const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, offset: logOffset, limit: 32 * 1024 });
-      if (snap.ok && typeof snap.bytes === 'string') {
-        if (snap.bytes.includes('trust')) { bootOk = true; break; }
-        if (typeof snap.nextOffset === 'number') logOffset = snap.nextOffset;
-      }
-      await sleep(500);
-    }
-    if (!bootOk) log(`claws_dispatch_subworker: trust prompt not seen for ${workerName} — continuing anyway`);
-
-    // Send bypass selection without newline, wait for Claude prompt, then deliver
-    // mission via bracketed paste with newline=false + separate \r submit.
-    // Using separate \r (not relying on newline:true) avoids a double-LF in the
-    // Claude TUI that can dismiss spinners mid-think (reviewer finding F28).
-    await clawsRpc(sock, { cmd: 'send', id: termId, text: '1', newline: false });
-    await sleep(1000);
-    await clawsRpc(sock, { cmd: 'send', id: termId, text: args.mission, newline: false, paste: true });
-    await sleep(300);
-    await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
-
+    const dswEventsLogPath = path.join(path.dirname(path.resolve(sock)), 'events.log');
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({ terminal_id: termId, waveId: args.waveId, role: args.role, name: workerName }, null, 2),
+        text: JSON.stringify({
+          terminal_id: termId, waveId: _dswWid, role: _dswRole, name: workerName,
+          monitor_arm_required: true,
+          monitor_arm_command: `Bash(command="until grep -qE '\\"terminal_id\\":\\"${termId}\\".*system\\.worker\\.completed' .claws/events.log; do sleep 3; done", run_in_background=true, description="claws monitor | term=${termId} | sess=${new Date().toISOString().slice(0,13)}")`,
+          events_log_path: dswEventsLogPath,
+        }, null, 2),
       }],
     };
   }
@@ -1320,7 +1923,7 @@ async function handleTool(name, args) {
   }
 
   if (name === 'claws_rpc_call') {
-    const resp = await clawsRpc(sock, {
+    const resp = await clawsRpcStateful(sock, {
       cmd: 'rpc.call',
       protocol: 'claws/2',
       targetPeerId: args.targetPeerId,
@@ -1410,7 +2013,7 @@ async function main() {
       respond(id, {
         protocolVersion: '2024-11-05',
         // Version must match extension/package.json — bump both together on release.
-        serverInfo: { name: 'claws', version: '0.7.6.1' },
+        serverInfo: { name: 'claws', version: '0.7.10' },
         capabilities: { tools: {} },
       });
     } else if (method === 'notifications/initialized') {

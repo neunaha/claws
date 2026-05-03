@@ -1,12 +1,12 @@
 {
-  "electronVersion": "39.8.5",
+  "electronVersion": "39.8.8",
   "electronSource": "/Applications/Visual Studio Code.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist",
   "nodePtyVersion": "1.1.0",
   "platform": "darwin",
   "arch": "arm64",
-  "bundledAt": "2026-04-30T08:27:33.618Z",
+  "bundledAt": "2026-05-02T08:12:00.177Z",
   "filesCopied": 31,
-  "bytesCopied": 240166,
+  "bytesCopied": 240134,
   "nodeVersion": "v24.11.1",
   "skippedRebuild": false
 }

@@ -87,7 +87,7 @@ check('lifecycle-store.ts: behavioral — compiled flushToDisk writes file durab
     const { LifecycleStore } = require(jsOut);
     const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'claws-m43-ws-'));
     const store = new LifecycleStore(ws);
-    store.plan('fsync test');
+    store.plan('fsync test', 'single', 1);
 
     const statePath = path.join(ws, '.claws', 'lifecycle-state.json');
     assert(fs.existsSync(statePath), 'state file not written after plan()');

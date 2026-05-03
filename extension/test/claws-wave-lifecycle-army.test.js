@@ -152,7 +152,7 @@ async function hello(peer, id, role, name, extra = {}) {
 
 // Helper: lifecycle.plan required before create
 async function planLifecycle(peer, id) {
-  return send(peer, id, { cmd: 'lifecycle.plan', plan: 'army test wave' });
+  return send(peer, id, { cmd: 'lifecycle.plan', plan: 'army test wave', workerMode: 'army', expectedWorkers: 1 });
 }
 
 (async () => {

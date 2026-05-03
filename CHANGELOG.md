@@ -5,7 +5,22 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.10] - 2026-05-01 — Direct-prompt missions (revert v0.7.9 file-referrer + boot retry)
+## [0.7.10] - 2026-05-03 — 10-phase lifecycle (W1) + claws_worker fast-path boot detection
+
+### Added
+- **Lifecycle schema v3** (`extension/src/lifecycle-store.ts`): SESSION-BOOT through SESSION-END phases (10), `worker_mode` (single|fleet|army), `expected_workers`, `spawned_workers` map, `monitors` map, `registerSpawn`/`registerMonitor`/`markWorkerStatus` methods.
+- **`extension/src/lifecycle-rules.ts`** (NEW): pure validators for transitions, gates, auto-advance decisions.
+- **New lifecycle commands**: `lifecycle.register-spawn`, `lifecycle.register-monitor`, `lifecycle.mark-worker-status`.
+- **D+F integration (W3 minimum)**: `claws_create` generates `correlation_id` + atomically registers spawn + monitor in lifecycle store.
+- 60 unit tests covering lifecycle-store + lifecycle-rules.
+
+### Fixed
+- **CRITICAL: claws_worker fast-path boot detection.** The default `detach:true` code path had only `sleep(400)` before sending mission paste — too short for Claude TUI to boot. Multi-line missions landed in shell prompt before Claude was ready, sat in input box without ever submitting. Now polls for `❯` + `cost:$` stable for 3 polls, then waits 5000ms post-readiness settle. Mirrors `runBlockingWorker` pattern. Verified end-to-end with real Claude worker test.
+
+### Changed
+- `claws_lifecycle_plan` now requires `worker_mode` + `expected_workers` args (declares mission shape upfront).
+
+## [0.7.10-pre] - 2026-05-01 — Direct-prompt missions (revert v0.7.9 file-referrer + boot retry)
 
 v0.7.10 deletes the two new abstractions v0.7.9 introduced (file-referrer mission delivery and boot retry) and returns to the v0.7.4 contract: **the mission text becomes Claude Code's input as if a human typed it.** No /tmp file. No "Read /tmp/.../mission.md and follow it precisely." prompt. The v0.7.9 marker false-match is still fixed, but via a much simpler mechanism: capture the pty scan offset *after* the payload + echo settle, so the user's mission text never re-matches the completion marker.
 

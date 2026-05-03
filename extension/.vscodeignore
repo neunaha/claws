@@ -12,3 +12,4 @@ esbuild.mjs
 .DS_Store
 docs/**
 !native/**
+dist/*-test.js

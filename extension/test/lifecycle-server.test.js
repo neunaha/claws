@@ -193,7 +193,7 @@ function check(name, fn) {
 
   // 2. lifecycle.plan → state file created, phase=PLAN
   await check('lifecycle.plan → state file created, phase=PLAN', async () => {
-    const resp = await rpc({ cmd: 'lifecycle.plan', plan: 'test mission' });
+    const resp = await rpc({ cmd: 'lifecycle.plan', plan: 'test mission', workerMode: 'single', expectedWorkers: 1 });
     assert.strictEqual(resp.ok, true, `expected ok:true, got: ${JSON.stringify(resp)}`);
     assert(resp.state, 'expected state field');
     assert.strictEqual(resp.state.phase, 'PLAN');
@@ -247,7 +247,7 @@ function check(name, fn) {
 
   // 6. lifecycle.plan twice → second returns ok with original plan, idempotent:true
   await check('lifecycle.plan twice → second call idempotent, original plan preserved', async () => {
-    const r2 = await rpc({ cmd: 'lifecycle.plan', plan: 'different plan text' });
+    const r2 = await rpc({ cmd: 'lifecycle.plan', plan: 'different plan text', workerMode: 'single', expectedWorkers: 1 });
     assert.strictEqual(r2.ok, true, `expected ok:true, got: ${JSON.stringify(r2)}`);
     assert.strictEqual(r2.idempotent, true, `expected idempotent:true`);
     assert.strictEqual(r2.state.plan, 'test mission', `plan should remain 'test mission', got: ${r2.state.plan}`);
