@@ -1708,3 +1708,5 @@ Key additions (all new commands are additive — `claws/1` clients continue to w
 - "Claws Wrapped Terminal" dropdown profile
 - Python client library (`claws-client`)
 - Example scripts: basic orchestrator, parallel workers
+
+- docs(architecture) — comprehensive ARCHITECTURE.md as the canonical anchor: charter, 10 architectural principles (event-driven only, atomic writes, hooks safety, no orchestrator-side patches, etc.), full system layer map, protocol specs, lifecycle architecture, 5-layer enforcement chain, test invariants, anti-patterns catalog (10 burned-in lessons), known gaps + roadmap, and an anchoring protocol for future PRs.
