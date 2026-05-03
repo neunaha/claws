@@ -24,7 +24,7 @@ export const TRANSITIONS: Readonly<Record<Phase, readonly Phase[]>> = {
   FAILED:  ['CLEANUP', 'SESSION-END'],
 };
 
-const TERMINAL_WORKER_STATUSES: ReadonlySet<WorkerStatus> = new Set(['completed', 'failed', 'timeout', 'closed']);
+const TERMINAL_WORKER_STATUSES: ReadonlySet<WorkerStatus> = new Set(['completed', 'failed', 'timeout', 'closed', 'terminated']);
 
 /** Pure: is the requested transition legal from the current phase? */
 export function canTransition(from: Phase, to: Phase): boolean {
@@ -161,7 +161,7 @@ export function isTerminalStatus(status: WorkerStatus): boolean {
 
 /** Helper for tests: count workers by status. */
 export function workerStatusCounts(state: LifecycleState | null): Record<WorkerStatus, number> {
-  const counts: Record<WorkerStatus, number> = { spawned: 0, completed: 0, failed: 0, timeout: 0, closed: 0 };
+  const counts: Record<WorkerStatus, number> = { spawned: 0, completed: 0, failed: 0, timeout: 0, closed: 0, terminated: 0 };
   if (!state) return counts;
   for (const w of state.spawned_workers) counts[w.status]++;
   return counts;

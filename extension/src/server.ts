@@ -225,6 +225,13 @@ export class ClawsServer {
       };
       void this.emitSystemEvent(`vehicle.${id}.content`, payload);
     });
+    opts.terminalManager.setTerminalCloseCallback((id, wrapped) => {
+      if (!wrapped) return;
+      void this.emitSystemEvent('system.worker.terminated', {
+        terminal_id: id,
+        terminated_at: new Date().toISOString(),
+      });
+    });
   }
 
   /** Milliseconds since this server instance was constructed. */

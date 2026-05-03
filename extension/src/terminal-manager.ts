@@ -6,6 +6,7 @@ import { VehicleStateName } from './event-schemas';
 
 type StateChangeCallback = (id: string, from: VehicleStateName | null, to: VehicleStateName) => void;
 type ContentChangeCallback = (id: string, pid: number | null, basename: string | null) => void;
+type TerminalCloseCallback = (id: string, wrapped: boolean) => void;
 
 const VALID_TRANSITIONS: Readonly<Record<VehicleStateName, readonly VehicleStateName[]>> = {
   PROVISIONING: ['BOOTING', 'CLOSING'],
@@ -58,6 +59,7 @@ export class TerminalManager {
   private unopenedScanTimer: NodeJS.Timeout | null = null;
   private onStateChange: StateChangeCallback | null = null;
   private onContentChange: ContentChangeCallback | null = null;
+  private onTerminalClose: TerminalCloseCallback | null = null;
 
   constructor(
     private readonly captureStore: CaptureStore,
@@ -74,6 +76,11 @@ export class TerminalManager {
   /** Wire the content change callback. Called by ClawsServer after construction. */
   setContentChangeCallback(cb: ContentChangeCallback): void {
     this.onContentChange = cb;
+  }
+
+  /** Wire the terminal close callback. Fires for every Claws-tracked terminal on close. */
+  setTerminalCloseCallback(cb: TerminalCloseCallback): void {
+    this.onTerminalClose = cb;
   }
 
   private transitionState(rec: TerminalRecord, to: VehicleStateName): void {
@@ -296,6 +303,7 @@ export class TerminalManager {
       this.stopContentDetection(rec);
       this.transitionState(rec, 'CLOSING');
       this.transitionState(rec, 'CLOSED');
+      this.onTerminalClose?.(id, rec.wrapped);
     }
     if (rec?.pty) rec.pty.close();
     this.records.delete(id);

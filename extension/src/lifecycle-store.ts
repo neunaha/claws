@@ -16,7 +16,7 @@ export type Phase =
   | 'SESSION-END' | 'FAILED';
 
 export type WorkerMode = 'single' | 'fleet' | 'army';
-export type WorkerStatus = 'spawned' | 'completed' | 'failed' | 'timeout' | 'closed';
+export type WorkerStatus = 'spawned' | 'completed' | 'failed' | 'timeout' | 'closed' | 'terminated';
 
 export interface SpawnedWorker {
   id: string;                  // terminal_id
