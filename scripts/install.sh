@@ -240,20 +240,29 @@ step "Fetching Claws source"
 if [ -d "$INSTALL_DIR/.git" ]; then
   info "updating existing clone at $INSTALL_DIR (ref: $CLAWS_REF)"
   PREV_SHA="$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo 'unknown')"
-  # SAFETY (v0.7.9 follow-up): the `git reset --hard` below is blast-radius-wide —
-  # it will silently DELETE every uncommitted edit in $INSTALL_DIR's working tree.
-  # On dev machines where ~/.claws-src is a symlink to the project root (so the
-  # contributor's working repo == INSTALL_DIR), this destroys in-flight work.
-  # If we detect dirty tree AND CLAWS_FORCE_RESET=1 is NOT set, abort with a
-  # clear error pointing at the safe path (commit, stash, or set the flag).
-  _claws_dirty="$(cd "$INSTALL_DIR" && git status --porcelain 2>/dev/null | head -c 1)"
-  if [ -n "$_claws_dirty" ] && [ "${CLAWS_FORCE_RESET:-0}" != "1" ]; then
-    bad "$INSTALL_DIR has uncommitted changes — refusing to git reset --hard."
-    bad "Your work would be destroyed. Choose one:"
-    bad "  1. Commit or stash your changes, then re-run."
-    bad "  2. Re-run with CLAWS_FORCE_RESET=1 to discard local changes."
-    bad "  3. Use a separate clone path: CLAWS_DIR=/tmp/claws-fresh bash <(curl ...)"
-    exit 1
+  # v0.7.11: install.sh OWNS $INSTALL_DIR (~/.claws-src by default). It is the
+  # script's working dir, not a user dev clone. Hard-reset is the right default —
+  # auto-generated build artifacts (.metadata.json bundledAt, etc.) and any other
+  # transient cruft just get wiped. Install Just Works(TM) in any folder.
+  #
+  # Contributors who want to use $INSTALL_DIR as a dev clone should set CLAWS_DIR
+  # to a different path (e.g., CLAWS_DIR=/Users/me/dev/claws bash <(curl ...)).
+  # That keeps their work isolated from the install script's working dir.
+  #
+  # CLAWS_DEV_PROTECT=1 opt-in re-enables the v0.7.9 dirty-tree guard for users
+  # who want explicit safety on $INSTALL_DIR (rare — they should be using
+  # CLAWS_DIR= override instead).
+  if [ "${CLAWS_DEV_PROTECT:-0}" = "1" ]; then
+    _claws_dirty="$(cd "$INSTALL_DIR" && git status --porcelain 2>/dev/null | head -c 1)"
+    if [ -n "$_claws_dirty" ] && [ "${CLAWS_FORCE_RESET:-0}" != "1" ]; then
+      bad "$INSTALL_DIR has uncommitted changes (CLAWS_DEV_PROTECT=1 active)."
+      bad "Choose one:"
+      bad "  1. Commit or stash your changes, then re-run."
+      bad "  2. Re-run with CLAWS_FORCE_RESET=1 to discard local changes."
+      bad "  3. Unset CLAWS_DEV_PROTECT (default: hard-reset is safe)."
+      bad "  4. Use a separate clone path: CLAWS_DIR=/tmp/claws-fresh bash <(curl ...)"
+      exit 1
+    fi
   fi
   if ( cd "$INSTALL_DIR" && git fetch origin "$CLAWS_REF" 2>>"$CLAWS_LOG" \
        && git reset --hard --quiet "origin/$CLAWS_REF" ); then

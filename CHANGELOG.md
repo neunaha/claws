@@ -7,6 +7,17 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.11] - 2026-05-03 — Install Just Works™ (UX-first install)
+
+### Changed
+- **`scripts/install.sh`: removed the v0.7.9 dirty-tree guard from default install path.** `~/.claws-src` is install.sh's working directory — not a user dev clone — and treating it as protected was wrong UX. The script now hard-resets `~/.claws-src` to `origin/main` on every run, so install.sh just works in any folder for any user (new install or upgrading from v0.7.9/v0.7.10) with no manual stash/force-reset/CLAWS_FORCE_RESET dance.
+- **Contributor escape hatch unchanged**: contributors who want a protected dev clone use `CLAWS_DIR=/path/to/dev/claws bash <(curl ...)` to point install at a different working dir. The default `~/.claws-src` is now treated as throwaway by design.
+- **Opt-in protection**: `CLAWS_DEV_PROTECT=1 bash <(curl ...)` re-enables the old v0.7.9 dirty-tree guard for the rare case someone wants safety on the default `~/.claws-src` path. Most users should use `CLAWS_DIR=` instead.
+- **Net effect for users**: zero friction. Run `bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)` in any folder, get Claws.
+
+### Why this changed
+v0.7.9 added a guard meant to protect contributors from accidentally losing in-flight work via `git reset --hard`. But the guard fired on auto-generated tracked files (e.g., `extension/native/.metadata.json` bundledAt timestamp), blocking every user's second install. v0.7.10's hotfix gitignored the metadata file, but existing v0.7.9 users still hit the guard during upgrade because their old `~/.claws-src` was at v0.7.9 commit (pre-gitignore). v0.7.11 removes the guard entirely — the architectural insight is that install.sh OWNS its working directory and should hard-reset freely.
+
 ## [0.7.10] - 2026-05-03 — 10-phase lifecycle (Wave A+B+C+D) + auto-advance engine + event-driven completion
 
 ### Fixed (post-release hotfix, force-tagged)
