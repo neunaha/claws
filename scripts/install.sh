@@ -867,6 +867,11 @@ else
       rm -f "$PROJECT_ROOT/.claws-bin"
     fi
     mkdir -p "$PROJECT_ROOT/.claws-bin"
+    # Fix #1 (v0.7.12): write package.json with {"type":"commonjs"} to override the parent
+    # project's ESM default. Without this, mcp_server.js and hooks/*.js crash with
+    # "require is not defined in ES module scope" in projects that have "type":"module"
+    # in their root package.json (Next.js, Vite, ESM-default tooling — ~50% of modern projects).
+    printf '{\n  "type": "commonjs",\n  "_comment": "Forces CommonJS for .js files in .claws-bin/. Required when the parent project has type:module in its package.json (Next.js, Vite, etc.)"\n}\n' > "$PROJECT_ROOT/.claws-bin/package.json"
     if [ "$(realpath "$INSTALL_DIR" 2>/dev/null)" = "$(realpath "$PROJECT_ROOT" 2>/dev/null)" ]; then
       # Dev mode: source repo IS the install target — use symlinks to eliminate drift.
       ln -sf ../mcp_server.js "$INSTALL_DIR/.claws-bin/mcp_server.js"
@@ -1273,7 +1278,15 @@ fi
 # Copies scripts/dev-hooks/*.js into <project>/.claws-bin/dev-hooks/ and
 # registers them in <project>/.claude/settings.json via inject-dev-hooks.js.
 # Idempotent: safe to re-run on every update.
-if [ "$PROJECT_INSTALL" = "1" ] && [ -d "$INSTALL_DIR/scripts/dev-hooks" ]; then
+# Fix #2 (v0.7.12): dev-hooks are contributor diagnostics — only install when:
+#   a) CLAWS_INSTALL_DEV_HOOKS=1 is set explicitly, OR
+#   b) the install target IS the Claws source tree (contributor dev environment).
+# Default user installs skip dev-hooks entirely to avoid SessionStart hook spam.
+_claws_is_dev_tree=0
+if [ -f "$PROJECT_ROOT/scripts/install.sh" ] && [ -d "$PROJECT_ROOT/extension/src" ]; then
+  _claws_is_dev_tree=1
+fi
+if { [ "${CLAWS_INSTALL_DEV_HOOKS:-0}" = "1" ] || [ "$_claws_is_dev_tree" = "1" ]; } && [ "$PROJECT_INSTALL" = "1" ] && [ -d "$INSTALL_DIR/scripts/dev-hooks" ]; then
   step "Installing dev-discipline hooks"
   DEV_HOOKS_DST="$PROJECT_ROOT/.claws-bin/dev-hooks"
   mkdir -p "$DEV_HOOKS_DST"
@@ -1292,6 +1305,7 @@ if [ "$PROJECT_INSTALL" = "1" ] && [ -d "$INSTALL_DIR/scripts/dev-hooks" ]; then
   fi
   unset _dh _dh_count
 fi
+unset _claws_is_dev_tree
 
 # ─── Step 7: Shell hook ────────────────────────────────────────────────────
 step "Injecting shell hook"

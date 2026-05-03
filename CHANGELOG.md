@@ -7,6 +7,32 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.12] - 2026-05-03 — Install UX hardening (ESM compat, dev-hooks opt-in, monitor path resolver, uninstall clarity)
+
+### Fixed
+
+#### Fix #1 (P0): ESM project crash — `mcp_server.js` fails to start in projects with `"type":"module"`
+- **Impact**: ~50% of modern Node projects (Next.js, Vite, ESM-default tooling) hit `ReferenceError: require is not defined in ES module scope` on MCP server startup. Install appeared to succeed but Claws never functioned.
+- **Root cause**: Node inherits `"type":"module"` from the nearest parent `package.json`. `.claws-bin/` had no own `package.json`, so `mcp_server.js` (CommonJS) was loaded as ESM.
+- **Fix**: `scripts/install.sh` now writes `<project>/.claws-bin/package.json` with `{"type":"commonjs"}` to scope the override to `.claws-bin/` only. User's project files are unaffected. `update.sh` and `fix.sh` auto-restore the file so existing installs without it get fixed automatically.
+
+#### Fix #2 (P1): dev-hooks leak into every user project — SessionStart hook spam
+- **Impact**: every Claude Code session in a user project fired `SessionStart:startup hook error` for contributor diagnostic scripts (`check-stale-main.js`, `check-tag-pushed.js`, etc.) that have no relevance outside a Claws contributor environment.
+- **Root cause**: `scripts/install.sh` unconditionally copied `scripts/dev-hooks/*.js` and registered them in `<project>/.claude/settings.json` for every install.
+- **Fix**: dev-hooks install is now gated behind `CLAWS_INSTALL_DEV_HOOKS=1` env var. Default install path skips them entirely. Contributors installing into the Claws source tree (`scripts/install.sh` + `extension/src/` detected) get dev-hooks automatically without the flag.
+
+#### Fix #3 (P1): `monitor_arm_command` pointed at wrong `stream-events.js` path in user installs
+- **Impact**: orchestrators received a `monitor_arm_command` referencing `<project>/scripts/stream-events.js`, which doesn't exist in user installs (the file is at `<project>/.claws-bin/stream-events.js`). Per-worker Monitor commands failed immediately, forcing fallback to deprecated `tail -F events.log` (anti-pattern A1).
+- **Root cause**: 5 occurrences in `mcp_server.js` computed the path from the socket location (`path.dirname(path.resolve(sock))`) instead of from `__dirname`, producing the wrong result outside the dev source tree.
+- **Fix**: extracted a `STREAM_EVENTS_JS` constant at module load time using a multi-candidate resolver anchored to `__dirname` (same logic as the existing `_ensureSidecarOrThrow` resolver). All 5 `monitor_arm_command` generators now use it.
+
+#### Fix #5 (P2): `uninstall.sh` — clarify that `code --uninstall-extension` is machine-wide
+- **Impact**: users running `uninstall.sh` from one project folder followed the printed `code --uninstall-extension neunaha.claws` instruction, not realising it removes Claws from their editor globally — breaking Claws in any other project they had it installed in.
+- **Fix**: added two-line warning above the printed command explaining the machine-wide scope and advising against running it if Claws is active in other projects.
+
+### Deferred
+- **Bug #4** (shell-mode `claws_worker` command-path pipe-mode anomaly) deferred to v0.7.13 — fix scope unknown, needs investigation.
+
 ## [0.7.11] - 2026-05-03 — Install Just Works™ (UX-first install)
 
 ### Changed

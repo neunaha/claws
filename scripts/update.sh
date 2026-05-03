@@ -273,6 +273,13 @@ if [ -f "$PROJECT_ROOT/.mcp.json" ]; then
   fi
 fi
 
+# Fix #1 (v0.7.12): ensure .claws-bin/package.json exists with {"type":"commonjs"}.
+# Auto-restores on every update so existing installs without it get fixed automatically.
+if [ -d "$PROJECT_ROOT/.claws-bin" ] && [ ! -f "$PROJECT_ROOT/.claws-bin/package.json" ]; then
+  printf '{\n  "type": "commonjs",\n  "_comment": "Forces CommonJS for .js files in .claws-bin/. Required when the parent project has type:module in its package.json (Next.js, Vite, etc.)"\n}\n' > "$PROJECT_ROOT/.claws-bin/package.json"
+  note "wrote .claws-bin/package.json (ESM compat shim)"
+fi
+
 # .claws-bin/mcp_server.js exists and starts
 # M-10: up to 3 attempts with exponential timeouts (8s, 12s, 16s); only YELLOW after all exhausted.
 if [ -f "$PROJECT_ROOT/.claws-bin/mcp_server.js" ]; then

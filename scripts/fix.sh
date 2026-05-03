@@ -388,6 +388,17 @@ else
   ok ".claws-bin/mcp_server.js present"
 fi
 
+# Fix #1 (v0.7.12): ensure .claws-bin/package.json exists with {"type":"commonjs"}.
+# Auto-restores so existing installs without it get fixed by running /claws-fix.
+if [ -d "$CLAWS_BIN" ] && [ ! -f "$CLAWS_BIN/package.json" ]; then
+  fix ".claws-bin/package.json missing — writing ESM compat shim"
+  printf '{\n  "type": "commonjs",\n  "_comment": "Forces CommonJS for .js files in .claws-bin/. Required when the parent project has type:module in its package.json (Next.js, Vite, etc.)"\n}\n' > "$CLAWS_BIN/package.json"
+  ok "wrote .claws-bin/package.json"
+  FIXED=$((FIXED+1))
+else
+  ok ".claws-bin/package.json present (ESM compat shim)"
+fi
+
 # ─── 5. MCP server handshake ───────────────────────────────────────────────
 check "MCP server handshake"
 MCP_PATH="$INSTALL_DIR/mcp_server.js"

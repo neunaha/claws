@@ -131,6 +131,8 @@ fi
 step "[5/5] VS Code extension (manual step required)"
 echo ""
 printf "  Run this command to uninstall the Claws VS Code extension:\n\n"
+printf "  ${C_YELLOW}NOTE: this uninstalls Claws machine-wide from your editor (not just this project).${C_RESET}\n"
+printf "  ${C_YELLOW}If Claws is installed in other projects you want to keep, do NOT run this.${C_RESET}\n\n"
 printf "    ${C_BOLD}code --uninstall-extension neunaha.claws${C_RESET}\n\n"
 printf "  (If you use Cursor: ${C_BOLD}cursor --uninstall-extension neunaha.claws${C_RESET})\n"
 printf "  (If you use Windsurf: ${C_BOLD}windsurf --uninstall-extension neunaha.claws${C_RESET})\n\n"
