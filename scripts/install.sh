@@ -48,7 +48,7 @@ else
 fi
 
 STEP_NUM=0
-STEP_TOTAL=9
+STEP_TOTAL=8
 step()   { STEP_NUM=$((STEP_NUM+1)); printf "\n${C_BOLD}${C_BLUE}[%d/%d]${C_RESET} %s\n" "$STEP_NUM" "$STEP_TOTAL" "$*"; }
 ok()     { printf "  ${C_GREEN}✓${C_RESET} %s\n" "$*"; }
 warn()   { printf "  ${C_YELLOW}!${C_RESET} %s\n" "$*"; }
@@ -480,6 +480,9 @@ if command -v npm &>/dev/null && [ -f "$INSTALL_DIR/extension/package.json" ]; t
               || warn "@electron/rebuild not found after npm install — pty.node build will likely fail"; true; } \
          && npm run build ); then
       echo "$CURRENT_SHA" > "$BUILD_SHA_FILE" 2>/dev/null || true
+      # F-11: write .electron-abi so fix.sh skips unnecessary rebuilds on next run.
+      mkdir -p "$INSTALL_DIR/extension/dist" 2>/dev/null || true
+      node --no-deprecation -e "try{const m=require('$INSTALL_DIR/extension/native/.metadata.json');if(m.electronVersion){require('fs').writeFileSync('$INSTALL_DIR/extension/dist/.electron-abi',m.electronVersion)}}catch(e){}" 2>/dev/null || true
       BUILD_OK=1
     else
       bad "extension build failed — see $CLAWS_LOG for the full compile log."
@@ -571,7 +574,7 @@ fi
 # read from the clone at runtime. If the clone is behind EXPECTED_MIN_VERSION,
 # the working tree is stale and the installer aborts — that was the v0.5.1 bug
 # where users saw "v0.4.0 — installed" because their ~/.claws-src/ was stale.
-EXPECTED_MIN_VERSION="0.7.7"
+EXPECTED_MIN_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.7.10')}" 2>/dev/null || echo "0.7.10")
 EXT_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.0.0')}" 2>/dev/null || echo "0.0.0")
 
 # Flag stale clones loudly so users don't silently run on an old version.
@@ -855,55 +858,63 @@ else
       rm -f "$PROJECT_ROOT/.claws-bin"
     fi
     mkdir -p "$PROJECT_ROOT/.claws-bin"
-    cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js"
-    chmod +x "$PROJECT_ROOT/.claws-bin/mcp_server.js"
-    # Copy generated schema artifacts: mcp-tools.json (consumed by mcp_server.js
-    # at startup) + json/ (20 per-topic JSON Schemas) + types/ (TS .d.ts).
-    # External schema consumers (worker SDKs, validators, IDE hints) need the
-    # json/ and types/ files even though mcp_server.js itself only needs
-    # mcp-tools.json.
-    if [ -d "$INSTALL_DIR/schemas" ]; then
-      mkdir -p "$PROJECT_ROOT/.claws-bin/schemas/json" "$PROJECT_ROOT/.claws-bin/schemas/types"
-      cp "$INSTALL_DIR/schemas/mcp-tools.json" "$PROJECT_ROOT/.claws-bin/schemas/" 2>/dev/null || true
-      # P3-1: deploy client-types.d.ts for typed SDK consumers
-      cp "$INSTALL_DIR/schemas/client-types.d.ts" "$PROJECT_ROOT/.claws-bin/schemas/" 2>/dev/null || true
-      cp "$INSTALL_DIR"/schemas/json/*.json "$PROJECT_ROOT/.claws-bin/schemas/json/" 2>/dev/null || true
-      cp "$INSTALL_DIR"/schemas/types/*.d.ts "$PROJECT_ROOT/.claws-bin/schemas/types/" 2>/dev/null || true
-    fi
-    # Copy Claws SDK (v0.7.0+) for typed publish helpers in worker scripts
-    if [ -f "$INSTALL_DIR/claws-sdk.js" ]; then
-      cp "$INSTALL_DIR/claws-sdk.js" "$PROJECT_ROOT/.claws-bin/claws-sdk.js"
-      chmod +x "$PROJECT_ROOT/.claws-bin/claws-sdk.js" 2>/dev/null || true
+    if [ "$(realpath "$INSTALL_DIR" 2>/dev/null)" = "$(realpath "$PROJECT_ROOT" 2>/dev/null)" ]; then
+      # Dev mode: source repo IS the install target — use symlinks to eliminate drift.
+      ln -sf ../mcp_server.js "$INSTALL_DIR/.claws-bin/mcp_server.js"
+      ln -sf ../scripts/shell-hook.sh "$INSTALL_DIR/.claws-bin/shell-hook.sh"
+      ln -sf ../scripts/stream-events.js "$INSTALL_DIR/.claws-bin/stream-events.js"
+      rm -rf "$INSTALL_DIR/.claws-bin/hooks" && ln -sf ../scripts/hooks "$INSTALL_DIR/.claws-bin/hooks"
+      echo '[install] dev mode: symlinked .claws-bin → source'
     else
-      warn "claws-sdk.js not found in $INSTALL_DIR — SDK helpers unavailable (P3-3)"
-    fi
-    cp "$INSTALL_DIR/scripts/shell-hook.sh" "$PROJECT_ROOT/.claws-bin/shell-hook.sh"
-    # Copy event-streaming sidecar (v0.6.2+) so Bash run_in_background + Monitor can stream pub/sub frames
-    if [ -f "$INSTALL_DIR/scripts/stream-events.js" ]; then
-      cp "$INSTALL_DIR/scripts/stream-events.js" "$PROJECT_ROOT/.claws-bin/stream-events.js"
-      chmod +x "$PROJECT_ROOT/.claws-bin/stream-events.js" 2>/dev/null || true
-    fi
-    # Copy lifecycle hook scripts for inject-settings-hooks.js to reference.
-    # Source-of-truth is $INSTALL_DIR/scripts/hooks/ (committed to git).
-    # Previously this read from $INSTALL_DIR/.claws-bin/hooks/, which is
-    # gitignored and therefore missing on every fresh clone — silent skip.
-    #
-    # Wipe-then-copy: removed-in-newer-release files (e.g. post-tool-use-claws.js
-    # deprecated in v0.6.5) used to survive in users' .claws-bin/hooks/ and the
-    # Claude Code hook runner would still try to invoke them. Audit 4 finding I.
-    #
-    # We also ship a package.json shim with {"type":"commonjs"} alongside the
-    # hooks. Without it, projects whose root package.json declares
-    # "type":"module" (modern Node/TS projects) load the hook scripts as ESM,
-    # and the CommonJS require() call at the top of each hook crashes.
-    # Reported by user (Miles) on v0.7.0.
-    if [ -d "$INSTALL_DIR/scripts/hooks" ]; then
-      # M-09: atomic rename pattern — copy to tmp dir first, then swap into place.
-      # Prevents kill-window leaving an empty hooks dir that breaks every Bash hook.
-      # F1: set +e around heredoc so $? is readable (under set -eo pipefail the script
-      # would abort at the heredoc before reaching any if [ $? ] check).
-      set +e
-      node --no-deprecation --input-type=module <<HOOKSATOMICEOF
+      cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js"
+      chmod +x "$PROJECT_ROOT/.claws-bin/mcp_server.js"
+      # Copy generated schema artifacts: mcp-tools.json (consumed by mcp_server.js
+      # at startup) + json/ (20 per-topic JSON Schemas) + types/ (TS .d.ts).
+      # External schema consumers (worker SDKs, validators, IDE hints) need the
+      # json/ and types/ files even though mcp_server.js itself only needs
+      # mcp-tools.json.
+      if [ -d "$INSTALL_DIR/schemas" ]; then
+        mkdir -p "$PROJECT_ROOT/.claws-bin/schemas/json" "$PROJECT_ROOT/.claws-bin/schemas/types"
+        cp "$INSTALL_DIR/schemas/mcp-tools.json" "$PROJECT_ROOT/.claws-bin/schemas/" 2>/dev/null || true
+        # P3-1: deploy client-types.d.ts for typed SDK consumers
+        cp "$INSTALL_DIR/schemas/client-types.d.ts" "$PROJECT_ROOT/.claws-bin/schemas/" 2>/dev/null || true
+        cp "$INSTALL_DIR"/schemas/json/*.json "$PROJECT_ROOT/.claws-bin/schemas/json/" 2>/dev/null || true
+        cp "$INSTALL_DIR"/schemas/types/*.d.ts "$PROJECT_ROOT/.claws-bin/schemas/types/" 2>/dev/null || true
+      fi
+      # Copy Claws SDK (v0.7.0+) for typed publish helpers in worker scripts
+      if [ -f "$INSTALL_DIR/claws-sdk.js" ]; then
+        cp "$INSTALL_DIR/claws-sdk.js" "$PROJECT_ROOT/.claws-bin/claws-sdk.js"
+        chmod +x "$PROJECT_ROOT/.claws-bin/claws-sdk.js" 2>/dev/null || true
+      else
+        warn "claws-sdk.js not found in $INSTALL_DIR — SDK helpers unavailable (P3-3)"
+      fi
+      cp "$INSTALL_DIR/scripts/shell-hook.sh" "$PROJECT_ROOT/.claws-bin/shell-hook.sh"
+      # Copy event-streaming sidecar (v0.6.2+) so Bash run_in_background + Monitor can stream pub/sub frames
+      if [ -f "$INSTALL_DIR/scripts/stream-events.js" ]; then
+        cp "$INSTALL_DIR/scripts/stream-events.js" "$PROJECT_ROOT/.claws-bin/stream-events.js"
+        chmod +x "$PROJECT_ROOT/.claws-bin/stream-events.js" 2>/dev/null || true
+      fi
+      # Copy lifecycle hook scripts for inject-settings-hooks.js to reference.
+      # Source-of-truth is $INSTALL_DIR/scripts/hooks/ (committed to git).
+      # Previously this read from $INSTALL_DIR/.claws-bin/hooks/, which is
+      # gitignored and therefore missing on every fresh clone — silent skip.
+      #
+      # Wipe-then-copy: removed-in-newer-release files (e.g. post-tool-use-claws.js
+      # deprecated in v0.6.5) used to survive in users' .claws-bin/hooks/ and the
+      # Claude Code hook runner would still try to invoke them. Audit 4 finding I.
+      #
+      # We also ship a package.json shim with {"type":"commonjs"} alongside the
+      # hooks. Without it, projects whose root package.json declares
+      # "type":"module" (modern Node/TS projects) load the hook scripts as ESM,
+      # and the CommonJS require() call at the top of each hook crashes.
+      # Reported by user (Miles) on v0.7.0.
+      if [ -d "$INSTALL_DIR/scripts/hooks" ]; then
+        # M-09: atomic rename pattern — copy to tmp dir first, then swap into place.
+        # Prevents kill-window leaving an empty hooks dir that breaks every Bash hook.
+        # F1: set +e around heredoc so $? is readable (under set -eo pipefail the script
+        # would abort at the heredoc before reaching any if [ $? ] check).
+        set +e
+        node --no-deprecation --input-type=module <<HOOKSATOMICEOF
 import { copyDirAtomic } from '${INSTALL_DIR}/scripts/_helpers/atomic-file.mjs';
 try {
   await copyDirAtomic('${INSTALL_DIR}/scripts/hooks', '${PROJECT_ROOT}/.claws-bin/hooks');
@@ -912,14 +923,15 @@ try {
   process.exit(1);
 }
 HOOKSATOMICEOF
-      _hooks_exit=$?
-      set -e
-      if [ "$_hooks_exit" -ne 0 ]; then
-        warn "hooks dir copy failed — .claws-bin/hooks may be incomplete"
-      fi
-      # package.json shim: write if not present after copy (older hooks dirs omit it).
-      if [ ! -f "$PROJECT_ROOT/.claws-bin/hooks/package.json" ]; then
-        printf '{"type":"commonjs","private":true}\n' > "$PROJECT_ROOT/.claws-bin/hooks/package.json"
+        _hooks_exit=$?
+        set -e
+        if [ "$_hooks_exit" -ne 0 ]; then
+          warn "hooks dir copy failed — .claws-bin/hooks may be incomplete"
+        fi
+        # package.json shim: write if not present after copy (older hooks dirs omit it).
+        if [ ! -f "$PROJECT_ROOT/.claws-bin/hooks/package.json" ]; then
+          printf '{"type":"commonjs","private":true}\n' > "$PROJECT_ROOT/.claws-bin/hooks/package.json"
+        fi
       fi
     fi
     ok "vendored $PROJECT_ROOT/.claws-bin/"
@@ -1062,6 +1074,14 @@ MCPMERGEEOF
     if ! grep -q "^\.claws/" "$PROJECT_ROOT/.gitignore" 2>/dev/null; then
       echo ".claws/" >> "$PROJECT_ROOT/.gitignore"
       ok "added .claws/ to $PROJECT_ROOT/.gitignore"
+    fi
+    if ! grep -q "^\.mcp\.json" "$PROJECT_ROOT/.gitignore" 2>/dev/null; then
+      echo ".mcp.json" >> "$PROJECT_ROOT/.gitignore"
+      ok "added .mcp.json to $PROJECT_ROOT/.gitignore"
+    fi
+    if ! grep -q "^\.claws-bin/" "$PROJECT_ROOT/.gitignore" 2>/dev/null; then
+      echo ".claws-bin/" >> "$PROJECT_ROOT/.gitignore"
+      ok "added .claws-bin/ to $PROJECT_ROOT/.gitignore"
     fi
 
     # Write/merge .vscode/extensions.json so VS Code prompts anyone who opens
@@ -1292,11 +1312,14 @@ inject_hook() {
   # M-01: create a timestamped backup of the dotfile BEFORE any modification.
   # Allows the user to restore if something goes wrong. Only created when the
   # file already has content — no backup for a freshly touch'd empty file.
+  # Keep only the 3 most recent backups to prevent accumulation on repeated runs.
   local tmp="$rcfile.claws-tmp.$$"
   if [ -s "$rcfile" ]; then
     local _bak_ts
     _bak_ts=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%Y%m%dT%H%M%SZ)
     cp "$rcfile" "${rcfile}.claws-bak.${_bak_ts}" 2>/dev/null || true
+    # Prune older backups — keep the 3 newest, remove the rest.
+    ls -1t "${rcfile}.claws-bak."* 2>/dev/null | tail -n +4 | xargs rm -f 2>/dev/null || true
   fi
 
   # Portable cleanup via awk (works on BSD awk and GNU awk identically).
@@ -1434,6 +1457,18 @@ if [ "$PROJECT_INSTALL" = "1" ]; then
   fi
   [ -f "$PROJECT_ROOT/.claws-bin/README.md" ] && _ok "Project .claws-bin/README.md" || warn "project .claws-bin/README.md missing"
   [ -d "$PROJECT_ROOT/.claws-bin/hooks" ] && _ok "Project .claws-bin/hooks/ (lifecycle hooks)" || _miss "project .claws-bin/hooks/ missing"
+  # BUG-28: verify MCP spawn-class PreToolUse hooks registered (Monitor arm gate)
+  if [ -f "$HOME/.claude/settings.json" ]; then
+    if CLAWS_SETTINGS_CHECK="$HOME/.claude/settings.json" node --no-deprecation -e "
+      const s = JSON.parse(require('fs').readFileSync(process.env.CLAWS_SETTINGS_CHECK, 'utf8'));
+      const h = (s.hooks && s.hooks.PreToolUse) || [];
+      process.exit(h.some(e => e.matcher && e.matcher.includes('mcp__claws__claws_worker')) ? 0 : 1);
+    " 2>/dev/null; then
+      _ok "MCP spawn-class PreToolUse hooks registered in ~/.claude/settings.json"
+    else
+      _miss "MCP spawn-class PreToolUse hooks missing — re-run inject-settings-hooks.js to register Monitor gate"
+    fi
+  fi
   [ -f "$PROJECT_ROOT/.vscode/extensions.json" ] && grep -q "neunaha.claws" "$PROJECT_ROOT/.vscode/extensions.json" 2>/dev/null && _ok "Project .vscode/extensions.json recommends claws" || warn "project .vscode/extensions.json missing claws recommendation"
   [ -d "$PROJECT_ROOT/.claude/commands" ] && _ok "Project .claude/commands" || _miss "project commands missing"
   [ -d "$PROJECT_ROOT/.claude/skills" ] && _ok "Project .claude/skills" || _miss "project skills missing"
@@ -1448,14 +1483,13 @@ if command -v node &>/dev/null && [ -f "$VERIFY_MCP" ]; then
   if MCP_TEST=$(node --no-deprecation -e '
 const { spawn } = require("child_process");
 const mcp = spawn("node", [process.argv[1]], { stdio: ["pipe", "pipe", "ignore"] });
-const req = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-const msg = req + "\n";
+const req = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "claws-install", version: "1" } } });
 let buf = "";
 const done = (code, out) => { try { mcp.kill(); } catch {} ; process.stdout.write(out); process.exit(code); };
 const timer = setTimeout(() => done(1, "TIMEOUT"), 5000);
 mcp.stdout.on("data", d => { buf += d.toString("utf8"); if (buf.includes("claws")) { clearTimeout(timer); done(0, buf.slice(0, 200)); } });
 mcp.on("error", e => { clearTimeout(timer); done(1, "SPAWN_ERROR: " + e.message); });
-mcp.stdin.write(msg);
+mcp.stdin.write(req + "\n");
 ' "$VERIFY_MCP" 2>&1) && echo "$MCP_TEST" | grep -q "claws"; then
     _ok "MCP server starts and responds (initialize OK)"
   else

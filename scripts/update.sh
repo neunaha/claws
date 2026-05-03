@@ -196,6 +196,29 @@ if [ -f "$INSTALL_DIR/extension/native/.metadata.json" ]; then
       [ -f "$_claws_plist" ] && _claws_using=$(plutil -extract CFBundleVersion raw "$_claws_plist" 2>/dev/null || true) && break
     done
     unset _claws_u_tp _claws_update_apps
+  elif [ "$(uname)" = "Linux" ]; then
+    # F-5: port Linux Electron detection from install.sh so ABI mismatch is caught on Linux too.
+    _claws_u_tp="${TERM_PROGRAM:-}"
+    [ "$_claws_u_tp" = "vscode" ] && [ -n "${CURSOR_CHANNEL:-}" ] && _claws_u_tp="cursor"
+    _claws_u_tp=$(echo "$_claws_u_tp" | tr '[:upper:]' '[:lower:]')
+    case "$_claws_u_tp" in
+      cursor)
+        _claws_linux_eps="/usr/share/cursor/electron /opt/cursor/electron /snap/cursor/current/usr/share/cursor/electron /usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron /usr/share/windsurf/electron /opt/windsurf/electron"
+        ;;
+      windsurf)
+        _claws_linux_eps="/usr/share/windsurf/electron /opt/windsurf/electron /usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron /usr/share/cursor/electron /opt/cursor/electron"
+        ;;
+      *)
+        _claws_linux_eps="/usr/share/code/electron /usr/lib/code/electron /opt/visual-studio-code/electron /snap/code/current/usr/share/code/electron /usr/share/cursor/electron /opt/cursor/electron /snap/cursor/current/usr/share/cursor/electron /usr/share/windsurf/electron /opt/windsurf/electron"
+        ;;
+    esac
+    for _claws_ep in $_claws_linux_eps; do
+      if [ -x "$_claws_ep" ]; then
+        _claws_using=$("$_claws_ep" --version 2>/dev/null | sed 's/^v//' | head -1)
+        [ -n "$_claws_using" ] && break
+      fi
+    done
+    unset _claws_u_tp _claws_linux_eps _claws_ep
   fi
   if [ -n "$_claws_using" ] && [ -n "$_claws_built_for" ] && [ "$_claws_using" != "$_claws_built_for" ]; then
     _claws_health_ok=0
@@ -205,6 +228,21 @@ if [ -f "$INSTALL_DIR/extension/native/.metadata.json" ]; then
     note "pty.node ABI matches editor Electron ($_claws_using)"
   fi
   unset _claws_built_for _claws_using _claws_app _claws_plist
+fi
+
+# BUG-28: MCP spawn-class PreToolUse hooks — Monitor arm gate
+if [ -f "$HOME/.claude/settings.json" ]; then
+  if CLAWS_SETTINGS_CHECK="$HOME/.claude/settings.json" node --no-deprecation -e "
+    const s = JSON.parse(require('fs').readFileSync(process.env.CLAWS_SETTINGS_CHECK, 'utf8'));
+    const h = (s.hooks && s.hooks.PreToolUse) || [];
+    process.exit(h.some(e => e.matcher && e.matcher.includes('mcp__claws__claws_worker')) ? 0 : 1);
+  " 2>/dev/null; then
+    note "MCP spawn-class PreToolUse hooks registered (Monitor arm gate active)"
+  else
+    _claws_health_ok=0
+    _claws_health_warns+=("MCP spawn-class PreToolUse hooks missing — Monitor arm gate is inactive")
+    _claws_health_warns+=("  fix: node $INSTALL_DIR/scripts/inject-settings-hooks.js $INSTALL_DIR/scripts --update")
+  fi
 fi
 
 # Project .mcp.json sanity
