@@ -1,3 +1,5 @@
+- Task #58 revised — removed `idle_timeout` polling-based signal (anti-architecture). Detach watchers now use only event-driven completion signals: complete_marker, error_markers, and explicit `[CLAWS_PUB] topic=worker.<id>.complete`. Idle was killing Claude TUI workers mid-thinking. Proper event-driven completion via `onDidCloseTerminal` → `system.worker.terminated` will follow as a separate architectural change.
+
 # Changelog
 
 All notable changes to Claws will be documented in this file.

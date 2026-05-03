@@ -457,22 +457,16 @@ async function _scanAndPublishCLAWSPUB(newText, sockPath) {
   }
 }
 
-// ─── Multi-signal completion detector (Task #58) ─────────────────────────────
-// Pure function. Returns { status, line, signal } if any signal fires, else null.
-// signal in {'marker','error','pub_complete','idle'}
-// Priority: marker > error > pub_complete > idle.
+// ─── Multi-signal completion detector (Task #58 — idle-timeout removed) ──────
+// Pure function. Returns { status, line, signal } if an event-driven signal
+// fires, else null. signal in {'marker','error','pub_complete'}.
+// Priority: marker > error > pub_complete.
 //
-// Idle requires: now - state.startedAt >= opt.min_runtime_ms
-//                AND state.firstActivityAt !== null
-//                AND now - state.lastGrowthAt >= opt.idle_timeout_ms.
-//
-// Caller must update state on every call BEFORE invoking:
-//   if (text.length > state.lastLen) {
-//     if (state.firstActivityAt === null) state.firstActivityAt = now;
-//     state.lastGrowthAt = now;
-//     state.lastLen = text.length;
-//   }
-function detectCompletion(text, opt, state, termId, now) {
+// idle_timeout (polling-based) was removed in v0.7.10 — it killed Claude TUI
+// workers mid-thinking and contradicted the pub/sub event-driven architecture.
+// Proper completion fallback will come from VS Code's onDidCloseTerminal →
+// system.worker.terminated bus event (planned).
+function detectCompletion(text, opt, termId) {
   // 1. marker
   const m = findStandaloneMarker(text, opt.complete_marker);
   if (m !== null) return { status: 'completed', line: m, signal: 'marker' };
@@ -485,14 +479,6 @@ function detectCompletion(text, opt, state, termId, now) {
   const pubTopic = `worker.${termId}.complete`;
   const pubLine = findStandaloneMarker(text, `[CLAWS_PUB] topic=${pubTopic}`);
   if (pubLine !== null) return { status: 'completed', line: pubLine, signal: 'pub_complete' };
-  // 4. idle
-  const idleMs = typeof opt.idle_timeout_ms === 'number' ? opt.idle_timeout_ms : 30000;
-  const minMs  = typeof opt.min_runtime_ms  === 'number' ? opt.min_runtime_ms  : 30000;
-  if (now - state.startedAt >= minMs &&
-      state.firstActivityAt !== null &&
-      now - state.lastGrowthAt >= idleMs) {
-    return { status: 'completed', line: null, signal: 'idle' };
-  }
   return null;
 }
 
@@ -511,8 +497,6 @@ async function runBlockingWorker(sock, args) {
     harvest_lines: 200,
     close_on_complete: true,
     model: 'claude-sonnet-4-6',
-    idle_timeout_ms: 30000,
-    min_runtime_ms: 30000,
   };
   const opt = { ...DEFAULTS, ...args };
   if (!/^[a-zA-Z0-9._-]+$/.test(opt.model)) {
@@ -769,7 +753,7 @@ async function runBlockingWorker(sock, args) {
   let markerLine = null;
   let completionSignal = null;
   let pubScanOffset = markerScanFrom; // start CLAWS_PUB scan from the same offset
-  const _bMsState = { firstActivityAt: null, lastLen: 0, lastGrowthAt: Date.now(), startedAt };
+
   while (Date.now() < timeoutDeadline) {
     const snap = await clawsRpc(sock, {
       cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024,
@@ -789,12 +773,7 @@ async function runBlockingWorker(sock, args) {
     pubScanOffset = text.length;
 
     const _bNow = Date.now();
-    if (text.length > _bMsState.lastLen) {
-      if (_bMsState.firstActivityAt === null) _bMsState.firstActivityAt = _bNow;
-      _bMsState.lastGrowthAt = _bNow;
-      _bMsState.lastLen = text.length;
-    }
-    const _bDet = detectCompletion(scanText, opt, _bMsState, String(termId), _bNow);
+    const _bDet = detectCompletion(scanText, opt, String(termId));
     if (_bDet !== null) {
       status = _bDet.status;
       markerLine = _bDet.line;
@@ -1464,11 +1443,9 @@ async function _dispatchTool(name, args, sock) {
       timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : 5 * 60 * 1000,
       poll_interval_ms: typeof args.poll_interval_ms === 'number' ? args.poll_interval_ms : 1500,
       close_on_complete: args.close_on_complete !== false,
-      idle_timeout_ms: typeof args.idle_timeout_ms === 'number' ? args.idle_timeout_ms : 30000,
-      min_runtime_ms: typeof args.min_runtime_ms === 'number' ? args.min_runtime_ms : 30000,
     };
     let _fpScanOffset = 0;
-    const _fpMsState = { firstActivityAt: null, lastLen: 0, lastGrowthAt: Date.now(), startedAt: _fpStartedAt };
+
     const _fpTick = async () => {
       try {
         if (Date.now() > _fpStartedAt + _fpOpt.timeout_ms) {
@@ -1487,12 +1464,7 @@ async function _dispatchTool(name, args, sock) {
         if (text.length > _fpScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_fpScanOffset), sock);
         _fpScanOffset = text.length;
         const _fpNow = Date.now();
-        if (text.length > _fpMsState.lastLen) {
-          if (_fpMsState.firstActivityAt === null) _fpMsState.firstActivityAt = _fpNow;
-          _fpMsState.lastGrowthAt = _fpNow;
-          _fpMsState.lastLen = text.length;
-        }
-        const _fpDet = detectCompletion(text, _fpOpt, _fpMsState, String(termId), _fpNow);
+        const _fpDet = detectCompletion(text, _fpOpt, String(termId));
         const _fpStatus = _fpDet ? _fpDet.status : null;
         const _fpMarkerLine = _fpDet ? _fpDet.line : null;
         const _fpSignal = _fpDet ? _fpDet.signal : null;
@@ -1898,8 +1870,6 @@ async function _dispatchTool(name, args, sock) {
     const _dswTimeoutMs = typeof args.timeout_ms === 'number' ? args.timeout_ms : 5 * 60 * 1000;
     const _dswPollMs = typeof args.poll_interval_ms === 'number' ? args.poll_interval_ms : 1500;
     const _dswCloseOnComplete = args.close_on_complete !== false;
-    const _dswIdleTimeoutMs = typeof args.idle_timeout_ms === 'number' ? args.idle_timeout_ms : 30000;
-    const _dswMinRuntimeMs = typeof args.min_runtime_ms === 'number' ? args.min_runtime_ms : 30000;
     setImmediate(async () => {
       try {
         await sleep(400);
@@ -1929,8 +1899,8 @@ async function _dispatchTool(name, args, sock) {
         // BUG-09: register auto-close watcher mirroring the fast-path detach watcher pattern.
         const _dswStartedAt = Date.now();
         let _dswScanOffset = 0;
-        const _dswMsState = { firstActivityAt: null, lastLen: 0, lastGrowthAt: _dswStartedAt, startedAt: _dswStartedAt };
-        const _dswOpt = { complete_marker: _dswCompleteMarker, error_markers: _dswErrorMarkers, timeout_ms: _dswTimeoutMs, poll_interval_ms: _dswPollMs, close_on_complete: _dswCloseOnComplete, idle_timeout_ms: _dswIdleTimeoutMs, min_runtime_ms: _dswMinRuntimeMs };
+
+        const _dswOpt = { complete_marker: _dswCompleteMarker, error_markers: _dswErrorMarkers, timeout_ms: _dswTimeoutMs, poll_interval_ms: _dswPollMs, close_on_complete: _dswCloseOnComplete };
         const _dswTick = async () => {
           try {
             if (Date.now() > _dswStartedAt + _dswTimeoutMs) {
@@ -1954,12 +1924,7 @@ async function _dispatchTool(name, args, sock) {
             if (text.length > _dswScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_dswScanOffset), _dswSock);
             _dswScanOffset = text.length;
             const _dswNow = Date.now();
-            if (text.length > _dswMsState.lastLen) {
-              if (_dswMsState.firstActivityAt === null) _dswMsState.firstActivityAt = _dswNow;
-              _dswMsState.lastGrowthAt = _dswNow;
-              _dswMsState.lastLen = text.length;
-            }
-            const _dswDet = detectCompletion(text, _dswOpt, _dswMsState, String(termId), _dswNow);
+            const _dswDet = detectCompletion(text, _dswOpt, String(termId));
             const _dswStatus = _dswDet ? _dswDet.status : null;
             const _dswMarkerLine = _dswDet ? _dswDet.line : null;
             const _dswSignal = _dswDet ? _dswDet.signal : null;
