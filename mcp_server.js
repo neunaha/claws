@@ -483,6 +483,232 @@ async function _scanAndPublishCLAWSPUB(newText, sockPath) {
   }
 }
 
+// ─── HB-L1: Heartbeat parser primitives (pure functions, no side effects) ────
+// Per docs/heartbeat-architecture.md §V.E (TUI parsing patterns).
+// These are pure input→output helpers. They are NOT wired to any watcher yet;
+// integration comes in HB-L4. All functions operate on ANSI-stripped pty text.
+
+/**
+ * Parse Claude TUI tool indicators (⏺ Tool(args)) from new bytes.
+ * @param {string} text — full pty log (ANSI-stripped)
+ * @param {number} sinceOffset — start parsing from this byte offset
+ * @returns {Array<{tool: string, target: string, summary: string, atOffset: number}>}
+ */
+function parseToolIndicators(text, sinceOffset) {
+  if (!text || typeof text !== 'string') return [];
+  const slice = text.slice(sinceOffset || 0);
+  if (!slice) return [];
+
+  // Maps tool name → human-readable verb for summary field
+  const VERB = {
+    Read: 'reading', Edit: 'editing', Write: 'writing', Bash: 'running',
+    Grep: 'searching', Glob: 'globbing', Task: 'delegating',
+    TodoWrite: 'planning', WebFetch: 'fetching', WebSearch: 'searching web',
+    NotebookEdit: 'editing notebook',
+  };
+
+  // ⏺ ToolName(args) — Claude Code's standard indicator line
+  const RE = /⏺\s+([\w]+)\(([^)]*)\)/g;
+  const results = [];
+  let m;
+  while ((m = RE.exec(slice)) !== null) {
+    const tool = m[1];
+    const rawArgs = (m[2] || '').trim();
+    const atOffset = (sinceOffset || 0) + m.index;
+
+    let target = rawArgs;
+    let summary;
+    if (tool === 'Bash') {
+      // Truncate long bash commands for readability
+      summary = 'running: ' + (rawArgs.length > 60 ? rawArgs.slice(0, 57) + '…' : rawArgs);
+      target = rawArgs;
+    } else if (tool === 'TodoWrite') {
+      summary = 'planning: tasks';
+      target = '';
+    } else if (tool === 'Task') {
+      summary = 'delegating to subagent';
+      target = rawArgs;
+    } else if (tool === 'WebSearch') {
+      summary = 'searching web';
+      target = rawArgs;
+    } else if (tool === 'NotebookEdit') {
+      summary = 'editing notebook';
+      target = rawArgs;
+    } else {
+      // For file-path tools (Read/Edit/Write/Grep/Glob/WebFetch) use basename
+      const basename = rawArgs.split('/').pop() || rawArgs;
+      const verb = VERB[tool] || tool.toLowerCase();
+      summary = verb + ' ' + basename;
+      target = rawArgs;
+    }
+    results.push({ tool, target, summary, atOffset });
+  }
+  return results;
+}
+
+/**
+ * Parse the latest cost/tokens footer line from Claude TUI render.
+ * Pattern: [████░░░░░░] 51%  in:2.6k  out:26.3k  cost:$2369.32
+ * @param {string} text — full pty log (ANSI-stripped)
+ * @returns {{tokens_in: number, tokens_out: number, cost_usd: number, percent: number} | null}
+ */
+function parseCostFooter(text) {
+  if (!text || typeof text !== 'string') return null;
+  // Match the last occurrence of the footer pattern (most up-to-date)
+  const RE = /\[\S+\]\s+(\d+)%\s+in:([\d.]+)([kKmM]?)\s+out:([\d.]+)([kKmM]?)\s+cost:\$([\d.]+)/g;
+  let last = null;
+  let m;
+  while ((m = RE.exec(text)) !== null) {
+    last = m;
+  }
+  if (!last) return null;
+
+  function expandK(num, suffix) {
+    const n = parseFloat(num);
+    const s = (suffix || '').toLowerCase();
+    if (s === 'k') return Math.round(n * 1000);
+    if (s === 'm') return Math.round(n * 1000000);
+    return n;
+  }
+
+  return {
+    percent:    parseInt(last[1], 10),
+    tokens_in:  expandK(last[2], last[3]),
+    tokens_out: expandK(last[4], last[5]),
+    cost_usd:   parseFloat(last[6]),
+  };
+}
+
+/**
+ * Detect spinner activity (✻/✶/✳/✢/✽/✺/· prefix with "X for Ns" pattern).
+ * @param {string} text — full pty log
+ * @param {number} sinceOffset
+ * @returns {{lastSpinnerAt: number | null, isActive: boolean}}
+ *   lastSpinnerAt is byte offset of the last spinner indicator found
+ */
+function parseSpinnerActivity(text, sinceOffset) {
+  if (!text || typeof text !== 'string') return { lastSpinnerAt: null, isActive: false };
+  const slice = text.slice(sinceOffset || 0);
+  if (!slice) return { lastSpinnerAt: null, isActive: false };
+
+  // Claude's spinner: one of these unicode chars followed by a word and "for Ns"
+  const RE = /[✻✶✳✢✽✺·]\s+\w[\w\s]*for\s+\d+s/g;
+  let lastMatch = null;
+  let m;
+  while ((m = RE.exec(slice)) !== null) {
+    lastMatch = m;
+  }
+
+  if (!lastMatch) return { lastSpinnerAt: null, isActive: false };
+
+  const lastSpinnerAt = (sinceOffset || 0) + lastMatch.index;
+  // "active" means the spinner appeared near the end of the captured slice
+  // (within the last 200 chars — roughly one TUI render frame)
+  const isActive = lastMatch.index >= slice.length - 200;
+  return { lastSpinnerAt, isActive };
+}
+
+/**
+ * Detect if Claude TUI is currently at the ❯ prompt (idle, awaiting input).
+ * Returns true only when ❯ is the LAST visible content.
+ * @param {string} text — full pty log
+ * @returns {boolean}
+ */
+function parsePromptIdle(text) {
+  if (!text || typeof text !== 'string') return false;
+  // Strip trailing whitespace/newlines and check the last non-empty line
+  const lines = text.trimEnd().split(/\r?\n/);
+  // Walk backward to find last non-empty line
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    // The idle prompt is "❯ " (optionally with trailing spaces)
+    return /^❯\s*$/.test(line);
+  }
+  return false;
+}
+
+/**
+ * Parse TodoWrite tool blocks for the planned tasks.
+ * @param {string} text — full pty log
+ * @param {number} sinceOffset
+ * @returns {{todoItems: string[], atOffset: number} | null}
+ */
+function parseTodoWrite(text, sinceOffset) {
+  if (!text || typeof text !== 'string') return null;
+  const slice = text.slice(sinceOffset || 0);
+  if (!slice) return null;
+
+  // TodoWrite indicator followed by a todo block (lines prefixed with ☐/☑/□/✓/- /• or numbered)
+  // Claude renders TodoWrite then shows the task list indented under the tool call
+  const todoCallIdx = slice.indexOf('⏺ TodoWrite');
+  if (todoCallIdx === -1) return null;
+
+  // Collect lines after the TodoWrite indicator
+  const afterCall = slice.slice(todoCallIdx);
+  const lines = afterCall.split(/\r?\n/);
+  const items = [];
+
+  // Skip the first line (the ⏺ TodoWrite(…) line itself) and collect task items
+  for (let i = 1; i < lines.length; i++) {
+    const raw = lines[i].trim();
+    if (!raw) continue;
+    // Stop if we hit a new tool indicator or ANSI reset / empty block
+    if (/^[⏺⎿]/.test(raw)) break;
+    // Match common list markers: ☐ ☑ □ ✓ ✗ - • * or "N." numbered
+    const itemMatch = raw.match(/^(?:[☐☑□✓✗•\-*]|\d+\.)\s+(.+)$/);
+    if (itemMatch) {
+      items.push(itemMatch[1].trim());
+    }
+  }
+
+  if (items.length === 0) return null;
+  return { todoItems: items, atOffset: (sinceOffset || 0) + todoCallIdx };
+}
+
+/**
+ * Detect error indicators in tool results (⎿ Error: ... or non-zero exit codes).
+ * Conservative — only fires on unambiguous patterns to avoid false positives.
+ * @param {string} text — full pty log
+ * @param {number} sinceOffset
+ * @returns {Array<{kind: 'error' | 'exit_nonzero', detail: string, atOffset: number}>}
+ */
+function parseErrorIndicators(text, sinceOffset) {
+  if (!text || typeof text !== 'string') return [];
+  const slice = text.slice(sinceOffset || 0);
+  if (!slice) return [];
+
+  const results = [];
+
+  // Pattern 1: ⎿ Error: <message>  — Claude's tool result error prefix (unambiguous)
+  const ERR_RE = /⎿\s+Error:\s*([^\n\r]+)/g;
+  let m;
+  while ((m = ERR_RE.exec(slice)) !== null) {
+    results.push({
+      kind: 'error',
+      detail: m[1].trim().slice(0, 200),
+      atOffset: (sinceOffset || 0) + m.index,
+    });
+  }
+
+  // Pattern 2: ⎿ … exit code N (N ≠ 0) — bash non-zero exits via tool result
+  const EXIT_RE = /⎿[^\n\r]*exit\s+code\s+(\d+)/g;
+  while ((m = EXIT_RE.exec(slice)) !== null) {
+    const code = parseInt(m[1], 10);
+    if (code !== 0) {
+      results.push({
+        kind: 'exit_nonzero',
+        detail: 'exit code ' + code,
+        atOffset: (sinceOffset || 0) + m.index,
+      });
+    }
+  }
+
+  // Sort by offset so results are in source order
+  results.sort((a, b) => a.atOffset - b.atOffset);
+  return results;
+}
+
 // ─── Multi-signal completion detector (Task #58 — idle-timeout removed) ──────
 // Pure function. Returns { status, line, signal } if an event-driven signal
 // fires, else null. signal in {'marker','error','pub_complete'}.

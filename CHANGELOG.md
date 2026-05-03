@@ -7,7 +7,13 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.12] - 2026-05-03 — Install UX hardening (ESM compat, dev-hooks opt-in, monitor path resolver, uninstall clarity)
+## [0.7.12] - 2026-05-03 — Install UX hardening + heartbeat parser foundation
+
+### In Progress (heartbeat v0.7.12)
+
+- HB-L1 (in progress for v0.7.12): heartbeat parser primitives added — pure functions in mcp_server.js for TUI state detection. No runtime change yet; foundation for state machine in HB-L3+. Functions: parseToolIndicators, parseCostFooter, parseSpinnerActivity, parsePromptIdle, parseTodoWrite, parseErrorIndicators. Anchor: docs/heartbeat-architecture.md §V.E.
+
+---
 
 ### Fixed
 
