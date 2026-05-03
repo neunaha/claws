@@ -5,13 +5,13 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.10] - 2026-05-03 — 10-phase lifecycle (W1) + claws_worker fast-path boot detection
+## [0.7.10] - 2026-05-03 — 10-phase lifecycle (W1+Wave A) + claws_worker fast-path boot detection
 
 ### Added
 - **Lifecycle schema v3** (`extension/src/lifecycle-store.ts`): SESSION-BOOT through SESSION-END phases (10), `worker_mode` (single|fleet|army), `expected_workers`, `spawned_workers` map, `monitors` map, `registerSpawn`/`registerMonitor`/`markWorkerStatus` methods.
 - **`extension/src/lifecycle-rules.ts`** (NEW): pure validators for transitions, gates, auto-advance decisions.
 - **New lifecycle commands**: `lifecycle.register-spawn`, `lifecycle.register-monitor`, `lifecycle.mark-worker-status`.
-- **D+F integration (W3 minimum)**: `claws_create` generates `correlation_id` + atomically registers spawn + monitor in lifecycle store.
+- **D+F integration (Wave A — all spawn-class tools)**: `claws_create`, `claws_worker` fast-path, `runBlockingWorker` (+ `claws_fleet` which routes through it), and `claws_dispatch_subworker` all generate `correlation_id` + atomically call `lifecycle.register-spawn` + `lifecycle.register-monitor`. All detach watchers include `correlation_id` in `system.worker.spawned` / `system.worker.completed` event payloads and call `lifecycle.mark-worker-status` on every terminal transition (completed / failed / timeout). `lifecycle.spawned_workers` + `lifecycle.monitors` maps now populate for every worker regardless of which spawn-class tool was used.
 - 60 unit tests covering lifecycle-store + lifecycle-rules.
 
 ### Fixed

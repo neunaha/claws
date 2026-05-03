@@ -496,6 +496,7 @@ async function runBlockingWorker(sock, args) {
   });
   if (!cr.ok) return { status: 'error', error: `create failed: ${_lifecycleErrMsg(cr.error)}` };
   const termId = cr.id;
+  const _bCorrId = randomUUID();
   const startedAt = Date.now();
 
   // Publish system.worker.spawned — best-effort, never aborts on failure.
@@ -505,10 +506,15 @@ async function runBlockingWorker(sock, args) {
     await _pconnWrite({
       cmd: 'publish', protocol: 'claws/2',
       topic: 'system.worker.spawned',
-      payload: { terminal_id: termId, name: args.name || 'claws-worker', wrapped: true, started_at: new Date(startedAt).toISOString() },
+      payload: { terminal_id: termId, name: args.name || 'claws-worker', wrapped: true, started_at: new Date(startedAt).toISOString(), correlation_id: _bCorrId },
     });
     log(`runBlockingWorker: system.worker.spawned published ok for terminal ${termId}`);
   } catch (e) { log('runBlockingWorker: system.worker.spawned publish FAILED: ' + (e && e.message || e)); }
+
+  // D+F: register spawn + monitor atomically before proceeding. Best-effort (lifecycle may not be in active mission).
+  try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _bCorrId, name: args.name || 'claws-worker' }); } catch (e) { /* non-fatal */ }
+  const _bMonitorCmd = `Bash(command="until grep -qE '\\"correlation_id\\":\\"${_bCorrId}\\".*system\\.worker\\.completed' .claws/events.log; do sleep 3; done", run_in_background=true, description="claws monitor | term=${termId} | corr=${_bCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}")`;
+  try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _bCorrId, command: _bMonitorCmd }); } catch (e) { /* non-fatal */ }
 
   // 2. Give shell a moment to emit prompt
   await sleep(400);
@@ -665,9 +671,10 @@ async function runBlockingWorker(sock, args) {
             await _pconnWrite({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.worker.completed',
-              payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true },
+              payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true, correlation_id: _bCorrId },
             });
           } catch (e) { log('detach watcher publish failed: ' + (e && e.message || e)); }
+          try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
           return;
         }
         const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
@@ -694,9 +701,10 @@ async function runBlockingWorker(sock, args) {
             await _pconnWrite({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.worker.completed',
-              payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true },
+              payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true, correlation_id: _bCorrId },
             });
           } catch (e) { log('detach watcher publish failed: ' + (e && e.message || e)); }
+          try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status }); } catch (e) { /* non-fatal */ }
           if (opt.close_on_complete !== false) {
             try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {}
           }
@@ -705,7 +713,7 @@ async function runBlockingWorker(sock, args) {
     };
     const intervalId = setInterval(tick, opt.poll_interval_ms);
     _detachWatchers.set(termId, { intervalId, opt, startedAt });
-    return { status: 'spawned', terminal_id: termId, booted, duration_ms: Date.now() - startedAt };
+    return { status: 'spawned', terminal_id: termId, booted, duration_ms: Date.now() - startedAt, correlation_id: _bCorrId };
   }
 
   // 6. Poll for completion / errors / timeout
@@ -758,9 +766,10 @@ async function runBlockingWorker(sock, args) {
     await _pconnWrite({
       cmd: 'publish', protocol: 'claws/2',
       topic: 'system.worker.completed',
-      payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted },
+      payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, correlation_id: _bCorrId },
     });
   } catch (e) { log('system.worker.completed publish failed: ' + (e && e.message || e)); }
+  try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status }); } catch (e) { /* non-fatal */ }
 
   // 7. Harvest final output
   const final = await clawsRpc(sock, {
@@ -784,6 +793,7 @@ async function runBlockingWorker(sock, args) {
     marker_line: markerLine,
     cleaned_up: cleanedUp,
     harvest,
+    correlation_id: _bCorrId,
   };
 }
 
@@ -1318,6 +1328,7 @@ async function _dispatchTool(name, args, sock) {
     });
     if (!cr.ok) return toolError(`ERROR: create failed: ${_lifecycleErrMsg(cr.error)}`);
     const termId = cr.id;
+    const _fpCorrId = randomUUID();
     const _fpStartedAt = Date.now();
 
     // BUG-23: publish system.worker.spawned on non-blocking fast path — best-effort.
@@ -1326,9 +1337,14 @@ async function _dispatchTool(name, args, sock) {
       await _pconnWrite({
         cmd: 'publish', protocol: 'claws/2',
         topic: 'system.worker.spawned',
-        payload: { terminal_id: termId, name: args.name || 'claws-worker', wrapped: true, started_at: new Date(_fpStartedAt).toISOString() },
+        payload: { terminal_id: termId, name: args.name || 'claws-worker', wrapped: true, started_at: new Date(_fpStartedAt).toISOString(), correlation_id: _fpCorrId },
       });
     } catch (e) { log('system.worker.spawned publish failed: ' + (e && e.message || e)); }
+
+    // D+F: register spawn + monitor atomically. Best-effort (lifecycle may not be in active mission).
+    try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _fpCorrId, name: args.name || 'claws-worker' }); } catch (e) { /* non-fatal */ }
+    const _fpMonitorCmd = `Bash(command="until grep -qE '\\"correlation_id\\":\\"${_fpCorrId}\\".*system\\.worker\\.completed' .claws/events.log; do sleep 3; done", run_in_background=true, description="claws monitor | term=${termId} | corr=${_fpCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}")`;
+    try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _fpCorrId, command: _fpMonitorCmd }); } catch (e) { /* non-fatal */ }
 
     await sleep(400);
 
@@ -1410,8 +1426,9 @@ async function _dispatchTool(name, args, sock) {
           try {
             await _pconnEnsureRegistered(sock);
             await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-              payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _fpStartedAt, marker_line: null, booted: launchClaude, detach: true } });
+              payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _fpStartedAt, marker_line: null, booted: launchClaude, detach: true, correlation_id: _fpCorrId } });
           } catch (e) { log('fast-path watcher publish failed: ' + (e && e.message || e)); }
+          try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
           return;
         }
         const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
@@ -1436,8 +1453,9 @@ async function _dispatchTool(name, args, sock) {
           try {
             await _pconnEnsureRegistered(sock);
             await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-              payload: { terminal_id: termId, status: _fpStatus, duration_ms: Date.now() - _fpStartedAt, marker_line: _fpMarkerLine, booted: launchClaude, detach: true } });
+              payload: { terminal_id: termId, status: _fpStatus, duration_ms: Date.now() - _fpStartedAt, marker_line: _fpMarkerLine, booted: launchClaude, detach: true, correlation_id: _fpCorrId } });
           } catch (e) { log('fast-path watcher publish failed: ' + (e && e.message || e)); }
+          try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: _fpStatus }); } catch (e) { /* non-fatal */ }
           if (_fpOpt.close_on_complete) {
             try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {}
           }
@@ -1453,10 +1471,11 @@ async function _dispatchTool(name, args, sock) {
       content: [{ type: 'text', text: JSON.stringify({
         ok: true, terminal_id: termId,
         name: args.name || 'claws-worker',
+        correlation_id: _fpCorrId,
         run_token,
         hint: 'use claws_workers_wait to poll completion',
         monitor_arm_required: true,
-        monitor_arm_command: `Bash(command="until grep -qE '\\"terminal_id\\":\\"${termId}\\".*system\\.worker\\.completed' .claws/events.log; do sleep 3; done", run_in_background=true, description="claws monitor | term=${termId} | sess=${new Date().toISOString().slice(0,13)}")`,
+        monitor_arm_command: _fpMonitorCmd,
         events_log_path: workerEventsLogPath,
       }, null, 2) }],
     };
@@ -1496,14 +1515,16 @@ async function _dispatchTool(name, args, sock) {
         sum_individual_ms: results.reduce((a, r) => a + (r.duration_ms || 0), 0),
         workers: results.map((r, i) => {
           const _fTermId = r.terminal_id;
+          const _fCorrId = r.correlation_id;
           return {
             name: fleetWorkers[i] && fleetWorkers[i].name,
             status: r.status,
             terminal_id: _fTermId,
+            correlation_id: _fCorrId,
             duration_ms: r.duration_ms,
             marker_line: r.marker_line,
-            monitor_arm_command: _fTermId
-              ? `Bash(command="until grep -qE '\\"terminal_id\\":\\"${_fTermId}\\".*system\\.worker\\.completed' .claws/events.log; do sleep 3; done", run_in_background=true, description="claws monitor | term=${_fTermId} | sess=${new Date().toISOString().slice(0,13)}")`
+            monitor_arm_command: (_fTermId && _fCorrId)
+              ? `Bash(command="until grep -qE '\\"correlation_id\\":\\"${_fCorrId}\\".*system\\.worker\\.completed' .claws/events.log; do sleep 3; done", run_in_background=true, description="claws monitor | term=${_fTermId} | corr=${_fCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}")`
               : null,
           };
         }),
@@ -1795,6 +1816,7 @@ async function _dispatchTool(name, args, sock) {
     });
     if (!cr.ok) return toolError(`ERROR: create failed: ${_lifecycleErrMsg(cr.error)}`);
     const termId = cr.id;
+    const _dswCorrId = randomUUID();
 
     // BUG-A: publish system.worker.spawned for sub-workers — best-effort.
     log(`dispatch_subworker: publishing system.worker.spawned for terminal ${termId}`);
@@ -1803,10 +1825,15 @@ async function _dispatchTool(name, args, sock) {
       await _pconnWrite({
         cmd: 'publish', protocol: 'claws/2',
         topic: 'system.worker.spawned',
-        payload: { terminal_id: termId, waveId: args.waveId, role: args.role, name: workerName, wrapped: true, started_at: new Date().toISOString() },
+        payload: { terminal_id: termId, waveId: args.waveId, role: args.role, name: workerName, wrapped: true, started_at: new Date().toISOString(), correlation_id: _dswCorrId },
       });
       log(`dispatch_subworker: system.worker.spawned published ok for terminal ${termId}`);
     } catch (e) { log('dispatch_subworker: system.worker.spawned publish FAILED: ' + (e && e.message || e)); }
+
+    // D+F: register spawn + monitor atomically. Best-effort (lifecycle may not be in active mission).
+    try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _dswCorrId, name: workerName }); } catch (e) { /* non-fatal */ }
+    const _dswMonitorCmd = `Bash(command="until grep -qE '\\"correlation_id\\":\\"${_dswCorrId}\\".*system\\.worker\\.completed' .claws/events.log; do sleep 3; done", run_in_background=true, description="claws monitor | term=${termId} | corr=${_dswCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}")`;
+    try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _dswCorrId, command: _dswMonitorCmd }); } catch (e) { /* non-fatal */ }
 
     // BUG-08: fire-and-forget — return after create so parallel dispatch_subworker calls don't serialize.
     const _dswSock = sock;
@@ -1857,8 +1884,9 @@ async function _dispatchTool(name, args, sock) {
               try {
                 await _pconnEnsureRegistered(_dswSock);
                 await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-                  payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _dswStartedAt, marker_line: null, waveId: _dswWid, role: _dswRole, detach: true } });
+                  payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _dswStartedAt, marker_line: null, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId } });
               } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
+              try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
               if (_dswCloseOnComplete) { try { await clawsRpc(_dswSock, { cmd: 'close', id: termId }); } catch {} }
               return;
             }
@@ -1885,8 +1913,9 @@ async function _dispatchTool(name, args, sock) {
               try {
                 await _pconnEnsureRegistered(_dswSock);
                 await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-                  payload: { terminal_id: termId, status: _dswStatus, duration_ms: Date.now() - _dswStartedAt, marker_line: _dswMarkerLine, waveId: _dswWid, role: _dswRole, detach: true } });
+                  payload: { terminal_id: termId, status: _dswStatus, duration_ms: Date.now() - _dswStartedAt, marker_line: _dswMarkerLine, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId } });
               } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
+              try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: _dswStatus }); } catch (e) { /* non-fatal */ }
               if (_dswCloseOnComplete) { try { await clawsRpc(_dswSock, { cmd: 'close', id: termId }); } catch {} }
             }
           } catch (e) { log('dsw watcher tick error: ' + (e && e.message || e)); }
@@ -1902,8 +1931,9 @@ async function _dispatchTool(name, args, sock) {
         type: 'text',
         text: JSON.stringify({
           terminal_id: termId, waveId: _dswWid, role: _dswRole, name: workerName,
+          correlation_id: _dswCorrId,
           monitor_arm_required: true,
-          monitor_arm_command: `Bash(command="until grep -qE '\\"terminal_id\\":\\"${termId}\\".*system\\.worker\\.completed' .claws/events.log; do sleep 3; done", run_in_background=true, description="claws monitor | term=${termId} | sess=${new Date().toISOString().slice(0,13)}")`,
+          monitor_arm_command: _dswMonitorCmd,
           events_log_path: dswEventsLogPath,
         }, null, 2),
       }],
