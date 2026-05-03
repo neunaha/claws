@@ -279,7 +279,7 @@ export class LifecycleStore {
     const fd = fs.openSync(tmp, 'w');
     try {
       fs.writeSync(fd, JSON.stringify(this.state, null, 2) + '\n');
-      fs.fsyncSync(fd);
+      fs.fsyncSync(fd); // M-43: fsyncSync before renameSync (parity with M-29)
     } finally {
       fs.closeSync(fd);
     }
