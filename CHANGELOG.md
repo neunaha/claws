@@ -1711,6 +1711,7 @@ Key additions (all new commands are additive — `claws/1` clients continue to w
 - Example scripts: basic orchestrator, parallel workers
 
 - docs(architecture) — comprehensive ARCHITECTURE.md as the canonical anchor: charter, 10 architectural principles (event-driven only, atomic writes, hooks safety, no orchestrator-side patches, etc.), full system layer map, protocol specs, lifecycle architecture, 5-layer enforcement chain, test invariants, anti-patterns catalog (10 burned-in lessons), known gaps + roadmap, and an anchoring protocol for future PRs.
+- test(v0.7.10) — non-blocking-defaults (10 checks: detach !== false default, withMaxHold 8s ceiling) and sidecar-enforcement (18 checks: _ensureSidecarOrThrow guards all 4 spawn handlers, singleton dedup, read-only handlers ungated). Both pass.
 
 - **chore(v0.7.10)**: Wave C precursor work landed — pre-tool-use hook fail-closed (BUG-16 argv0 allowlist, BUG-27 mcp_server.js edit gate, BUG-28 spawn-class Monitor arm gate); session-start spawns sidecar + emits "FIRST ACTION arm Monitor" reminder; stop hook kills sidecar + orphan tails + grace file; inject-settings-hooks.js registers four explicit per-tool PreToolUse matchers (claws_create/worker/fleet/dispatch_subworker) as belt-and-suspenders.
 - **test(v0.7.10)**: Two new regression suites — non-blocking-defaults (10 checks: detach !== false default, withMaxHold 8s ceiling) and sidecar-enforcement (18 checks: _ensureSidecarOrThrow guards all 4 spawn handlers, singleton dedup, read-only handlers ungated). Both pass.
