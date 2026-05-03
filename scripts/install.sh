@@ -1469,6 +1469,17 @@ if [ "$PROJECT_INSTALL" = "1" ]; then
       _miss "MCP spawn-class PreToolUse hooks missing — re-run inject-settings-hooks.js to register Monitor gate"
     fi
   fi
+  if [ -f "$HOME/.claude/settings.json" ]; then
+    if CLAWS_SETTINGS_CHECK="$HOME/.claude/settings.json" node --no-deprecation -e "
+      const s = JSON.parse(require('fs').readFileSync(process.env.CLAWS_SETTINGS_CHECK, 'utf8'));
+      const h = (s.hooks && s.hooks.PostToolUse) || [];
+      process.exit(h.some(e => e.matcher && e.matcher.includes('mcp__claws__claws_worker')) ? 0 : 1);
+    " 2>/dev/null; then
+      _ok "PostToolUse spawn-class hooks registered in ~/.claude/settings.json"
+    else
+      _miss "PostToolUse spawn-class hooks missing — re-run inject-settings-hooks.js to register Wave C monitor gate"
+    fi
+  fi
   [ -f "$PROJECT_ROOT/.vscode/extensions.json" ] && grep -q "neunaha.claws" "$PROJECT_ROOT/.vscode/extensions.json" 2>/dev/null && _ok "Project .vscode/extensions.json recommends claws" || warn "project .vscode/extensions.json missing claws recommendation"
   [ -d "$PROJECT_ROOT/.claude/commands" ] && _ok "Project .claude/commands" || _miss "project commands missing"
   [ -d "$PROJECT_ROOT/.claude/skills" ] && _ok "Project .claude/skills" || _miss "project skills missing"

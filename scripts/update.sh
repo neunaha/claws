@@ -245,6 +245,21 @@ if [ -f "$HOME/.claude/settings.json" ]; then
   fi
 fi
 
+# Wave C: PostToolUse spawn-class hooks — monitor race-close
+if [ -f "$HOME/.claude/settings.json" ]; then
+  if CLAWS_SETTINGS_CHECK="$HOME/.claude/settings.json" node --no-deprecation -e "
+    const s = JSON.parse(require('fs').readFileSync(process.env.CLAWS_SETTINGS_CHECK, 'utf8'));
+    const h = (s.hooks && s.hooks.PostToolUse) || [];
+    process.exit(h.some(e => e.matcher && e.matcher.includes('mcp__claws__claws_worker')) ? 0 : 1);
+  " 2>/dev/null; then
+    note "PostToolUse spawn-class hooks registered (Wave C monitor race-close active)"
+  else
+    _claws_health_ok=0
+    _claws_health_warns+=("PostToolUse spawn-class hooks missing — Wave C monitor race-close is inactive")
+    _claws_health_warns+=("  fix: node $INSTALL_DIR/scripts/inject-settings-hooks.js $INSTALL_DIR/scripts --update")
+  fi
+fi
+
 # Project .mcp.json sanity
 # M-47: path passed via env var — handles project roots with apostrophes/backslashes
 # without causing JS syntax errors from string interpolation in -e argument.

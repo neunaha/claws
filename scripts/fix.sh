@@ -602,6 +602,31 @@ if [ -f "$HOME/.claude/settings.json" ] && grep -q '_source.*claws' "$HOME/.clau
   fi
 fi
 
+# ─── 8b. PostToolUse spawn-class hooks registered (Wave C) ──────────────────
+# Detect the case where settings.json has valid Claws hooks but no PostToolUse
+# entries — typical after upgrading from pre-Wave C install. Check 8 only detects
+# stale paths; it cannot detect entirely absent entries.
+check "PostToolUse spawn-class hooks registered (Wave C monitor race-close)"
+if [ -f "$HOME/.claude/settings.json" ]; then
+  if CLAWS_SETTINGS_CHECK="$HOME/.claude/settings.json" node --no-deprecation -e "
+    const s = JSON.parse(require('fs').readFileSync(process.env.CLAWS_SETTINGS_CHECK, 'utf8'));
+    const h = (s.hooks && s.hooks.PostToolUse) || [];
+    process.exit(h.some(e => e.matcher && e.matcher.includes('mcp__claws__claws_worker')) ? 0 : 1);
+  " 2>/dev/null; then
+    ok "PostToolUse spawn-class hooks registered"
+  else
+    fail "PostToolUse spawn-class hooks missing — Wave C monitor race-close inactive"
+    fix "re-registering all Claws hooks via inject-settings-hooks.js --update"
+    if node --no-deprecation "$INSTALL_DIR/scripts/inject-settings-hooks.js" "$INSTALL_DIR/scripts" --update 2>/dev/null; then
+      ok "hooks re-registered (PostToolUse entries added)"
+      FIXED=$((FIXED+1))
+    else
+      fail "could not re-register hooks — check $INSTALL_DIR/scripts/inject-settings-hooks.js"
+      ISSUES=$((ISSUES+1))
+    fi
+  fi
+fi
+
 # ─── 9. Hook script execution probe (v0.7.3) ──────────────────────────────
 # Defense in depth: even if the path resolves, the script might crash on
 # load (ESM vs CJS, missing deps, etc). Invoke each hook with synthetic
@@ -613,7 +638,7 @@ HOOKS_PRESENT=0
 HOOKS_OK=0
 HOOKS_FAIL=0
 HOOKS_FAILED_NAMES=""
-for hook in session-start-claws.js pre-tool-use-claws.js stop-claws.js; do
+for hook in session-start-claws.js pre-tool-use-claws.js post-tool-use-claws.js stop-claws.js; do
   [ -f "$HOOK_DIR/$hook" ] || continue
   HOOKS_PRESENT=$((HOOKS_PRESENT+1))
   # Use a Node-based 5s ceiling instead of `timeout` (not on macOS by default).
