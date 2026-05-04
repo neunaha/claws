@@ -1,6 +1,8 @@
 /**
- * HB-L8 static verification: POST_WORK→COMPLETE fires system.worker.completed
- * with completion_signal:"tui_idle" + clears watcher + marks lifecycle + auto-closes.
+ * HB-L8 DISARMED verification: confirms the destructive tui_idle auto-close
+ * cascade is commented out. Re-enabling requires removing the DISARMED block
+ * and restoring proper detection logic (distinguishes Claude deep-thinking from
+ * genuine idle). See lifecycle-master-plan wave army for audit + redesign.
  */
 
 'use strict';
@@ -22,57 +24,47 @@ function check(label, condition) {
   }
 }
 
-console.log('HB-L8: tui_idle completion static checks');
+console.log('HB-L8: tui_idle DISARMED static checks');
 
-// 1. Guard variable declared
+// 1. DISARMED sentinel comment is present — re-enable requires acknowledging audit
 check(
-  '_fpTuiIdleCompleted guard declared',
+  'HB-L8 DISARMED comment block present',
+  src.includes('HB-L8 DISARMED')
+);
+
+// 2. Confirm tui_idle completion_signal is NOT active (disarmed, not live code)
+// The string may appear in comments; verify it does NOT appear outside a comment line
+const tui_idle_lines = src.split('\n').filter(l => /completion_signal.*tui_idle/.test(l));
+const tui_idle_live = tui_idle_lines.filter(l => !/^\s*\/\//.test(l));
+check(
+  "completion_signal:'tui_idle' is NOT live (only in comments)",
+  tui_idle_live.length === 0
+);
+
+// 3. _fpTuiIdleCompleted guard still declared (needed for detectCompletion gate)
+check(
+  '_fpTuiIdleCompleted guard variable still declared',
   /let _fpTuiIdleCompleted\s*=\s*false/.test(src)
 );
 
-// 2. completion_signal: 'tui_idle' present
-check(
-  "completion_signal: 'tui_idle' in system.worker.completed payload",
-  /completion_signal:\s*['"]tui_idle['"]/.test(src)
-);
-
-// 3. system.worker.completed published in L8 path
-// Extract block starting at _fpTuiIdleCompleted = true
-const l8Start = src.indexOf('_fpTuiIdleCompleted = true');
-const l8Block = l8Start !== -1 ? src.slice(l8Start, l8Start + 1000) : '';
-check(
-  'system.worker.completed published in L8 cleanup block',
-  l8Block.includes('system.worker.completed')
-);
-
-// 4. clearInterval called in L8 block
-check(
-  'clearInterval(_fpIntervalId) called in L8 block',
-  l8Block.includes('clearInterval(_fpIntervalId)')
-);
-
-// 5. _detachWatchers.delete called in L8 block
-check(
-  '_detachWatchers.delete(termId) called in L8 block',
-  l8Block.includes('_detachWatchers.delete(termId)')
-);
-
-// 6. lifecycle mark-worker-status → completed in L8 block
-check(
-  "lifecycle.mark-worker-status 'completed' in L8 block",
-  /lifecycle\.mark-worker-status[\s\S]{0,200}status.*completed/.test(l8Block)
-);
-
-// 7. close_on_complete auto-close cascade present in L8 block
-check(
-  'close_on_complete auto-close cascade in L8 block',
-  l8Block.includes('close_on_complete') && l8Block.includes("cmd: 'close'")
-);
-
-// 8. detectCompletion block gated by !_fpTuiIdleCompleted
+// 4. detectCompletion block gated by !_fpTuiIdleCompleted (no double-publish guard intact)
 check(
   'detectCompletion block gated with !_fpTuiIdleCompleted (no double-publish)',
   /!\s*_fpTuiIdleCompleted\s*&&\s*_fpStatus\s*!==\s*null/.test(src)
+);
+
+// 5. L7 mission_complete heartbeat publish still present (observability intact)
+check(
+  "L7 kind:'mission_complete' heartbeat publish is still active",
+  /kind:\s*['"]mission_complete['"]/.test(src)
+);
+
+// 6. _fpTuiIdleCompleted = true NOT live (only inside disarmed comment)
+const setGuard_lines = src.split('\n').filter(l => /_fpTuiIdleCompleted\s*=\s*true/.test(l));
+const setGuard_live = setGuard_lines.filter(l => !/^\s*\/\//.test(l));
+check(
+  '_fpTuiIdleCompleted = true NOT in live code (only in disarmed comment)',
+  setGuard_live.length === 0
 );
 
 console.log('');

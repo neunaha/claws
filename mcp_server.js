@@ -2020,19 +2020,20 @@ async function _dispatchTool(name, args, sock) {
                 correlation_id: _fpCorrId,
               },
             });
-            // HB-L8: wire mission_complete → system.worker.completed (tui_idle) + cleanup
-            _fpTuiIdleCompleted = true;
-            clearInterval(_fpIntervalId);
-            _detachWatchers.delete(termId);
-            try {
-              await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-                payload: { terminal_id: termId, status: 'completed', duration_ms: durMs, marker_line: null, booted: launchClaude, detach: true, correlation_id: _fpCorrId, completion_signal: 'tui_idle' } });
-            } catch (e) { log('hb-l8 tui_idle system.worker.completed publish failed: ' + (e && e.message || e)); }
-            try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'completed' }); } catch (e) { /* non-fatal */ }
-            if (_fpOpt.close_on_complete) {
-              try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {}
-              try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
-            }
+            // HB-L8 DISARMED — destructive false-positives on Claude deep-thinking pauses
+            // killed lifecycle-deep-audit-plan worker (mission 63) at 5m 30s before it
+            // could write the audit doc. L8 needs proper detection logic that distinguishes
+            // "Claude thinking with no streaming" from "Claude genuinely idle at prompt".
+            // Audit + redesign tracked in lifecycle-master-plan (mission 66+ wave army).
+            //
+            // Original L8 block:
+            // if (completedThisTick && !_fpTuiIdleCompleted) {
+            //   _fpTuiIdleCompleted = true;
+            //   try { ... publish system.worker.completed with tui_idle ... } catch (e) { ... }
+            //   try { clearInterval(_fpIntervalId); _detachWatchers.delete(termId); } catch ...
+            //   try { ... lifecycle.mark-worker-status: completed ... } catch ...
+            //   try { ... cmd:'close', id:termId ... } catch ...
+            // }
           }
         } catch (e) {
           log('hb-l4 fast-path backstop publish failed: ' + (e && e.message || e));

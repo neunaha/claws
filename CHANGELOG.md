@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - v0.7.12 post-work gate fix: dropped `bytesIdle` requirement from WORKING→POST_WORK transition. Claude Code's prompt suggestion feature emits pty bytes when idle, blocking the previous `bytesIdle` gate. Now: spinner-stopped + prompt-visible is sufficient. Test: new `WORKING→POST_WORK fires even with recent pty bytes` check in `heartbeat-state-machine.test.js`.
 - HB-L5: kind=progress heartbeats with 5s burst aggregation. Fast-path watcher publishes activity bursts in real-time, collapsed to one summary per window. Richer orchestrator visibility between 30s backstop ticks.
 - HB-L6: kind=approach + kind=error heartbeats. Fast-path watcher publishes TodoWrite plans (deduped by JSON.stringify compare) and Bash errors (deduped by errorsCount). Richer orchestrator observability.
+- v0.7.12 hotfix: DISARMED L8 tui_idle auto-close. Destructive false-positives killed long-thinking workers (audit, deep edits). L7 mission_complete heartbeat publish stays for observability. Marker/error_marker/timeout/Wave-D paths unchanged.
 
 ---
 
