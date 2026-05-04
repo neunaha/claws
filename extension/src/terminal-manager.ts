@@ -2,11 +2,11 @@ import * as vscode from 'vscode';
 import { CaptureStore } from './capture-store';
 import { ClawsPty } from './claws-pty';
 import { TerminalDescriptor } from './protocol';
-import { VehicleStateName } from './event-schemas';
+import { VehicleStateName, TerminalCloseOrigin } from './event-schemas';
 
 type StateChangeCallback = (id: string, from: VehicleStateName | null, to: VehicleStateName) => void;
 type ContentChangeCallback = (id: string, pid: number | null, basename: string | null) => void;
-type TerminalCloseCallback = (id: string, wrapped: boolean) => void;
+type TerminalCloseCallback = (id: string, wrapped: boolean, origin: TerminalCloseOrigin) => void;
 
 const VALID_TRANSITIONS: Readonly<Record<VehicleStateName, readonly VehicleStateName[]>> = {
   PROVISIONING: ['BOOTING', 'CLOSING'],
@@ -280,7 +280,7 @@ export class TerminalManager {
     return { id, terminal };
   }
 
-  close(id: string | number): boolean {
+  close(id: string | number, origin: TerminalCloseOrigin = 'orchestrator'): boolean {
     const key = String(id);
     const rec = this.records.get(key);
     if (!rec) return false;
@@ -291,9 +291,9 @@ export class TerminalManager {
     // onDidCloseTerminal asynchronously, so by the time onTerminalClosed runs,
     // byTerminal.delete has already cleared the entry and the function bails at
     // its early-return guard — the callback was never reached. This direct call
-    // ensures system.worker.terminated always emits for programmatic closes.
+    // ensures system.terminal.closed always emits for programmatic closes.
     // See .local/audits/lifecycle-silent-mutation-trace.md.
-    this.onTerminalClose?.(key, rec.wrapped);
+    this.onTerminalClose?.(key, rec.wrapped, origin);
     try { rec.terminal.dispose(); } catch { /* ignore */ }
     this.byTerminal.delete(rec.terminal);
     this.records.delete(key);
@@ -310,7 +310,7 @@ export class TerminalManager {
       this.stopContentDetection(rec);
       this.transitionState(rec, 'CLOSING');
       this.transitionState(rec, 'CLOSED');
-      this.onTerminalClose?.(id, rec.wrapped);
+      this.onTerminalClose?.(id, rec.wrapped, 'user');
     }
     if (rec?.pty) rec.pty.close();
     this.records.delete(id);

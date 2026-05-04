@@ -8,6 +8,7 @@ import {
   SystemGateFiredV1, SystemBudgetWarningV1, SystemMalformedReceivedV1,
   VehicleStateV1, VehicleContentV1, CommandStartV1, CommandEndV1,
   CmdAckV1, PipelineStepV1, RpcRequestV1, RpcResponseV1, WaveHarvestedV1,
+  TerminalClosedV1,
 } from './event-schemas';
 
 export { matchTopic };
@@ -54,6 +55,7 @@ export const TOPIC_REGISTRY: ReadonlyArray<{ pattern: string; schema: z.ZodTypeA
   { pattern: 'pipeline.*.closed',          schema: z.record(z.unknown()) },
   { pattern: 'rpc.*.request',              schema: RpcRequestV1 },
   { pattern: 'rpc.response.**',            schema: RpcResponseV1 },
+  { pattern: 'system.terminal.closed',     schema: TerminalClosedV1 },
 ];
 
 /**

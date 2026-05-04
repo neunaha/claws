@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
 
+### Added
+
+- T3 (Q4): `system.terminal.closed` universal bus event emitted on every terminal close with a `close_origin` discriminator: `marker | error | timeout | orchestrator | user | pub_complete`. `TerminalClosedV1` schema added to `event-schemas.ts`, registered in `topic-registry.ts`. `TerminalCloseCallback` now carries the origin parameter so the emission is single and accurate (no double-emit). Close RPC handler accepts `close_origin` from request and forwards it through `tm.close()`. Fast-path watcher, runBlockingWorker, and `_dswTick` all pass the semantic origin on auto-close. Monitor pattern updated in 5 sites to exit on `system.(worker.completed|terminal.closed)` — universal exit signal. Test: `extension/test/terminal-closed-event.test.js`.
+
 ### Removed
 
 - T5 (Q3 user decision): `parsePromptIdle` function deleted — only used by the now-removed L7/L8 detection. WORKING→POST_WORK and POST_WORK→COMPLETE state machine transitions removed from `WorkerHeartbeatStateMachine`. L7 `mission_complete` heartbeat publish and the L8 disarmed cascade (commented out since ed27870) formally deleted. Three obsolete test files removed: `parse-prompt-idle.test.js`, `mission-complete-heartbeat.test.js`, `tui-idle-completion.test.js`. State machine now terminates at WORKING (observability only); completion is handled exclusively by reliable external signals: marker, error_marker, pub_complete, terminated.

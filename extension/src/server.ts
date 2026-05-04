@@ -225,12 +225,18 @@ export class ClawsServer {
       };
       void this.emitSystemEvent(`vehicle.${id}.content`, payload);
     });
-    opts.terminalManager.setTerminalCloseCallback((id, wrapped) => {
-      if (!wrapped) return;
-      void this.emitSystemEvent('system.worker.terminated', {
+    opts.terminalManager.setTerminalCloseCallback((id, wrapped, origin) => {
+      void this.emitSystemEvent('system.terminal.closed', {
         terminal_id: id,
-        terminated_at: new Date().toISOString(),
+        close_origin: origin,
+        closed_at: new Date().toISOString(),
       });
+      if (wrapped) {
+        void this.emitSystemEvent('system.worker.terminated', {
+          terminal_id: id,
+          terminated_at: new Date().toISOString(),
+        });
+      }
     });
   }
 
@@ -1018,7 +1024,7 @@ export class ClawsServer {
     }
 
     if (cmd === 'close') {
-      const r = req as ClawsRequest & { id: string | number };
+      const r = req as ClawsRequest & { id: string | number; close_origin?: string };
       // BUG-13: kill foreground process before disposing so Claude TUI
       // processes don't orphan and keep publishing bus events.
       const rec = tm.recordById(r.id);
@@ -1035,7 +1041,11 @@ export class ClawsServer {
           if (typeof killTimer.unref === 'function') killTimer.unref();
         }
       }
-      const ok = tm.close(r.id);
+      // Use caller-supplied close_origin so semantic accuracy flows through
+      // (e.g. mcp_server.js watchers pass 'marker'/'error'/'timeout').
+      const closeOrigin = (['marker','error','timeout','orchestrator','user','pub_complete'] as const)
+        .find(o => o === r.close_origin) ?? 'orchestrator';
+      const ok = tm.close(r.id, closeOrigin);
       // Idempotent: closing an already-closed/unknown id is not an error.
       // Clients shouldn't need to track local state to avoid racing their
       // own cleanup with ours. `alreadyClosed` is the signal when the id

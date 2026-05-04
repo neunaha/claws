@@ -216,6 +216,29 @@ export const SystemMalformedReceivedV1 = z.object({
 });
 export type SystemMalformedReceived = z.infer<typeof SystemMalformedReceivedV1>;
 
+// ── Terminal close schemas (server-emitted on every close) ───────────────
+
+export const TerminalCloseOriginEnum = z.enum([
+  'marker',        // worker printed completion marker
+  'error',         // worker printed error_marker
+  'timeout',       // watcher timed out
+  'orchestrator',  // claws_close called by MCP client
+  'user',          // user clicked X in VS Code (or VS Code reload)
+  'pub_complete',  // worker published complete event
+]);
+export type TerminalCloseOrigin = z.infer<typeof TerminalCloseOriginEnum>;
+
+export const TerminalClosedV1 = z.object({
+  terminal_id:    z.string(),
+  close_origin:   TerminalCloseOriginEnum,
+  closed_at:      z.string().datetime(),
+  correlation_id: z.string().optional(),
+  marker_line:    z.string().nullable().optional(),
+  duration_ms:    z.number().nonnegative().optional(),
+  status:         z.enum(['completed', 'failed', 'timeout', 'closed']).optional(),
+});
+export type TerminalClosed = z.infer<typeof TerminalClosedV1>;
+
 // ── Vehicle state schemas (server-emitted, not published by clients) ──────
 
 export const VEHICLE_STATES = [
@@ -436,4 +459,5 @@ export const SCHEMA_BY_NAME: Record<string, z.ZodTypeAny> = {
   'rpc-request-v1':                RpcRequestV1,
   'rpc-response-v1':               RpcResponseV1,
   'wave-harvested-v1':             WaveHarvestedV1,
+  'terminal-closed-v1':            TerminalClosedV1,
 };
