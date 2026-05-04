@@ -1,16 +1,28 @@
 ---
 name: claws-cleanup
-description: Close all worker terminals you created. Clean slate. Use after a fleet run or when the terminal panel is cluttered.
+description: Close all worker terminals after a fleet run. Leaves user-created terminals untouched.
 ---
 
-# /claws cleanup
+# /claws-cleanup
 
-Close all Claws worker terminals. Leave user-created terminals untouched.
+## What this does
+Finds all terminals with worker-style names (prefixed with "worker-") and closes them via `claws_close`. Confirms the count with the user if there are any before proceeding. Idempotent — safe to run multiple times.
 
-## What to do
+## Behavior
+- Call `claws_list` to enumerate all terminals
+- Identify terminals whose name starts with "worker-" or matches ones you created this session
+- If 0 found: "Nothing to clean up — terminal panel is already clear."
+- If N found: confirm "Close N worker terminals? (Y to proceed)" then call `claws_close` for each
+- Call `claws_list` again to confirm removal
+- Report: "Closed N terminals. Your terminals are untouched."
 
-1. Call `claws_list` to get all terminals
-2. Identify terminals with names starting with "worker-", "claws-", or any terminal you created in this session
-3. For each one: `claws_close`
-4. Call `claws_list` again to confirm they're gone
-5. Tell the user: "Cleaned up N worker terminals. Your terminals are untouched."
+## Examples
+```
+/claws-cleanup
+clean up all worker terminals
+close everything after the fleet run
+```
+
+## When NOT to use
+Do not use to close specific terminals by ID — call `claws_close(id=N)` directly.
+Do not use if you want to close ALL terminals including user ones — that requires explicit confirmation.

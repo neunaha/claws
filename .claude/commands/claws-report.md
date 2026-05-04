@@ -1,41 +1,29 @@
 ---
 name: claws-report
-description: Generate a diagnostic report for Claws — bundles install logs, system info, extension state, project-local file presence, VS Code extension logs, MCP handshake test, and socket status into a single shareable file. Run when something isn't working and you want to report the issue.
+description: Bundle logs and diagnostics into a shareable file for bug reports.
 ---
 
 # /claws-report
 
-Run this when Claws isn't working as expected. It bundles everything needed to diagnose the problem into a single redacted file.
+## What this does
+Runs `scripts/report.sh` which captures OS info, Claws source state, extension state, socket status, MCP handshake test, shell hook state, recent install logs, and VS Code extension host logs — all into a single redacted text file you can attach to a GitHub issue.
 
-Run this from the **project root** where you're experiencing the issue:
+## Behavior
+- Run from the project root where the issue is occurring:
+  ```bash
+  bash ~/.claws-src/scripts/report.sh "$(pwd)"
+  ```
+- The file path is printed at the top of the output (e.g. `~/claws-report-<timestamp>.txt`)
+- The report redacts `$HOME` paths and strips 32+ character tokens — review before sharing
+- Tell the user the file path and offer to help write a GitHub issue title
 
-```bash
-bash ~/.claws-src/scripts/report.sh "$(pwd)"
+## Examples
+```
+/claws-report
+generate a diagnostic report
+something is broken — help me file a bug
 ```
 
-## What the report contains
-
-- **System**: OS, Node, npm, git, bash versions
-- **Claws source clone**: git HEAD, branch, remote
-- **Extension state**: version, main entry, bundle size, node-pty status
-- **Editor symlinks**: `~/.vscode/extensions/neunaha.claws-*` presence
-- **Project-local files**: `.mcp.json`, `.claws-bin/`, `.claude/`, `CLAUDE.md` presence + size
-- **Socket state**: `.claws/claws.sock` live/stale/missing
-- **MCP handshake test**: proves the MCP server can be started and responds
-- **Shell hook state**: which rc files have the hook installed
-- **Latest install log**: last 100 lines of the most recent `/tmp/claws-install-*.log`
-- **VS Code extension host logs**: last 50 claws-related entries
-
-## Privacy
-
-The report redacts `$HOME` paths to `$HOME` and strips anything that looks like a 32+ character token. Review it before sharing — it's a plain text file you can edit.
-
-## After the report generates
-
-The file path is printed at the top (e.g. `~/claws-report-20260418-143022.txt`).
-
-**Share it to get help:**
-- Open a GitHub issue: https://github.com/neunaha/claws/issues/new
-- Attach the file OR paste its contents — both work.
-
-Tell the user the report file path and ask if they want help opening an issue. If they do, help them write a clear title describing what failed.
+## When NOT to use
+If Claws is not installed at all, nothing to report — point to the install docs.
+If the issue is just an outdated version, use /claws-update first.

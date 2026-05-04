@@ -1,61 +1,64 @@
 ---
 name: claws-do
-description: Execute ANY task through visible Claws terminals. Boots a Claude Code worker for missions; uses claws_exec for one-shot shell commands. NEVER use Bash directly.
+description: Universal verb — classifies any task into the right execution shape and runs it.
 ---
 
-# /claws-do <anything>
+# /claws-do <task>
 
-## CRITICAL RULE: you MUST use Claws for this. Do NOT fall back to the Bash tool. The entire point is visible, monitorable execution.
+## What this does
+Classifies the user's request into one of four execution buckets and routes it to the right MCP tool. Never falls back to the Bash tool. Never manually boots a worker via terminal send sequences.
 
-## Pick the right shape FIRST
+## Routing decision tree
 
-Before creating any terminal, classify the request:
+Classify the request BEFORE creating anything:
 
-| Shape | Example | Tool |
-|---|---|---|
-| **One-shot shell command** (test, build, lint, deploy, script) | `npm test`, `pytest`, `cargo build` | `claws_exec` — captures output, exit code, no terminal needed |
-| **Mission for a Claude worker** (refactor, fix bug, audit, multi-step task) | "fix the auth race", "audit the migration" | `claws_create wrapped=true` + 7-step Claude Code boot + mission |
+**Bucket 1 — One-shot shell command**
+Signals: "run npm test", "build the project", "git status", any single shell invocation needing output + exitCode.
+Action: `claws_exec(command="<cmd>", timeout_ms=120000)` — read output and exitCode, report to user. Done.
 
-**Wrapped terminals are for hosting a Claude Code instance. They are NOT for running bare shell commands.**
-If the answer is "just run this command and show me the output", use `claws_exec` and stop.
-If the answer is "an autonomous agent needs to take this on", boot a Claude worker (steps below).
-
-## Path A — one-shot shell command
-
+**Bucket 2 — Single autonomous Claude task** (default when ambiguous)
+Signals: "fix the auth bug", "refactor X", "audit Y", "write tests for Z", any mission-shaped task.
+Action:
 ```
-claws_exec(command="<the command>", timeout_ms=120000)
+claws_worker(
+  name="worker-<short-slug>",
+  mission="<full mission text ending with: print MARK_<SLUG>_OK when done. go.>",
+  complete_marker="MARK_<SLUG>_OK",
+  timeout_ms=600000
+)
+```
+After spawn, arm the per-worker Monitor using `monitor_arm_command` from the response. Wait for the Monitor notification. Then `claws_close` the terminal.
+
+**Bucket 3 — Independent parallel tasks**
+Signals: "run lint AND test AND typecheck", "audit modules A, B, C in parallel", explicit concurrency.
+Action:
+```
+claws_fleet(workers=[
+  {name:"worker-lint", mission:"...print MARK_LINT_OK when done. go."},
+  {name:"worker-test", mission:"...print MARK_TEST_OK when done. go."},
+], detach=true)
+```
+Arm one Monitor per `terminal_id` from the fleet response. Wait for all. Close all.
+
+**Bucket 4 — Coordinated multi-stage with sub-decomposition**
+Signals: "5-worker audit then synthesize", explicit "wave" or "army" terminology, N sub-workers + a coordinator.
+Action: spawn a LEAD via `claws_worker` whose mission uses `claws_wave_create` + `claws_dispatch_subworker` calls internally.
+
+## Hard rules
+
+- NEVER use the Bash tool to run the user's task — use `claws_exec` or `claws_worker`
+- NEVER manually sequence `claws_create` + `claws_send` to boot a Claude worker — `claws_worker` handles it
+- NEVER skip arming the Monitor after spawn — use `monitor_arm_command` from the spawn response
+- NEVER leave terminals open — auto-close on marker is the default
+- NEVER use raw socket node -e fallbacks — if MCP tools are absent, tell the user to reload VS Code
+
+## Examples
+```
+/claws-do run npm test
+/claws-do fix the failing test in auth.test.ts
+/claws-do run lint, test, and typecheck in parallel
+/claws-do launch a 4-worker audit wave with a LEAD
 ```
 
-Read `output` and `exitCode` from the result. Report both to the user. Done. No terminal to clean up — `claws_exec` is auto-managed.
-
-If `claws_exec` is not available, MCP failed to load — tell the user: "Reload VS Code (Cmd+Shift+P → Developer: Reload Window) and restart Claude Code in this project. The Claws MCP server is not connected." Stop here.
-
-## Path B — Claude Code worker (mission-shaped)
-
-Follow the 7-step boot sequence — every step in order, do not skip.
-
-1. `claws_lifecycle_plan(plan="<2-3 sentence plan>")` — required before any create.
-2. `claws_create(name="worker-<slug>", wrapped=true)` → terminal id N.
-3. `claws_send(id=N, text="claude --model claude-sonnet-4-6 --dangerously-skip-permissions")`
-4. Poll `claws_read_log` every 5s until output contains `"trust"` (~20s).
-5. `claws_send(id=N, text="1", newline=false)` — accept trust prompt.
-6. Poll `claws_read_log` every 5s until output contains `"bypass"` (~10s).
-7. `claws_send(id=N, text="<full mission text>", newline=false)`
-   `claws_send(id=N, text="\n", newline=false)` — submit (separate call).
-
-Then poll `claws_read_log` every 10s until `MISSION_COMPLETE` appears, harvest the output, and `claws_close(id=N)`.
-
-Every mission must end with `print MISSION_COMPLETE when done. go.`
-
-## NEVER do this
-
-- NEVER spawn a wrapped terminal and send raw shell commands into it. Wrapped terminals host Claude Code, not shells. If you only need a shell command, use `claws_exec`.
-- NEVER use the Bash tool for tasks the user asked /claws-do for.
-- NEVER skip the lifecycle plan call before `claws_create` — the server gate will reject the create.
-- NEVER skip the trust + bypass polling — the mission will be lost.
-- NEVER leave a terminal open. `claws_close` is mandatory.
-- NEVER delegate to the Agent tool — execute the boot sequence yourself.
-
-## If MCP tools are not loaded
-
-Tell the user: "Reload VS Code (Cmd+Shift+P → Developer: Reload Window) and restart Claude Code in this project. The Claws MCP server is not connected." Stop. Do NOT attempt a raw-socket workaround.
+## When NOT to use
+For status, use /claws-status. For cleanup, use /claws-cleanup. For install issues, use /claws-fix.

@@ -1,30 +1,36 @@
 ---
 name: claws
-description: Master command for Claws terminal orchestration. Context-aware — shows status if no args, or routes to the right action. The one command users need to remember.
+description: Master command for Claws terminal orchestration. Shows live status or routes to /claws-do.
 ---
 
-# /claws
+# /claws [task]
 
-The master command. Does the right thing based on context.
+## What this does
+Context-aware master command. With no arguments it shows a live dashboard of all active terminals and the Claws version. With arguments it forwards the request to /claws-do so you never need to remember which command to use.
 
-## What to do
+## Behavior
 
-If the user typed just `/claws` with no arguments:
+**No arguments — show status dashboard:**
+- Call `claws_list` to enumerate all active terminals
+- Read the first version line from CHANGELOG.md for the Claws version
+- Format terminals as a table: ID | Name | Wrapped | PID
+- End with: "Type /claws-do '<task>' to do anything. /claws-help for the full reference."
 
-1. Check if Claws is installed by looking for the socket:
-```bash
-test -S .claws/claws.sock 2>/dev/null && echo "CONNECTED" || echo "NOT_CONNECTED"
+**If `.claws/claws.sock` is absent:**
+- "Claws is not active. Reload VS Code: Cmd+Shift+P → Developer: Reload Window."
+- If `~/.claws-src` is missing: "Claws is not installed — contact your project owner."
+
+**With arguments:**
+- Treat the arguments as a task and execute /claws-do behavior directly.
+- Do not ask clarifying questions — classify and act.
+
+## Examples
+```
+/claws
+/claws fix the failing test in auth.test.ts
+/claws run npm test and show me the output
 ```
 
-2. If connected — show a live status dashboard:
-   - Run `claws_list` to show all terminals
-   - Show which are wrapped vs unwrapped
-   - Show the Claws version from `~/.claws-src/CHANGELOG.md` (first version line)
-   - End with: "Type `/claws do <task>` to get started, or `/claws learn` for the full guide."
-
-3. If not connected — guide them:
-   - "Claws extension isn't active yet. Reload VS Code: Cmd+Shift+P → Developer: Reload Window"
-   - If `~/.claws-src` doesn't exist: "Claws isn't installed. Run: `/claws setup`"
-
-4. If the user typed `/claws` with arguments, they probably meant one of the subcommands. Route them:
-   - "did you mean `/claws do`, `/claws go`, `/claws watch`, `/claws learn`, `/claws setup`, or `/claws update`?"
+## When NOT to use
+If you want the full command reference, use /claws-help.
+If you want to close terminals, use /claws-cleanup.

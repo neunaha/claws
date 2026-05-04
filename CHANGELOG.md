@@ -7,6 +7,13 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Changed (LH-13: command + skill consolidation — 27→8 commands, 6→3 skills)
+
+- Deleted 19 commands that duplicated MCP tools or taught the obsolete 7-step manual boot sequence; deleted 3 skills (`prompt-templates` duplicate, `claws-orchestration-engine` teaching manual boot, `dev-protocol-piafeur` internal-only)
+- All 8 surviving commands rewritten to ≤ 60 lines using a consistent 4-section template (What this does / Behavior / Examples / When NOT to use)
+- No manual `claws_create → claws_send → poll-for-trust → send-1 → poll-for-bypass → send-mission → send-newline` sequences anywhere; `claws_worker` / `claws_fleet` / `claws_dispatch_subworker` handle boot internally with LH-12 `--wait` Monitors
+- New user mental model: 5 daily commands (`/claws-do`, `/claws`, `/claws-status`, `/claws-cleanup`, `/claws-help`) + 3 system commands (`/claws-update`, `/claws-fix`, `/claws-report`); `/claws-do` routes into 4 buckets (exec, worker, fleet, wave)
+
 ## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
 
 ### Added (LH-stack regression suite — lock all LH-9/10/11/12 invariants against future tampering)
