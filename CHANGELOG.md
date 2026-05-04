@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed (continued)
 
 - RIP-F8: stripped duplicate "MUST follow — no exceptions" rules block from `templates/CLAUDE.project.md`. All five rules were already present verbatim in `templates/CLAUDE.global.md`. Project template now references machine-wide rules location instead. Test: `extension/test/rip-duplicate-must.test.js`.
-- RIP-F2: stripped F1/F2/F3 final-actions convention from `templates/CLAUDE.global.md` and `templates/CLAUDE.project.md`. Convention was pure honor system — workers frequently skipped F3 (printf marker) causing false timeout reports. Wave D (`onDidCloseTerminal → terminated`) and Phase 4a bus completion make it redundant. Replaced with brief note: workers complete via bus publish (`worker.<id>.complete`) or natural terminal close. Test: `extension/test/rip-f1f2f3.test.js` (3/3).
+- RIP-F2: stripped F1/F2/F3 final-actions convention from `templates/CLAUDE.global.md` and `templates/CLAUDE.project.md`. Convention was pure honor system — workers frequently skipped F3 (printf marker) causing false timeout reports. Wave D (`onDidCloseTerminal → terminated`) and Phase 4a bus completion make it redundant. Replaced with brief note: workers complete via bus publish (`worker.<id>.complete`) or natural terminal close. Also stripped the stale "F3 below" reference from the Phase 4a fallback chain description. Test: `extension/test/rip-f1f2f3.test.js` (3/3).
 
 ### Fixed
 

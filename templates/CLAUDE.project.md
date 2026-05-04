@@ -92,6 +92,7 @@ LEAD sub-worker additionally:
 - Publishes `wave.<waveId>.lead.boot` (WaveLeadBootV1) and `wave.<waveId>.lead.complete` (WaveLeadCompleteV1).
 - Owns the final `git commit`; may not commit until tester confirms green.
 
+Workers complete via bus publish (`worker.<id>.complete`) or natural terminal close. No marker required.
 
 ## Development Discipline (enforced by hooks)
 
