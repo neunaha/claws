@@ -7,6 +7,16 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Fixed (LH-15: shell-worker marker — regex tolerance + auto-wrap)
+
+Two coordinated bugs prevented claws_worker(command=...) shell missions from auto-closing reliably. Discovered via the LH-14 A/B validation test: terms 18 + 19 both timed out despite the marker firing in the pty.
+
+**Root cause 1 (regex):** findStandaloneMarker required only tab/space before the marker. zsh emits a backslash line-wrap artifact when long bracketed-paste commands echo near the right margin (e.g. "\__CLAWS_DONE__"), which broke the anchor. Claude TUI workers were unaffected because their markers are preceded by ⏺/⎿ bullets the regex already tolerated. Fix: extend the leading character class to also match backslashes.
+
+**Root cause 2 (no auto-wrap):** Shell users frequently forget to include the completion marker. Even when remembered, the regex bug above could prevent detection. Fix: claws_worker now server-side wraps every args.command with `printf '[CLAWS_PUB] topic=worker.<id>.complete data={"ok":true}' ; printf '%s\n' '__CLAWS_DONE__'`. Bus event + canonical marker both fire after user's command finishes (semicolon separator so wrapping fires even on non-zero exit). Idempotent — if user already includes the marker, the duplicate is harmless.
+
+8 new findStandaloneMarker unit tests + 4 new regression checks lock both fixes against drift. Combined suite: 102 → 110 PASS.
+
 ### Changed (LH-14: completion convention — __CLAWS_DONE__ marker + claws_publish PRIMARY)
 
 Closes the Final Report TUI hang gap. Claude workers occasionally finished their work but skipped the F3 printf marker because they treated it as redundant narration ("I already said I'm done"). The LH-13 consolidation worker hit this exact gap and required manual close.

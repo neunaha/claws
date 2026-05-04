@@ -456,23 +456,41 @@ function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// LH-15: server-side auto-wrap for claws_worker(command=...) shell missions.
+// Appends bus-event publish + canonical __CLAWS_DONE__ marker. Idempotent —
+// if user's command already contains the marker or [CLAWS_PUB] line, the
+// suffix is harmless (first occurrence triggers close, later ones ignored).
+function wrapShellCommand(rawCommand, terminalId) {
+  if (!rawCommand || typeof rawCommand !== 'string') return rawCommand;
+  const trimmed = rawCommand.trim();
+  const sep = (trimmed.endsWith(';') || trimmed.endsWith('&')) ? ' ' : ' ; ';
+  const tid = String(terminalId);
+  // Use semicolons (not &&) so wrapping fires even if user's command exits non-zero.
+  return `${rawCommand}${sep}printf '[CLAWS_PUB] topic=worker.${tid}.complete data={"ok":true}\\n' ; printf '%s\\n' '__CLAWS_DONE__'`;
+}
+
 // Find marker only when it appears in tool/output context — never in prose.
 // Real Claude pty patterns the matcher MUST accept:
 //   • bare-shell printf:        "MARKER\n"
 //   • Claude text response:     "⏺MARKER<trailing-spaces>\r…"
 //   • Claude tool-result line:  "  ⎿  MARKER\r…"
+//   • shell worker (LH-15):     "\MARKER\n"  (zsh wrap artifact)
 // Prose collisions the matcher MUST reject:
 //   • mission restatement:      "step 4. Echo MARKER on its own line."
 //   • shell command echo:       "% echo MARKER"
 //   • Claude action header:     "⏺Bash(echo 'MARKER')" — wait for the actual
 //                                tool result instead, never false-complete on
 //                                a Bash command that hasn't run yet.
-// Anchor: line start → optional whitespace → optional ⏺/⎿ indicator →
-//         optional whitespace → exact marker → whitespace/newline/EOT.
+// Anchor: line start → optional whitespace OR backslash (zsh wrap artifact) →
+//         optional ⏺/⎿ indicator → optional whitespace → exact marker →
+//         whitespace/newline/EOT.
 function findStandaloneMarker(text, marker) {
   if (!marker || typeof marker !== 'string' || !text) return null;
+  // Leading class tolerates zsh's `\` line-wrap artifact (emitted when prompt/echo wraps near
+  // right margin in long bracketed-paste commands). Without this, shell workers with long command
+  // lines miss marker detection. Verified live LH-15 (term 18 in v0.7.13).
   const re = new RegExp(
-    '(?:^|[\\r\\n])[\\t ]*[⏺⎿]?[\\t ]*' + escapeRegex(marker) + '(?=[\\t \\r\\n]|$)'
+    '(?:^|[\\r\\n])[\\t \\\\]*[⏺⎿]?[\\t ]*' + escapeRegex(marker) + '(?=[\\t \\r\\n]|$)'
   );
   const m = re.exec(text);
   if (m === null) return null;
@@ -1051,7 +1069,7 @@ async function runBlockingWorker(sock, args) {
   // Verified: identical mission via claws_send (no augmentation) submits ✓.
   // Send mission DIRECTLY, no preamble.
   const payload = hasMission ? safeMission
-                : hasCommand ? args.command
+                : hasCommand ? wrapShellCommand(args.command, termId)
                 : '';
 
   if (payload) {
@@ -1910,7 +1928,7 @@ async function _dispatchTool(name, args, sock) {
     const _fpPhase4Header = hasMission ? `## Completion signaling (REQUIRED — do this BEFORE your final assistant message)\n\nYour terminal_id is ${termId}. The completion sequence has THREE INDEPENDENT LAYERS — fire ALL THREE in order. Each is a separate, deliberate action; do NOT collapse them into one summary message.\n\nLAYER 1 (PRIMARY — MCP tool call, REQUIRED):\n  claws_publish(\n    topic="worker.${termId}.complete",\n    payload={"status": "completed", "marker": "__CLAWS_DONE__"}\n  )\n\nLAYER 2 (BACKUP — Bash tool call, REQUIRED):\n  printf '%s\\n' '__CLAWS_DONE__'\n\nLAYER 3 (BACKUP — chat narration):\n  End your final assistant message with the literal string __CLAWS_DONE__ on its own line.\n\nWhy three layers: Layer 1 is structural (MCP call → bus event); Layer 2 is independent (Bash → pty bytes); Layer 3 catches the case where you skip both tool calls and just narrate. Three independent paths so a single behavior slip doesn't leave the worker hanging.\n\nRun all three. If you skip Layer 1 because you "already said you're done in chat" — you didn't actually do it. The publish is the action. Run it.\n\n---\n` : '';
     const payload = hasMission
       ? (_fpPhase4Header + args.mission).replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
-      : hasCommand ? args.command : '';
+      : hasCommand ? wrapShellCommand(args.command, termId) : '';
     // BUG-A: track log offset after mission injection so detectCompletion never
     // false-positives on marker strings embedded in the mission body itself.
     let _fpMarkerScanFrom = 0;

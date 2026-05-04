@@ -343,6 +343,60 @@ check(
   );
 }
 
+// ─── SECTION I — LH-15 marker tolerance + auto-wrap (4 checks) ──────────────
+// Ref commit: LH-15 — zsh wrap-artifact regex fix + server-side wrapShellCommand
+
+// I1: findStandaloneMarker regex contains backslash-tolerant leading class
+check(
+  'I1: findStandaloneMarker regex contains backslash-tolerant leading class [\\t \\\\]*',
+  /\[\\\\t \\\\\\\\\]\*/.test(MCP) || MCP.includes('[\\\\t \\\\\\\\]*') || /\[\\t \\\\\]\*/.test(MCP) ||
+  // check the actual source string that was written
+  MCP.includes('[\\t \\\\]*'),
+  'findStandaloneMarker leading class must match backslashes to tolerate zsh wrap artifact (LH-15)',
+);
+
+// I2: mcp_server.js declares wrapShellCommand function
+check(
+  'I2: mcp_server.js declares function wrapShellCommand',
+  MCP.includes('function wrapShellCommand'),
+  'wrapShellCommand must be declared in mcp_server.js (LH-15 auto-wrap for shell workers)',
+);
+
+// I3: mcp_server.js calls wrapShellCommand(args.command, ...) at least once
+check(
+  'I3: mcp_server.js calls wrapShellCommand(args.command, ...) at least once',
+  MCP.includes('wrapShellCommand(args.command,'),
+  'Auto-wrap must be wired — wrapShellCommand(args.command, ...) call must appear in mcp_server.js',
+);
+
+// I4: no bare args.command in payload assignment outside wrapShellCommand definition
+{
+  // Find all lines containing 'args.command' excluding the definition of wrapShellCommand itself
+  const lines = MCP.split('\n');
+  const suspiciousLines = lines.filter(line => {
+    if (!line.includes('args.command')) return false;
+    // Allow: inside wrapShellCommand body (rawCommand param used here)
+    if (line.includes('function wrapShellCommand')) return false;
+    // Allow: wrapShellCommand call (wrapping properly)
+    if (line.includes('wrapShellCommand(args.command')) return false;
+    // Allow: hasCommand declaration (typeof check, no send)
+    if (line.includes('typeof args.command')) return false;
+    // Allow: fileExec call (different code path, not worker payload)
+    if (line.includes('fileExec(')) return false;
+    // Allow: log/comment lines
+    if (/^\s*\/\//.test(line)) return false;
+    // Any remaining 'args.command' in a payload context is suspicious
+    if (line.includes('? args.command') || line.includes(': args.command')) return true;
+    return false;
+  });
+  check(
+    'I4: no bare args.command in payload assignment outside wrapShellCommand',
+    suspiciousLines.length === 0,
+    `Found ${suspiciousLines.length} bare args.command payload site(s):\n` +
+      suspiciousLines.map(l => '        ' + l.trim()).join('\n'),
+  );
+}
+
 // ─── Print results ─────────────────────────────────────────────────────────────
 
 const total = passed + failed;
