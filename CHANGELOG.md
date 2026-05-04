@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
 
+### Added (LH-stack regression suite — lock all LH-9/10/11/12 invariants against future tampering)
+
+`extension/test/lh-stack-regression.test.js` — 30 static + runtime checks across 7 sections (A–G):
+Section A locks Stop-hook defang (no `net.createConnection`, no lifecycle mutation calls);
+Section B verifies TTL constant numeric values (600000 ms = 10 min, 14400000 ms = 4 h, 24× ratio);
+Section C locks schema membership (`terminal_id` field, `user`/`orchestrator`/`wave_violation` enum members);
+Section D locks the LH-12 Monitor template (exactly 5 `--wait` sites, zero awk/grep/CLAWS_TOPIC= vestiges, correct description/timeout envelope);
+Section E verifies `stream-events.js` source contracts (`--wait` parsing, UUID regex, subscription topics, mutual exclusion);
+Section F provides runtime smoke (invalid `--timeout-ms` values exit 1, unreachable socket exits non-zero);
+Section G checks cross-layer coherence (STREAM_EVENTS_JS declaration, UUID regex validates `crypto.randomUUID()` output).
+**PASS:30 FAIL:0**. No duplicates with `lh9-state-bulletproof` (40), `lifecycle-store` (58), or `stream-events-wait` (8).
+
 ### Changed (LH-12: native --wait mode in stream-events.js — eliminate Monitor regex layer)
 
 Replaced the 5-layer awk/grep `monitor_arm_command` pipeline with a native `--wait <uuid>` mode in `scripts/stream-events.js`. The shell pipeline (JS template literal → JSON → shell command → awk regex → grep regex) accumulated five quoting layers and was the structural root of LH-11's regex bug and its LH-11.1 fix. LH-12 pushes the filter into Node.js itself — no regex, no awk, no shell expansion, just direct string equality on `payload.correlation_id`.
