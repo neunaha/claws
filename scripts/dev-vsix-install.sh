@@ -23,9 +23,24 @@ EXT_DIR="$REPO_ROOT/extension"
 VSIX_OUT="${TMPDIR:-/tmp}/claws-dev-$(date +%s).vsix"
 
 [ -d "$EXT_DIR" ] || { echo "[dev-vsix-install] FATAL: $EXT_DIR not found" >&2; exit 1; }
-command -v code >/dev/null 2>&1 || {
-  echo "[dev-vsix-install] FATAL: 'code' CLI not on PATH" >&2
-  echo "[dev-vsix-install]   Install via VS Code: Cmd+Shift+P → 'Shell Command: Install code in PATH'" >&2
+
+# Resolve the VS Code CLI. Mirrors install.sh::_find_editor_cli — PATH first,
+# then macOS app-bundle fallback. Lets the script work from worker terminals
+# whose PATH may not include /usr/local/bin.
+_find_code_cli() {
+  command -v code 2>/dev/null && return 0
+  case "$(uname -s)" in
+    Darwin)
+      local p="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+      [ -x "$p" ] && echo "$p" && return 0
+      ;;
+  esac
+  return 1
+}
+CODE_CLI="$(_find_code_cli)" || {
+  echo "[dev-vsix-install] FATAL: 'code' CLI not found" >&2
+  echo "[dev-vsix-install]   tried: PATH, /Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" >&2
+  echo "[dev-vsix-install]   install via VS Code: Cmd+Shift+P -> 'Shell Command: Install code in PATH'" >&2
   exit 1
 }
 
@@ -37,8 +52,8 @@ echo "[dev-vsix-install] step 2/3 — packaging VSIX → $VSIX_OUT"
     --skip-license --no-git-tag-version --no-update-package-json \
     --out "$VSIX_OUT" )
 
-echo "[dev-vsix-install] step 3/3 — installing into VS Code"
-code --install-extension "$VSIX_OUT" --force
+echo "[dev-vsix-install] step 3/3 — installing into VS Code via $CODE_CLI"
+"$CODE_CLI" --install-extension "$VSIX_OUT" --force
 echo
 echo "[dev-vsix-install] install complete — reload required:"
 echo "[dev-vsix-install]    Cmd+Shift+P -> Developer: Reload Window"

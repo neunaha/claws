@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added (dev tooling)
 
 - `scripts/dev-vsix-install.sh` + `npm run install:vsix` (in `extension/`) — full extension reinstall path: `npm run build` → `vsce package` → `code --install-extension --force`. Complements the existing fast `npm run deploy:dev` (~5s, copies dist into installed dir but does not refresh `extensions.json` metadata). Use `install:vsix` (~25s) when you want VS Code's Extensions panel to actually reflect the new install (refreshes `installedTimestamp`, version label, panel date) — prevents silently iterating against a stale extension. Reload window after running.
+- `scripts/dev-vsix-install.sh` resolves the VS Code CLI via PATH first, then falls back to `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code` on macOS. Mirrors `install.sh::_find_editor_cli`. Required for the script to work from worker terminals whose PATH does not include the `code` symlink (the symlink is created by Cmd+Shift+P → 'Shell Command: Install code in PATH', not always present in a fresh shell).
 
 ### Added (LH-1: wave violation auto-close)
 
