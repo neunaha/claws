@@ -1873,6 +1873,7 @@ async function _dispatchTool(name, args, sock) {
       correlationId: _fpCorrId,
     });
     let _fpHbLastPublishedAt = Date.now();
+    let _fpMissionCompletePublished = false;  // HB-L7: one-shot guard
 
     const _fpTick = async () => {
       try {
@@ -1892,7 +1893,7 @@ async function _dispatchTool(name, args, sock) {
         // HB-L4-fix: state machine observes pty for backstop heartbeat publishing.
         // L5+ will add progress/approach/error/mission_complete kinds; this layer is liveness only.
         try {
-          _fpHbState.observe(text);
+          const _fpTransitions = _fpHbState.observe(text);
           const _fpHbNow = Date.now();
           if (_fpHbNow - _fpHbLastPublishedAt >= 30000) {
             const fpHbSnap = _fpHbState.snapshot();
@@ -1914,6 +1915,32 @@ async function _dispatchTool(name, args, sock) {
               },
             });
             _fpHbLastPublishedAt = _fpHbNow;
+          }
+          // HB-L7: POST_WORK→COMPLETE fires kind=mission_complete heartbeat (observation only)
+          const _fpCompleteThisTick = _fpTransitions.some(t => t.from === 'POST_WORK' && t.to === 'COMPLETE');
+          if (_fpCompleteThisTick && !_fpMissionCompletePublished) {
+            _fpMissionCompletePublished = true;
+            const fpMcSnap = _fpHbState.snapshot();
+            const durMs = fpMcSnap.durationMs;
+            const durMin = Math.floor(durMs / 60000);
+            const durSec = Math.floor((durMs % 60000) / 1000);
+            const mcSummary = `mission complete · ${durMin}m ${durSec}s · ${fpMcSnap.toolCount} tool calls`;
+            await _pconnEnsureRegistered(sock);
+            await _pconnWrite({
+              cmd: 'publish', protocol: 'claws/2',
+              topic: `worker.${termId}.heartbeat`,
+              payload: {
+                kind: 'mission_complete',
+                summary: mcSummary,
+                current_action: 'COMPLETE',
+                duration_ms: durMs,
+                total_tool_calls: fpMcSnap.toolCount,
+                tokens_in: fpMcSnap.cumulative.tokens_in || undefined,
+                tokens_out: fpMcSnap.cumulative.tokens_out || undefined,
+                captured_at: new Date().toISOString(),
+                correlation_id: _fpCorrId,
+              },
+            });
           }
         } catch (e) {
           log('hb-l4 fast-path backstop publish failed: ' + (e && e.message || e));
