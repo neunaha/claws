@@ -617,18 +617,14 @@ function parseSpinnerActivity(text, sinceOffset) {
  */
 function parsePromptIdle(text) {
   if (!text || typeof text !== 'string') return false;
+  // Claude TUI shows "⏵⏵ bypass permissions on (shift+tab to cycle)" only when
+  // at the idle ❯ prompt awaiting input. The previous ❯ regex never matched
+  // because ANSI strip collapses the box-drawing border + ❯ onto a single line.
+  // Bypass-permissions string is plain text that survives strip cleanly.
+  // Scan the last ~30 lines of stripped pty (footer is always near the end).
   const lines = text.trimEnd().split(/\r?\n/);
-  // Claude TUI renders the prompt as a line containing only `❯` (with optional
-  // trailing whitespace). The actual LAST non-empty lines are the boxed footer
-  // (bypass permissions, cost), so we scan the last ~10 lines instead of just
-  // the trailing one. The prompt being VISIBLE (not "Claude is thinking…")
-  // is the signal we want.
-  const tail = lines.slice(-10);
-  for (const raw of tail) {
-    const line = raw.trim();
-    if (/^❯\s*$/.test(line)) return true;
-  }
-  return false;
+  const tail = lines.slice(-30).join('\n');
+  return tail.includes('bypass permissions on');
 }
 
 /**
