@@ -1873,6 +1873,9 @@ async function _dispatchTool(name, args, sock) {
     let _fpHbLastPublishedAt = Date.now();
     let _fpMissionCompletePublished = false;  // HB-L7: one-shot guard
     let _fpTuiIdleCompleted = false;          // HB-L8: tui_idle completion guard
+    let _fpProgressBurst = [];               // HB-L5: tool events in current window
+    let _fpProgressBurstStart = 0;           // HB-L5: window open timestamp
+    let _fpLastPublishedToolCount = 0;       // HB-L5: toolCount at last progress publish
 
     const _fpTick = async () => {
       try {
@@ -1914,6 +1917,38 @@ async function _dispatchTool(name, args, sock) {
               },
             });
             _fpHbLastPublishedAt = _fpHbNow;
+          }
+          // HB-L5: progress event burst aggregation (5s window, fast-path watcher only)
+          const _fpL5Snap = _fpHbState.snapshot();
+          const _fpNewTools = _fpL5Snap.toolCount - _fpLastPublishedToolCount;
+          if (_fpNewTools > 0) {
+            _fpProgressBurst.push({ kind: 'tools', count: _fpNewTools, ts: Date.now() });
+            if (_fpProgressBurstStart === 0) _fpProgressBurstStart = Date.now();
+            _fpLastPublishedToolCount = _fpL5Snap.toolCount;
+          }
+          if (_fpProgressBurst.length > 0 && (Date.now() - _fpProgressBurstStart) >= 5000) {
+            const _fpBurstTotal = _fpProgressBurst.reduce((a, e) => a + e.count, 0);
+            const _fpBurstElapsed = Math.round((Date.now() - _fpProgressBurstStart) / 1000);
+            try {
+              await _pconnEnsureRegistered(sock);
+              await _pconnWrite({
+                cmd: 'publish', protocol: 'claws/2',
+                topic: `worker.${termId}.heartbeat`,
+                payload: {
+                  kind: 'progress',
+                  summary: `${_fpBurstTotal} tool call${_fpBurstTotal !== 1 ? 's' : ''} in last ${_fpBurstElapsed}s`,
+                  current_action: _fpL5Snap.state,
+                  duration_ms: _fpL5Snap.durationMs,
+                  total_tool_calls: _fpL5Snap.toolCount,
+                  tokens_in: _fpL5Snap.cumulative.tokens_in || undefined,
+                  tokens_out: _fpL5Snap.cumulative.tokens_out || undefined,
+                  captured_at: new Date().toISOString(),
+                  correlation_id: _fpCorrId,
+                },
+              });
+            } catch (e) { log('hb-l5 progress publish failed: ' + (e && e.message || e)); }
+            _fpProgressBurst = [];
+            _fpProgressBurstStart = 0;
           }
           // HB-L7: POST_WORK→COMPLETE fires kind=mission_complete heartbeat (observation only)
           const _fpCompleteThisTick = _fpTransitions.some(t => t.from === 'POST_WORK' && t.to === 'COMPLETE');
