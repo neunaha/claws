@@ -51,6 +51,25 @@ When you receive a Wave Army mission you are a sub-worker. You MUST:
    - Print the role sentinel ONLY AFTER the complete event is published. The LEAD waits on this
      event via `claws_drain_events`; if the sentinel appears before the event, the LEAD may time out.
 
+### Phase 4a — bus-based completion (PREFERRED)
+
+Workers spawned by `claws_worker` / `claws_fleet` / `claws_dispatch_subworker` receive a header at the top of their mission that identifies their `terminal_id` and instructs them to publish completion directly to the bus:
+
+```
+claws_publish(topic="worker.<termId>.complete", payload={"status":"completed"})
+```
+
+The orchestrator's watcher subscribes to `worker.+.complete` (wildcard) via the persistent `_pconn` connection. When the push frame arrives, `detectCompletion` fires immediately with `signal: 'pub_complete_v2'` — bypassing all pty scraping. Round-trip latency is ~100ms.
+
+**Why this is preferred over pty marker scraping:**
+- No ANSI strip artifacts (⏺/⎿ box-drawing chars corrupting marker text)
+- No Claude TUI version-specific rendering differences
+- No race with Claude's prompt-suggestion-accept (1500ms tick)
+- Mission text containing the marker string cannot cause false-positives
+- Works even when pty output is buffered or delayed
+
+**Fallback chain** (if bus publish is not called): pty marker → error marker → pub_complete-v1 → terminated (Wave D). The pty marker (F3 below) remains mandatory as the fallback for shell-only or SDK-less workers.
+
 ### Worker final-actions convention (F1/F2/F3)
 
 **IMPORTANT**: Claude TUI workers frequently skip the printf marker — they finish writing the Final Report as a plain assistant message and stop without running the required Bash tool call. The watcher then reports a misleading "timeout" even though the work succeeded.

@@ -187,6 +187,11 @@ let _pconnConnecting = null; // Promise | null — guards concurrent connect att
 const _workerTerminatedSet = new Set();
 // True once _pconn has subscribed to system.worker.terminated.
 let _workerTerminatedSubscribed = false;
+// Phase 4a — bus-based completion: termId -> { payload, ts } for workers that published
+// worker.<termId>.complete directly to the bus. Checked first in detectCompletion,
+// bypassing pty scraping entirely. Map is append-only; entries survive until the MCP server exits.
+const _workerCompletedViaBusSet = new Map();
+let _workerBusCompletedSubscribed = false;
 let _helloInFlight   = null; // Promise | null — deduplicates concurrent hello sends
 
 // Circuit breaker for _pconnEnsureRegistered and _scanAndPublishCLAWSPUB.
@@ -237,6 +242,12 @@ function _pconnHandleData(data) {
         if (entry.topic === 'system.worker.terminated' && entry.payload && entry.payload.terminal_id) {
           _workerTerminatedSet.add(String(entry.payload.terminal_id));
         }
+        // Phase 4a: bus-based completion — worker.<termId>.complete wildcard.
+        if (entry.topic && /^worker\.[^.]+\.complete$/.test(entry.topic) && entry.payload) {
+          const _busTermId = entry.topic.split('.')[1];
+          _workerCompletedViaBusSet.set(String(_busTermId), { payload: entry.payload, ts: Date.now() });
+          log(`Phase 4a: received worker.${_busTermId}.complete via bus, payload: ${JSON.stringify(entry.payload).slice(0, 120)}`);
+        }
         if (_eventBuffer.ring.length > _eventBuffer.maxSize) {
           _eventBuffer.ring.shift();
           // Emit ring-overflow once per eviction so callers know events were dropped.
@@ -270,6 +281,7 @@ function _pconnHandleClose() {
   _pconn.peerId = null;
   _eventBuffer.subscribed = false; // reconnect requires fresh auto-subscribe
   _workerTerminatedSubscribed = false; // reconnect requires re-subscribe
+  _workerBusCompletedSubscribed = false; // reconnect requires re-subscribe
   for (const [, { reject, timer }] of _pconn.pending) {
     clearTimeout(timer);
     reject(new Error('persistent socket closed'));
@@ -825,20 +837,26 @@ class WorkerHeartbeatStateMachine {
 // workers mid-thinking and contradicted the pub/sub event-driven architecture.
 // Proper completion fallback will come from VS Code's onDidCloseTerminal →
 // system.worker.terminated bus event (planned).
-function detectCompletion(text, opt, termId, terminatedSet) {
-  // 1. marker
+function detectCompletion(text, opt, termId, terminatedSet, busCompletedSet) {
+  // 1. Phase 4a: bus completion — highest priority, bypasses pty scraping entirely.
+  if (busCompletedSet && busCompletedSet.has(String(termId))) {
+    const _busEntry = busCompletedSet.get(String(termId));
+    const _busStatus = _busEntry.payload && _busEntry.payload.status === 'failed' ? 'failed' : 'completed';
+    return { status: _busStatus, line: _busEntry.payload && _busEntry.payload.summary || null, signal: 'pub_complete_v2' };
+  }
+  // 2. marker
   const m = findStandaloneMarker(text, opt.complete_marker);
   if (m !== null) return { status: 'completed', line: m, signal: 'marker' };
-  // 2. error
+  // 3. error
   for (const em of (opt.error_markers || [])) {
     const e = em ? findStandaloneMarker(text, em) : null;
     if (e !== null) return { status: 'failed', line: e, signal: 'error' };
   }
-  // 3. explicit pub-complete: [CLAWS_PUB] topic=worker.<termId>.complete
+  // 4. explicit pub-complete: [CLAWS_PUB] topic=worker.<termId>.complete
   const pubTopic = `worker.${termId}.complete`;
   const pubLine = findStandaloneMarker(text, `[CLAWS_PUB] topic=${pubTopic}`);
   if (pubLine !== null) return { status: 'completed', line: pubLine, signal: 'pub_complete' };
-  // 4. terminated: VS Code onDidCloseTerminal → system.worker.terminated bus event.
+  // 5. terminated: VS Code onDidCloseTerminal → system.worker.terminated bus event.
   //    Belt-and-suspenders for workers that succeed but skip the printf marker.
   if (terminatedSet && terminatedSet.has(String(termId))) {
     return { status: 'terminated', line: null, signal: 'terminated' };
@@ -984,8 +1002,10 @@ async function runBlockingWorker(sock, args) {
   // to write the mission to /tmp and send a "Read <file>..." referrer to dodge
   // some pty quirk, the answer is NO. The mission is a user prompt. Period.
   // Strip bracketed-paste escape sequences so a crafted mission cannot break out of paste mode.
+  // Phase 4a: prepend bus-completion header so workers know to publish worker.<termId>.complete.
+  const _phase4Header = hasMission ? `## Worker identity (Phase 4a)\nYour terminal_id is ${termId}. When your mission is complete, publish to the bus:\n  claws_publish(topic="worker.${termId}.complete", payload={"status":"completed"})\nThis signals completion via the bus — more reliable than pty marker scraping. Marker stays as fallback.\n\n---\n` : '';
   const safeMission = hasMission
-    ? args.mission.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
+    ? (_phase4Header + args.mission).replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
     : args.mission;
   // ROOT CAUSE FIX (2026-05-02): mission augmentation with CLAWS_PUB preamble was
   // breaking Claude TUI multi-line submission. Preamble added ~5 extra lines +
@@ -1094,7 +1114,7 @@ async function runBlockingWorker(sock, args) {
           _msState.lastGrowthAt = _now;
           _msState.lastLen = text.length;
         }
-        const _det = detectCompletion(scanText, opt, String(termId), _workerTerminatedSet);
+        const _det = detectCompletion(scanText, opt, String(termId), _workerTerminatedSet, _workerCompletedViaBusSet);
         if (_det !== null) {
           status = _det.status;
           markerLine = _det.line;
@@ -1152,7 +1172,7 @@ async function runBlockingWorker(sock, args) {
     pubScanOffset = text.length;
 
     const _bNow = Date.now();
-    const _bDet = detectCompletion(scanText, opt, String(termId), _workerTerminatedSet);
+    const _bDet = detectCompletion(scanText, opt, String(termId), _workerTerminatedSet, _workerCompletedViaBusSet);
     if (_bDet !== null) {
       status = _bDet.status;
       markerLine = _bDet.line;
@@ -1367,6 +1387,14 @@ async function _pconnEnsureRegistered(sockPath) {
       const sr = await _pconnWrite({ cmd: 'subscribe', protocol: 'claws/2', topic: 'system.worker.terminated' }, 5000);
       if (sr && sr.ok) _workerTerminatedSubscribed = true;
     } catch { /* non-fatal; watcher falls back to marker/error/pub_complete signals */ }
+  }
+  // Phase 4a: subscribe to worker.+.complete wildcard so bus-published completions
+  // populate _workerCompletedViaBusSet for the highest-priority completion signal.
+  if (_pconn.peerId && !_workerBusCompletedSubscribed) {
+    try {
+      const sr2 = await _pconnWrite({ cmd: 'subscribe', protocol: 'claws/2', topic: 'worker.+.complete' }, 5000);
+      if (sr2 && sr2.ok) _workerBusCompletedSubscribed = true;
+    } catch { /* non-fatal */ }
   }
 }
 
@@ -1815,8 +1843,10 @@ async function _dispatchTool(name, args, sock) {
       await sleep(5000);
     }
 
+    // Phase 4a: prepend bus-completion header so the worker knows to publish worker.<termId>.complete.
+    const _fpPhase4Header = hasMission ? `## Worker identity (Phase 4a)\nYour terminal_id is ${termId}. When your mission is complete, publish to the bus:\n  claws_publish(topic="worker.${termId}.complete", payload={"status":"completed"})\nThis signals completion via the bus — more reliable than pty marker scraping. Marker stays as fallback.\n\n---\n` : '';
     const payload = hasMission
-      ? args.mission.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
+      ? (_fpPhase4Header + args.mission).replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
       : hasCommand ? args.command : '';
     // BUG-A: track log offset after mission injection so detectCompletion never
     // false-positives on marker strings embedded in the mission body itself.
@@ -2006,7 +2036,7 @@ async function _dispatchTool(name, args, sock) {
         // BUG-A: slice past mission body so marker strings in the mission text
         // don't trigger false-positive completion before work begins.
         const _fpScanText = text.length > _fpMarkerScanFrom ? text.slice(_fpMarkerScanFrom) : '';
-        const _fpDet = detectCompletion(_fpScanText, _fpOpt, String(termId), _workerTerminatedSet);
+        const _fpDet = detectCompletion(_fpScanText, _fpOpt, String(termId), _workerTerminatedSet, _workerCompletedViaBusSet);
         const _fpStatus = _fpDet ? _fpDet.status : null;
         const _fpMarkerLine = _fpDet ? _fpDet.line : null;
         const _fpSignal = _fpDet ? _fpDet.signal : null;
@@ -2140,7 +2170,7 @@ async function _dispatchTool(name, args, sock) {
           const snap = await clawsRpc(sock, { cmd: 'readLog', id: s.id, strip: true, limit: 64 * 1024 });
           const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
           const scanText = text.length > s.scanFrom ? text.slice(s.scanFrom) : '';
-          const det = detectCompletion(scanText, detectOpt, s.id, _workerTerminatedSet);
+          const det = detectCompletion(scanText, detectOpt, s.id, _workerTerminatedSet, _workerCompletedViaBusSet);
           if (det !== null) {
             s.status = det.status;
             s.signal = det.signal;
@@ -2416,7 +2446,9 @@ async function _dispatchTool(name, args, sock) {
     // BUG-08: fire-and-forget — return after create so parallel dispatch_subworker calls don't serialize.
     const _dswSock = sock;
     // GAP-D1: strip bracketed-paste escapes from mission to prevent keystroke injection.
-    const _dswMission = (args.mission || '').replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
+    // Phase 4a: prepend bus-completion header so sub-worker publishes worker.<termId>.complete.
+    const _dswPhase4Header = `## Worker identity (Phase 4a)\nYour terminal_id is ${termId}. When your mission is complete, publish to the bus:\n  claws_publish(topic="worker.${termId}.complete", payload={"status":"completed"})\nThis signals completion via the bus — more reliable than pty marker scraping. Marker stays as fallback.\n\n---\n`;
+    const _dswMission = (_dswPhase4Header + (args.mission || '')).replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
     const _dswWid = args.waveId;
     const _dswRole = args.role;
     // BUG-09: capture watcher options for auto-close watcher registered after mission send.
@@ -2599,7 +2631,7 @@ async function _dispatchTool(name, args, sock) {
             _dswScanOffset = text.length;
             // BUG-C fix: scan completion only from post-mission offset to prevent false-positive detection.
             const _dswDetText = text.slice(_dswMarkerScanFrom);
-            const _dswDet = detectCompletion(_dswDetText, _dswOpt, String(termId), _workerTerminatedSet);
+            const _dswDet = detectCompletion(_dswDetText, _dswOpt, String(termId), _workerTerminatedSet, _workerCompletedViaBusSet);
             const _dswStatus = _dswDet ? _dswDet.status : null;
             const _dswMarkerLine = _dswDet ? _dswDet.line : null;
             const _dswSignal = _dswDet ? _dswDet.signal : null;
