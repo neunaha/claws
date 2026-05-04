@@ -617,14 +617,16 @@ function parseSpinnerActivity(text, sinceOffset) {
  */
 function parsePromptIdle(text) {
   if (!text || typeof text !== 'string') return false;
-  // Strip trailing whitespace/newlines and check the last non-empty line
   const lines = text.trimEnd().split(/\r?\n/);
-  // Walk backward to find last non-empty line
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    // The idle prompt is "❯ " (optionally with trailing spaces)
-    return /^❯\s*$/.test(line);
+  // Claude TUI renders the prompt as a line containing only `❯` (with optional
+  // trailing whitespace). The actual LAST non-empty lines are the boxed footer
+  // (bypass permissions, cost), so we scan the last ~10 lines instead of just
+  // the trailing one. The prompt being VISIBLE (not "Claude is thinking…")
+  // is the signal we want.
+  const tail = lines.slice(-10);
+  for (const raw of tail) {
+    const line = raw.trim();
+    if (/^❯\s*$/.test(line)) return true;
   }
   return false;
 }
