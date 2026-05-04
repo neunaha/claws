@@ -130,6 +130,10 @@ function makeHookEntry(matcher, scriptName) {
     { event: 'SessionStart', scriptName: 'session-start-claws.js', entry: makeHookEntry('*', 'session-start-claws.js') },
     // PreToolUse '*': Bash long-running guard + Edit/Write mcp_server.js guard
     { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('*', 'pre-tool-use-claws.js') },
+    // F32 (v0.7.13-hook-p1): block git commit --no-verify and similar bypass flags.
+    // advisory-mechanism-audit Finding F32: highest-ROI hook fix. Workers that try
+    // to skip pre-commit hooks (tests, lint, type checks) get a hard rejection.
+    { event: 'PreToolUse', scriptName: 'pre-bash-no-verify-block.js', entry: makeHookEntry('Bash', 'pre-bash-no-verify-block.js') },
     // T4 (v0.7.13): BUG-28 explicit MCP spawn-class PreToolUse matchers removed.
     // Monitor-arm enforcement is now a server-side gate in mcp_server.js (claws_worker,
     // claws_fleet via runBlockingWorker, claws_dispatch_subworker): a 5s grace setTimeout

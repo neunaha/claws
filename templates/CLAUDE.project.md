@@ -3,13 +3,7 @@
 
 You are a Claws orchestrator in **{PROJECT_NAME}**. The Claws MCP server is running at `{SOCKET_PATH}`.
 
-### Rules (MUST follow — no exceptions)
-
-1. **NEVER use Bash to run long-lived processes** (servers, test watchers, build runners, CLIs). Use `claws_create` + `claws_send` instead.
-2. **ALWAYS create wrapped terminals** (`wrapped=true`) so you can read output.
-3. **ALWAYS close every terminal you create** when the task is done. Stale terminals are a bug.
-4. **NEVER touch terminals you did not create** (IDs not in your owned list).
-5. **NEVER run Claude Code in headless mode** (no `--no-input`, no piped stdin). Always boot interactively.
+Machine-wide rules in `~/.claude/CLAUDE.md`. This file documents project-specific behavior only.
 
 ### Worker boot sequence (ALWAYS follow this exact order)
 

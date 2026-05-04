@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - T5 (Q3 user decision): `parsePromptIdle` function deleted — only used by the now-removed L7/L8 detection. WORKING→POST_WORK and POST_WORK→COMPLETE state machine transitions removed from `WorkerHeartbeatStateMachine`. L7 `mission_complete` heartbeat publish and the L8 disarmed cascade (commented out since ed27870) formally deleted. Three obsolete test files removed: `parse-prompt-idle.test.js`, `mission-complete-heartbeat.test.js`, `tui-idle-completion.test.js`. State machine now terminates at WORKING (observability only); completion is handled exclusively by reliable external signals: marker, error_marker, pub_complete, terminated.
 
+### Removed (continued)
+
+- RIP-F8: stripped duplicate "MUST follow — no exceptions" rules block from `templates/CLAUDE.project.md`. All five rules were already present verbatim in `templates/CLAUDE.global.md`. Project template now references machine-wide rules location instead. Test: `extension/test/rip-duplicate-must.test.js`.
+
 ### Fixed
 
 - T9 (Q1): FAILED lifecycle phase is now recoverable. Previously `plan()` from FAILED was a silent no-op (BUG-5) — orchestrators had to restart to begin a new mission. New behavior: `plan()` from FAILED resets `spawned_workers`, `monitors`, and `workers` arrays for a clean slate, increments `mission_n`, and transitions to PLAN. `failure_cause` (new `FailureCause` type in `event-schemas.ts`) is preserved in state so the orchestrator can read the prior failure context and apply corrective direction to the new mission. `setPhase(FAILED, { failure_cause })` accepts structured cause on transition. Pre-T9 state files back-filled with `failure_cause: null` on load. Force-close of orphaned live terminals from the failed mission deferred to Tier 2. Test: `extension/test/failed-recovery.test.js` (6 checks).
