@@ -173,116 +173,7 @@ check('observe: spinner active → stays WORKING, updates lastSpinnerAt', () => 
   assert.strictEqual(m.lastNewBytesAt, 200);
 });
 
-// ─── Test 6: WORKING → POST_WORK ─────────────────────────────────────────────
-
-check('observe: WORKING→POST_WORK when spinner stopped + prompt idle', () => {
-  const m = new WorkerHeartbeatStateMachine({ terminalId: 6, correlationId: 'x' });
-  const readyText = 'bypass permissions on\n❯';
-  m.observe(readyText, 0);
-
-  // Enter WORKING with tool call
-  const workText = readyText + '\n⏺ Read(docs.md)\n❯';
-  m.observe(workText, 100);
-  assert.strictEqual(m.state, 'WORKING');
-
-  // 5100ms later: no spinner, prompt idle (bytesIdle not required)
-  const transitions = m.observe(workText, 5201);
-  // lastSpinnerAt=null → spinnerStopped=true
-  // parsePromptIdle(workText) → last non-empty line is '❯' → true
-  assert.strictEqual(transitions.length, 1);
-  assert.strictEqual(transitions[0].from, 'WORKING');
-  assert.strictEqual(transitions[0].to, 'POST_WORK');
-  assert.strictEqual(m.state, 'POST_WORK');
-  assert.strictEqual(m.postWorkEnteredAt, 5201);
-});
-
-check('observe: WORKING→POST_WORK fires even with recent pty bytes (prompt-suggestion simulation)', () => {
-  // Claude Code renders auto-suggested follow-up prompts in the ❯ area when idle,
-  // emitting new pty bytes each render. The old bytesIdle gate was indefinitely
-  // blocked by this. Verify POST_WORK fires despite recent bytes (t=5200 → t=5201).
-  const m = new WorkerHeartbeatStateMachine({ terminalId: 6, correlationId: 'x' });
-  m.observe('bypass permissions on\n❯', 0);
-  const workText = 'bypass permissions on\n❯\n⏺ Bash(ls)\n❯';
-  m.observe(workText, 100);   // READY→WORKING
-  assert.strictEqual(m.state, 'WORKING');
-
-  // Simulate prompt-suggestion byte at t=5200 (1ms before observe at t=5201)
-  m.lastNewBytesAt = 5200;  // bytesIdle would be false (only 1ms elapsed)
-
-  // Spinner has been gone for >5s, prompt is visible → POST_WORK must fire
-  const t = m.observe(workText, 5201);
-  assert.strictEqual(t.length, 1, 'expected WORKING→POST_WORK transition despite recent bytes');
-  assert.strictEqual(t[0].to, 'POST_WORK');
-  assert.strictEqual(m.state, 'POST_WORK');
-});
-
-// ─── Test 7: POST_WORK → WORKING on Claude resumption ────────────────────────
-
-check('observe: POST_WORK→WORKING when new tool call (resets postWorkEnteredAt)', () => {
-  const m = new WorkerHeartbeatStateMachine({ terminalId: 7, correlationId: 'x' });
-  const base = 'bypass permissions on\n❯';
-  m.observe(base, 0);
-
-  const workText = base + '\n⏺ Read(test.md)\n❯';
-  m.observe(workText, 100);   // READY→WORKING
-  m.observe(workText, 5201);  // WORKING→POST_WORK
-  assert.strictEqual(m.state, 'POST_WORK');
-  assert.strictEqual(m.postWorkEnteredAt, 5201);
-  assert.strictEqual(m.toolCount, 1);
-
-  // Claude resumes with a new tool call
-  const resumedText = workText + '\n⏺ Edit(file.ts)\n';
-  const transitions = m.observe(resumedText, 5300);
-  assert.strictEqual(transitions.length, 1);
-  assert.strictEqual(transitions[0].from, 'POST_WORK');
-  assert.strictEqual(transitions[0].to, 'WORKING');
-  assert.strictEqual(transitions[0].reason, 'tool-call-resumed');
-  assert.strictEqual(m.state, 'WORKING');
-  assert.strictEqual(m.postWorkEnteredAt, null);  // timer reset
-  assert.strictEqual(m.toolCount, 2);             // incremented
-});
-
-// ─── Test 8: POST_WORK → COMPLETE after 20s sustained ────────────────────────
-
-check('observe: POST_WORK→COMPLETE after 20s sustained + toolCount≥1', () => {
-  const m = new WorkerHeartbeatStateMachine({ terminalId: 8, correlationId: 'x' });
-  const base = 'bypass permissions on\n❯';
-  m.observe(base, 0);
-
-  const workText = base + '\n⏺ Bash(echo done)\n❯';
-  m.observe(workText, 100);   // READY→WORKING
-  m.observe(workText, 5201);  // WORKING→POST_WORK, postWorkEnteredAt=5201
-  assert.strictEqual(m.state, 'POST_WORK');
-  assert.strictEqual(m.toolCount, 1);
-
-  // 20001ms later: sustained POST_WORK, toolCount=1 ≥ 1
-  const transitions = m.observe(workText, 25202);  // 25202 - 5201 = 20001 >= 20000
-  assert.strictEqual(transitions.length, 1);
-  assert.strictEqual(transitions[0].from, 'POST_WORK');
-  assert.strictEqual(transitions[0].to, 'COMPLETE');
-  assert.strictEqual(transitions[0].reason, 'post-work-sustained-20s');
-  assert.strictEqual(m.state, 'COMPLETE');
-});
-
-// ─── Test 9: POST_WORK does NOT fire COMPLETE when toolCount=0 ───────────────
-
-check('observe: POST_WORK sustained ≥20s but toolCount=0 → does NOT complete', () => {
-  const m = new WorkerHeartbeatStateMachine({ terminalId: 9, correlationId: 'x' });
-  const promptText = '❯';
-  // Directly put machine in POST_WORK without going through WORKING
-  // (edge case: toolCount stays 0 — prevents false-fire gate)
-  m.state = 'POST_WORK';
-  m.postWorkEnteredAt = 0;
-  m.scanOffset = promptText.length; // pretend we've already scanned this text
-
-  // 25s elapsed since postWorkEnteredAt=0, but toolCount=0 → gate prevents COMPLETE
-  const transitions = m.observe(promptText, 25000);
-  const complete = transitions.filter(t => t.to === 'COMPLETE');
-  assert.strictEqual(complete.length, 0, 'should not fire COMPLETE when toolCount=0');
-  assert.strictEqual(m.state, 'POST_WORK');
-});
-
-// ─── Test 10: Chunked text accumulation ──────────────────────────────────────
+// ─── Test 6: Chunked text accumulation ───────────────────────────────────────
 
 check('observe: chunked text evolves state correctly across multiple calls', () => {
   const m = new WorkerHeartbeatStateMachine({ terminalId: 10, correlationId: 'x' });
@@ -300,7 +191,7 @@ check('observe: chunked text evolves state correctly across multiple calls', () 
   assert.strictEqual(m.state, 'WORKING', 'tool call: WORKING');
   assert.strictEqual(m.toolCount, 1);
 
-  // Chunk 4: second tool with active spinner → stays WORKING (spinner suppresses POST_WORK)
+  // Chunk 4: second tool with active spinner → stays WORKING
   m.observe('bypass permissions on\n❯\n⏺ Write(out.txt)\n✻ Thinking for 2s\n⏺ Bash(git add .)\n', 300);
   assert.strictEqual(m.state, 'WORKING', 'second tool: still WORKING');
   assert.strictEqual(m.toolCount, 2);

@@ -610,24 +610,6 @@ function parseSpinnerActivity(text, sinceOffset) {
 }
 
 /**
- * Detect if Claude TUI is currently at the ❯ prompt (idle, awaiting input).
- * Returns true only when ❯ is the LAST visible content.
- * @param {string} text — full pty log
- * @returns {boolean}
- */
-function parsePromptIdle(text) {
-  if (!text || typeof text !== 'string') return false;
-  // Claude TUI shows "⏵⏵ bypass permissions on (shift+tab to cycle)" only when
-  // at the idle ❯ prompt awaiting input. The previous ❯ regex never matched
-  // because ANSI strip collapses the box-drawing border + ❯ onto a single line.
-  // Bypass-permissions string is plain text that survives strip cleanly.
-  // Scan the last ~30 lines of stripped pty (footer is always near the end).
-  const lines = text.trimEnd().split(/\r?\n/);
-  const tail = lines.slice(-30).join('\n');
-  return tail.includes('bypass permissions on');
-}
-
-/**
  * Parse TodoWrite tool blocks for the planned tasks.
  * @param {string} text — full pty log
  * @param {number} sinceOffset
@@ -718,8 +700,7 @@ function parseErrorIndicators(text, sinceOffset) {
  * derives state transitions, surfaces transition events. Does NOT publish
  * to the bus (that's HB-L4+). Pure logic.
  *
- * States: BOOTING → READY → WORKING → POST_WORK → COMPLETE
- * (with WORKING ↔ POST_WORK loop if Claude resumes during grace)
+ * States: BOOTING → READY → WORKING (observability only; completion via external signals)
  *
  * Per docs/heartbeat-architecture.md §V.C.
  */
@@ -802,35 +783,6 @@ class WorkerHeartbeatStateMachine {
         detected.push(this._transition('READY', 'WORKING', 'first-tool-call', now));
       }
 
-    } else if (this.state === 'WORKING') {
-      // WORKING → POST_WORK: spinner stopped + prompt visible.
-      // We deliberately do NOT require "no new pty bytes in 5s" because Claude Code's
-      // prompt suggestion feature renders auto-suggestions in the ❯ area when idle,
-      // producing pty bytes indefinitely. The spinner+prompt combination already
-      // proves Claude has finished work and returned to idle prompt.
-      const spinnerStopped = this.lastSpinnerAt === null || (now - this.lastSpinnerAt > 5000);
-      const promptIdle = parsePromptIdle(text);
-      if (spinnerStopped && promptIdle) {
-        this.postWorkEnteredAt = now;
-        detected.push(this._transition('WORKING', 'POST_WORK', 'spinner-stopped+prompt-idle', now));
-      }
-
-    } else if (this.state === 'POST_WORK') {
-      // POST_WORK → WORKING: Claude resumed (spinner or new tool call)
-      const spinnerResumed = spinnerResult.lastSpinnerAt !== null;
-      const toolResumed = tools.length > 0;
-      if (spinnerResumed || toolResumed) {
-        this.postWorkEnteredAt = null;
-        const reason = spinnerResumed ? 'spinner-resumed' : 'tool-call-resumed';
-        detected.push(this._transition('POST_WORK', 'WORKING', reason, now));
-      } else if (
-        this.postWorkEnteredAt !== null &&
-        now - this.postWorkEnteredAt >= 20000 &&
-        this.toolCount >= 1  // gate: prevent false-fire on workers that never did work
-      ) {
-        // POST_WORK → COMPLETE: sustained idle ≥20s with confirmed tool work
-        detected.push(this._transition('POST_WORK', 'COMPLETE', 'post-work-sustained-20s', now));
-      }
     }
 
     // 4. Advance scan offset to avoid re-parsing seen bytes
@@ -1871,8 +1823,6 @@ async function _dispatchTool(name, args, sock) {
       correlationId: _fpCorrId,
     });
     let _fpHbLastPublishedAt = Date.now();
-    let _fpMissionCompletePublished = false;  // HB-L7: one-shot guard
-    let _fpTuiIdleCompleted = false;          // HB-L8: tui_idle completion guard
     let _fpProgressBurst = [];               // HB-L5: tool events in current window
     let _fpProgressBurstStart = 0;           // HB-L5: window open timestamp
     let _fpLastPublishedToolCount = 0;       // HB-L5: toolCount at last progress publish
@@ -1995,46 +1945,6 @@ async function _dispatchTool(name, args, sock) {
               });
             } catch (e) { log('hb-l6 error publish failed: ' + (e && e.message || e)); }
           }
-          // HB-L7: POST_WORK→COMPLETE fires kind=mission_complete heartbeat (observation only)
-          const _fpCompleteThisTick = _fpTransitions.some(t => t.from === 'POST_WORK' && t.to === 'COMPLETE');
-          if (_fpCompleteThisTick && !_fpMissionCompletePublished) {
-            _fpMissionCompletePublished = true;
-            const fpMcSnap = _fpHbState.snapshot();
-            const durMs = fpMcSnap.durationMs;
-            const durMin = Math.floor(durMs / 60000);
-            const durSec = Math.floor((durMs % 60000) / 1000);
-            const mcSummary = `mission complete · ${durMin}m ${durSec}s · ${fpMcSnap.toolCount} tool calls`;
-            await _pconnEnsureRegistered(sock);
-            await _pconnWrite({
-              cmd: 'publish', protocol: 'claws/2',
-              topic: `worker.${termId}.heartbeat`,
-              payload: {
-                kind: 'mission_complete',
-                summary: mcSummary,
-                current_action: 'COMPLETE',
-                duration_ms: durMs,
-                total_tool_calls: fpMcSnap.toolCount,
-                tokens_in: fpMcSnap.cumulative.tokens_in || undefined,
-                tokens_out: fpMcSnap.cumulative.tokens_out || undefined,
-                captured_at: new Date().toISOString(),
-                correlation_id: _fpCorrId,
-              },
-            });
-            // HB-L8 DISARMED — destructive false-positives on Claude deep-thinking pauses
-            // killed lifecycle-deep-audit-plan worker (mission 63) at 5m 30s before it
-            // could write the audit doc. L8 needs proper detection logic that distinguishes
-            // "Claude thinking with no streaming" from "Claude genuinely idle at prompt".
-            // Audit + redesign tracked in lifecycle-master-plan (mission 66+ wave army).
-            //
-            // Original L8 block:
-            // if (completedThisTick && !_fpTuiIdleCompleted) {
-            //   _fpTuiIdleCompleted = true;
-            //   try { ... publish system.worker.completed with tui_idle ... } catch (e) { ... }
-            //   try { clearInterval(_fpIntervalId); _detachWatchers.delete(termId); } catch ...
-            //   try { ... lifecycle.mark-worker-status: completed ... } catch ...
-            //   try { ... cmd:'close', id:termId ... } catch ...
-            // }
-          }
         } catch (e) {
           log('hb-l4 fast-path backstop publish failed: ' + (e && e.message || e));
         }
@@ -2045,7 +1955,7 @@ async function _dispatchTool(name, args, sock) {
         const _fpStatus = _fpDet ? _fpDet.status : null;
         const _fpMarkerLine = _fpDet ? _fpDet.line : null;
         const _fpSignal = _fpDet ? _fpDet.signal : null;
-        if (!_fpTuiIdleCompleted && _fpStatus !== null) {
+        if (_fpStatus !== null) {
           clearInterval(_fpIntervalId);
           _detachWatchers.delete(termId);
           try {

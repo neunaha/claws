@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
 
+### Removed
+
+- T5 (Q3 user decision): `parsePromptIdle` function deleted — only used by the now-removed L7/L8 detection. WORKING→POST_WORK and POST_WORK→COMPLETE state machine transitions removed from `WorkerHeartbeatStateMachine`. L7 `mission_complete` heartbeat publish and the L8 disarmed cascade (commented out since ed27870) formally deleted. Three obsolete test files removed: `parse-prompt-idle.test.js`, `mission-complete-heartbeat.test.js`, `tui-idle-completion.test.js`. State machine now terminates at WORKING (observability only); completion is handled exclusively by reliable external signals: marker, error_marker, pub_complete, terminated.
+
 ### Fixed
 
 - T2/Q6 (auto-grant push): `server.ts` now adds `push` to every peer's capabilities set on `claws_hello` (both fresh registration and idempotent re-hello paths). Wave Army workers no longer need to include `capabilities: ['push']` as a BUG-03 workaround — it is auto-granted. `templates/CLAUDE.global.md` updated to remove the mandatory workaround note. Test: `extension/test/peer-registry-push.test.js`.
