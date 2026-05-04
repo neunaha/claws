@@ -172,6 +172,14 @@ export class WaveRegistry {
       entry.violationTimer = undefined;
     }
     entry.complete = true;
+    // Prune terminal from subWorkerTerminals so _checkLeadViolation no longer
+    // counts this auto-closed terminal as "active". Without this, lead-silence
+    // violations keep firing every threshold cycle even after the sub-worker
+    // is dead. Verified live in Phase 4 of LH-1 verification (events 7-9 noise).
+    if (entry.terminalId) {
+      const idx = wave.subWorkerTerminals.indexOf(entry.terminalId);
+      if (idx >= 0) wave.subWorkerTerminals.splice(idx, 1);
+    }
     return { terminalId: entry.terminalId, found: true };
   }
 

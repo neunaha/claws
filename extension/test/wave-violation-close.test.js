@@ -105,6 +105,17 @@ check(
   'markSubWorkerAutoClosed must set entry.complete = true before returning',
 );
 
+// ─── 9. wave-registry.ts: markSubWorkerAutoClosed prunes from subWorkerTerminals ─
+//
+// Without the prune, _checkLeadViolation keeps counting an auto-closed
+// terminal as "active" and lead-silence violations keep firing every
+// threshold cycle. Verified noisy in Phase 4 of LH-1 (events 7-9).
+check(
+  'wave-registry.ts: markSubWorkerAutoClosed prunes terminal from subWorkerTerminals[]',
+  /markSubWorkerAutoClosed[\s\S]{0,1500}subWorkerTerminals\.splice/.test(REGISTRY),
+  'markSubWorkerAutoClosed must remove entry.terminalId from wave.subWorkerTerminals[] (idx >= 0 splice)',
+);
+
 // ─── Print results ─────────────────────────────────────────────────────────────
 const total = passed + failed;
 results.forEach(r => console.log(r));
