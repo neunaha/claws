@@ -86,7 +86,7 @@ const DESC = {
   claws_fleet:
     'Spawn a fleet of workers in parallel (single tool call). Internally fans out via Promise.allSettled so all workers boot and run concurrently. Each entry in workers mirrors claws_worker args; shared top-level fields (cwd, model, timeout_ms, etc.) act as defaults overridden per-worker. Set detach=true for non-blocking spawn (pair with claws_workers_wait). Returns a fleet summary with wall-clock time, per-worker status, and marker lines.',
   claws_workers_wait:
-    'Poll a set of already-spawned terminal ids (from claws_fleet detach=true or claws_create) for completion markers. Blocks until every terminal emits its complete_marker or an error_marker, or the timeout expires. Non-blocking companion to claws_fleet detach mode.',
+    'Poll a set of already-spawned terminal ids (from claws_fleet detach=true or claws_create) for completion. Checks all 4 signals: marker, error_marker, pub_complete ([CLAWS_PUB] topic=worker.<id>.complete), and Wave D terminated (system.worker.completed bus event). Supports min_complete to return when N of M workers finish rather than waiting for all. Returns per-worker results with status, signal, and duration.',
 };
 
 export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
@@ -185,6 +185,7 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
       error_markers: z.array(z.string()).describe("Substrings that signal failure (default ['MISSION_FAILED']).").optional(),
       timeout_ms: z.number().int().describe('Max wait in ms (default 300000).').optional(),
       poll_interval_ms: z.number().int().describe('Poll cadence (default 1500).').optional(),
+      min_complete: z.number().int().describe('Return once this many workers complete (default = all workers). Workers still pending are reported in the pending array.').optional(),
     })),
 
     tool('claws_hello', z.object({

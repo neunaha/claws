@@ -2118,10 +2118,13 @@ async function _dispatchTool(name, args, sock) {
     const errorMarkers = Array.isArray(args.error_markers) ? args.error_markers : ['MISSION_FAILED'];
     const timeoutMs = typeof args.timeout_ms === 'number' && args.timeout_ms > 0 ? args.timeout_ms : 5 * 60 * 1000;
     const pollIntervalMs = typeof args.poll_interval_ms === 'number' && args.poll_interval_ms > 0 ? args.poll_interval_ms : 1500;
+    const minComplete = (typeof args.min_complete === 'number' && args.min_complete > 0)
+      ? Math.min(args.min_complete, ids.length) : ids.length;
     const startedAt = Date.now();
     const deadline = startedAt + timeoutMs;
+    const detectOpt = { complete_marker: completeMarker, error_markers: errorMarkers };
     const state = ids.map((id) => ({
-      id, status: 'pending', marker_line: null, duration_ms: null, scanFrom: 0,
+      id: String(id), status: 'pending', signal: null, marker_line: null, duration_ms: null, scanFrom: 0,
     }));
     for (const s of state) {
       try {
@@ -2129,34 +2132,24 @@ async function _dispatchTool(name, args, sock) {
         if (snap.ok && typeof snap.bytes === 'string') s.scanFrom = snap.bytes.length;
       } catch (e) { /* keep 0 */ }
     }
+    const countDone = () => state.filter((s) => s.status !== 'pending').length;
     while (Date.now() < deadline) {
-      let allDone = true;
       for (const s of state) {
         if (s.status !== 'pending') continue;
-        allDone = false;
         try {
           const snap = await clawsRpc(sock, { cmd: 'readLog', id: s.id, strip: true, limit: 64 * 1024 });
           const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
           const scanText = text.length > s.scanFrom ? text.slice(s.scanFrom) : '';
-          const _flCompleteLine = findStandaloneMarker(scanText, completeMarker);
-          if (_flCompleteLine !== null) {
-            s.status = 'completed';
-            s.marker_line = _flCompleteLine;
+          const det = detectCompletion(scanText, detectOpt, s.id, _workerTerminatedSet);
+          if (det !== null) {
+            s.status = det.status;
+            s.signal = det.signal;
+            s.marker_line = det.line;
             s.duration_ms = Date.now() - startedAt;
-            continue;
-          }
-          for (const em of errorMarkers) {
-            const _flErrLine = em ? findStandaloneMarker(scanText, em) : null;
-            if (_flErrLine !== null) {
-              s.status = 'failed';
-              s.marker_line = _flErrLine;
-              s.duration_ms = Date.now() - startedAt;
-              break;
-            }
           }
         } catch (e) { /* terminal vanished — leave pending; will time out */ }
       }
-      if (allDone || state.every((s) => s.status !== 'pending')) break;
+      if (countDone() >= minComplete) break;
       await sleep(pollIntervalMs);
     }
     for (const s of state) {
@@ -2165,10 +2158,15 @@ async function _dispatchTool(name, args, sock) {
         s.duration_ms = Date.now() - startedAt;
       }
     }
+    const pendingIds = state.filter((s) => s.status === 'timeout').map((s) => s.id);
     return { content: [{ type: 'text', text: JSON.stringify({
+      ok: true,
+      complete: state.filter((s) => s.status !== 'timeout').length,
+      target: minComplete,
       total: state.length,
       wall_clock_ms: Date.now() - startedAt,
-      results: state.map((s) => ({ terminal_id: s.id, status: s.status, marker_line: s.marker_line, duration_ms: s.duration_ms })),
+      pending: pendingIds,
+      results: state.map((s) => ({ terminal_id: s.id, status: s.status, signal: s.signal, marker_line: s.marker_line, duration_ms: s.duration_ms })),
     }, null, 2) }] };
   }
 

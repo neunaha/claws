@@ -306,7 +306,7 @@
   },
   {
     "name": "claws_workers_wait",
-    "description": "Poll a set of already-spawned terminal ids (from claws_fleet detach=true or claws_create) for completion markers. Blocks until every terminal emits its complete_marker or an error_marker, or the timeout expires. Non-blocking companion to claws_fleet detach mode.",
+    "description": "Poll a set of already-spawned terminal ids (from claws_fleet detach=true or claws_create) for completion. Checks all 4 signals: marker, error_marker, pub_complete ([CLAWS_PUB] topic=worker.<id>.complete), and Wave D terminated (system.worker.completed bus event). Supports min_complete to return when N of M workers finish rather than waiting for all. Returns per-worker results with status, signal, and duration.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -338,6 +338,10 @@
         "poll_interval_ms": {
           "type": "integer",
           "description": "Poll cadence (default 1500)."
+        },
+        "min_complete": {
+          "type": "integer",
+          "description": "Return once this many workers complete (default = all workers). Workers still pending are reported in the pending array."
         }
       },
       "required": [

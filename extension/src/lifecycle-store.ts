@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import type { FailureCause } from './event-schemas';
+export type { FailureCause };
 
 // ─── Lifecycle state model (v0.7.10 — 10-phase, schema v3) ──────────────────
 // Pure CRUD on LifecycleState. Transition rules + gate validators live in
@@ -49,6 +51,9 @@ export interface LifecycleState {
   session_started_at: string;
   mission_started_at: string;
   reflect?: string;
+  // Set on FAILED transition; preserved across FAILED→PLAN recovery so the
+  // orchestrator can read it and apply corrective direction to the new mission.
+  failure_cause: FailureCause | null;
 }
 
 const LEGAL_PHASES = new Set<Phase>([
@@ -98,6 +103,7 @@ export class LifecycleStore {
       mission_n: 0,
       session_started_at: this.sessionStartedAt,
       mission_started_at: '',
+      failure_cause: null,
     };
     this.flushToDisk();
     return this.state;
@@ -116,14 +122,21 @@ export class LifecycleStore {
       throw new Error('lifecycle:invalid-expected-workers — must be positive integer');
     }
     if (this.state === null) this.bootSession();
+    const isRecoveringFromFailed = this.state!.phase === 'FAILED';
     const inActiveMission = this.state!.phase !== 'SESSION-BOOT'
       && this.state!.phase !== 'REFLECT'
-      && this.state!.phase !== 'SESSION-END';
+      && this.state!.phase !== 'SESSION-END'
+      && !isRecoveringFromFailed;   // FAILED is recoverable — allow re-plan
     if (inActiveMission) {
       // Idempotent within active mission — return existing state unchanged
       return this.state!;
     }
-    const nextMissionN = this.state!.phase === 'REFLECT' ? this.state!.mission_n + 1 : 1;
+    const nextMissionN = (this.state!.phase === 'REFLECT' || isRecoveringFromFailed)
+      ? this.state!.mission_n + 1
+      : 1;
+    // On FAILED recovery: preserve failure_cause so orchestrator can reference
+    // it after re-plan. All worker/monitor arrays start fresh.
+    const preservedFailureCause = isRecoveringFromFailed ? this.state!.failure_cause : null;
     this.state = {
       ...this.state!,
       v: 3,
@@ -140,6 +153,7 @@ export class LifecycleStore {
       mission_n: nextMissionN,
       mission_started_at: new Date().toISOString(),
       reflect: undefined,
+      failure_cause: preservedFailureCause,
     };
     this.flushToDisk();
     return this.state;
@@ -157,14 +171,20 @@ export class LifecycleStore {
    * Set phase directly. NO transition validation here — that's the engine's job
    * (which calls canTransition() from lifecycle-rules.ts before calling this).
    * Use this only when you've already validated the transition.
+   *
+   * When transitioning to FAILED, pass opts.failure_cause to attach structured
+   * context the orchestrator can read after recovery via plan().
    */
-  setPhase(toPhase: Phase): LifecycleState {
+  setPhase(toPhase: Phase, opts?: { failure_cause?: FailureCause }): LifecycleState {
     if (!this.state) throw new Error('lifecycle:no-state');
     if (this.state.phase === toPhase) return this.state;
     const phases_completed = this.state.phases_completed.includes(toPhase)
       ? this.state.phases_completed
       : [...this.state.phases_completed, toPhase];
-    this.state = { ...this.state, phase: toPhase, phases_completed };
+    const failure_cause = toPhase === 'FAILED' && opts?.failure_cause
+      ? opts.failure_cause
+      : this.state.failure_cause;
+    this.state = { ...this.state, phase: toPhase, phases_completed, failure_cause };
     this.flushToDisk();
     return this.state;
   }
@@ -264,6 +284,10 @@ export class LifecycleStore {
       if (!fs.existsSync(this.statePath)) return;
       const raw = JSON.parse(fs.readFileSync(this.statePath, 'utf8')) as unknown;
       if (this.isValidV3(raw)) {
+        // Back-fill failure_cause for state files written before T9
+        if (raw.failure_cause === undefined) {
+          (raw as Record<string, unknown>)['failure_cause'] = null;
+        }
         this.state = raw;
       }
       // v1/v2 not auto-migrated — schema is breaking. Old state files start fresh.

@@ -33,6 +33,18 @@ export const SEVERITY_LEVELS = ['info', 'warn', 'error', 'fatal'] as const;
 export const SeverityEnum = z.enum(SEVERITY_LEVELS);
 export type SeverityLevel = z.infer<typeof SeverityEnum>;
 
+// ── Failure cause ──────────────────────────────────────────────────────────
+// Structured reason attached to a FAILED lifecycle transition. Kept in state
+// so the orchestrator can read it after recovery via plan() and apply
+// corrective direction to the new mission.
+export interface FailureCause {
+  phase: string;             // phase where failure occurred
+  reason: string;            // human-readable description
+  file_line?: string;        // optional code reference e.g. "server.ts:412"
+  recovery_hint?: string;    // optional guidance for re-plan
+  failed_at: string;         // ISO timestamp
+}
+
 // ── Universal envelope ─────────────────────────────────────────────────────
 
 export const EnvelopeV1 = z.object({
