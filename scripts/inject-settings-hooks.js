@@ -130,14 +130,12 @@ function makeHookEntry(matcher, scriptName) {
     { event: 'SessionStart', scriptName: 'session-start-claws.js', entry: makeHookEntry('*', 'session-start-claws.js') },
     // PreToolUse '*': Bash long-running guard + Edit/Write mcp_server.js guard
     { event: 'PreToolUse',   scriptName: 'pre-tool-use-claws.js',  entry: makeHookEntry('*', 'pre-tool-use-claws.js') },
-    // BUG-28: Explicit MCP spawn-class matchers — Monitor arm gate belt-and-suspenders.
-    // Claude Code may not propagate the '*' PreToolUse hook to MCP tool calls in all
-    // versions. These explicit per-tool matchers guarantee the Monitor gate fires for
-    // every spawn-class call regardless of Claude Code's hook-dispatch behavior.
-    { event: 'PreToolUse',  scriptName: 'pre-tool-use-claws.js',       entry: makeHookEntry('mcp__claws__claws_create',             'pre-tool-use-claws.js') },
-    { event: 'PreToolUse',  scriptName: 'pre-tool-use-claws.js',       entry: makeHookEntry('mcp__claws__claws_worker',             'pre-tool-use-claws.js') },
-    { event: 'PreToolUse',  scriptName: 'pre-tool-use-claws.js',       entry: makeHookEntry('mcp__claws__claws_fleet',              'pre-tool-use-claws.js') },
-    { event: 'PreToolUse',  scriptName: 'pre-tool-use-claws.js',       entry: makeHookEntry('mcp__claws__claws_dispatch_subworker', 'pre-tool-use-claws.js') },
+    // T4 (v0.7.13): BUG-28 explicit MCP spawn-class PreToolUse matchers removed.
+    // Monitor-arm enforcement is now a server-side gate in mcp_server.js (claws_worker,
+    // claws_fleet via runBlockingWorker, claws_dispatch_subworker): a 5s grace setTimeout
+    // checks lifecycle.snapshot and logs T4-warn if no monitor is registered for the
+    // spawned terminal. Hook enforcement was per-user-fragile and used the wrong Bash
+    // matcher (BUG-28) — server gates are always-loaded and atomic with the call.
     // Wave C: PostToolUse spawn-class matchers — fail-close the spawn → monitor race window.
     // Explicit per-tool matchers (belt-and-suspenders, same rationale as PreToolUse above).
     // After each successful spawn, waits up to ~5s for lifecycle.monitors to register the

@@ -1046,11 +1046,15 @@ export class ClawsServer {
       const closeOrigin = (['marker','error','timeout','orchestrator','user','pub_complete'] as const)
         .find(o => o === r.close_origin) ?? 'orchestrator';
       const ok = tm.close(r.id, closeOrigin);
-      // Idempotent: closing an already-closed/unknown id is not an error.
-      // Clients shouldn't need to track local state to avoid racing their
-      // own cleanup with ours. `alreadyClosed` is the signal when the id
-      // wasn't known at close time.
       if (!ok) return { ok: true, alreadyClosed: true };
+      // T4: lifecycle parity — mark worker closed + trigger engine cascade.
+      // Best-effort: terminal may not be registered in lifecycle (non-worker terminals
+      // from plain claws_create have no lifecycle entry and markWorkerStatus returns null).
+      try {
+        const idStr = String(r.id);
+        const updated = this.lifecycleStore.markWorkerStatus(idStr, 'closed');
+        if (updated) this.lifecycleEngine.onWorkerEvent('claws-close:' + idStr);
+      } catch (_e) { /* non-fatal */ }
       return { ok: true, alreadyClosed: false };
     }
 

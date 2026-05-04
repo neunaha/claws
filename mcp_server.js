@@ -904,6 +904,20 @@ async function runBlockingWorker(sock, args) {
   try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _bCorrId, name: args.name || 'claws-worker' }); } catch (e) { /* non-fatal */ }
   const _bMonitorCmd = `Monitor(command="CLAWS_TOPIC='**' CLAWS_PEER_NAME='monitor-term-${termId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_bCorrId}\\"' | awk '{print; fflush()} /system\\\\.(worker\\\\.completed|terminal\\\\.closed)/{exit}'", description="claws monitor | term=${termId} | corr=${_bCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
   try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _bCorrId, command: _bMonitorCmd }); } catch (e) { /* non-fatal */ }
+  // T4: monitor-arm grace warning — 5s after spawn, warn if no monitor registered in lifecycle.
+  const _bMonitorGraceMs = 5000;
+  const _bTermIdStr = String(termId);
+  setTimeout(async () => {
+    try {
+      const snap = await clawsRpc(sock, { cmd: 'lifecycle.snapshot' });
+      if (snap.ok && snap.state) {
+        const hasMonitor = (snap.state.monitors || []).some(m => m.terminal_id === _bTermIdStr);
+        if (!hasMonitor) {
+          log(`T4-warn: runBlockingWorker term=${_bTermIdStr} corr=${_bCorrId} — no monitor registered within ${_bMonitorGraceMs}ms grace. Orchestrator may be flying blind. Use monitor_arm_command from spawn response.`);
+        }
+      }
+    } catch (_e) { /* non-fatal */ }
+  }, _bMonitorGraceMs);
 
   // 2. Give shell a moment to emit prompt
   await sleep(400);
@@ -1746,6 +1760,20 @@ async function _dispatchTool(name, args, sock) {
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _fpCorrId, name: args.name || 'claws-worker' }); } catch (e) { /* non-fatal */ }
     const _fpMonitorCmd = `Monitor(command="CLAWS_TOPIC='**' CLAWS_PEER_NAME='monitor-term-${termId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_fpCorrId}\\"' | awk '{print; fflush()} /system\\\\.(worker\\\\.completed|terminal\\\\.closed)/{exit}'", description="claws monitor | term=${termId} | corr=${_fpCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _fpCorrId, command: _fpMonitorCmd }); } catch (e) { /* non-fatal */ }
+    // T4: monitor-arm grace warning — 5s after spawn, warn if no monitor registered in lifecycle.
+    const _fpMonitorGraceMs = 5000;
+    const _fpTermIdStr = String(termId);
+    setTimeout(async () => {
+      try {
+        const snap = await clawsRpc(sock, { cmd: 'lifecycle.snapshot' });
+        if (snap.ok && snap.state) {
+          const hasMonitor = (snap.state.monitors || []).some(m => m.terminal_id === _fpTermIdStr);
+          if (!hasMonitor) {
+            log(`T4-warn: claws_worker term=${_fpTermIdStr} corr=${_fpCorrId} — no monitor registered within ${_fpMonitorGraceMs}ms grace. Orchestrator may be flying blind. Use monitor_arm_command from spawn response.`);
+          }
+        }
+      } catch (_e) { /* non-fatal */ }
+    }, _fpMonitorGraceMs);
 
     await sleep(400);
 
@@ -2347,6 +2375,20 @@ async function _dispatchTool(name, args, sock) {
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _dswCorrId, name: workerName }); } catch (e) { /* non-fatal */ }
     const _dswMonitorCmd = `Monitor(command="CLAWS_TOPIC='**' CLAWS_PEER_NAME='monitor-term-${termId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_dswCorrId}\\"' | awk '{print; fflush()} /system\\\\.(worker\\\\.completed|terminal\\\\.closed)/{exit}'", description="claws monitor | term=${termId} | corr=${_dswCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _dswCorrId, command: _dswMonitorCmd }); } catch (e) { /* non-fatal */ }
+    // T4: monitor-arm grace warning — 5s after spawn, warn if no monitor registered in lifecycle.
+    const _dswMonitorGraceMs = 5000;
+    const _dswTermIdStr = String(termId);
+    setTimeout(async () => {
+      try {
+        const snap = await clawsRpc(sock, { cmd: 'lifecycle.snapshot' });
+        if (snap.ok && snap.state) {
+          const hasMonitor = (snap.state.monitors || []).some(m => m.terminal_id === _dswTermIdStr);
+          if (!hasMonitor) {
+            log(`T4-warn: claws_dispatch_subworker term=${_dswTermIdStr} corr=${_dswCorrId} — no monitor registered within ${_dswMonitorGraceMs}ms grace. Orchestrator may be flying blind. Use monitor_arm_command from spawn response.`);
+          }
+        }
+      } catch (_e) { /* non-fatal */ }
+    }, _dswMonitorGraceMs);
 
     // BUG-08: fire-and-forget — return after create so parallel dispatch_subworker calls don't serialize.
     const _dswSock = sock;
