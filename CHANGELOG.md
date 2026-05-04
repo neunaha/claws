@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
 
+### Changed (LH-11: silent Monitor template — heartbeat noise fix)
+
+`mcp_server.js` — flipped the `awk` filter in the `monitor_arm_command` template (5 spawn sites: `runBlockingWorker`, `claws_create`, `claws_worker` fast-path, `claws_fleet`, `claws_dispatch_subworker`) from print-every-line / exit-on-pattern to silent-until-pattern / print-and-exit. Also extended the topic alternation to include `system.worker.terminated` (Wave D fallback) for full terminal-state coverage. Pre-fix: every `worker.<id>.heartbeat` event matching the `correlation_id` filter became a Monitor notification, flooding the orchestrator chat on long missions. Post-fix: a per-worker Monitor stays silent during the run and emits exactly one notification when the worker reaches a terminal state (`system.worker.completed` | `system.terminal.closed` | `system.worker.terminated`), then self-exits. Coverage invariant from the Monitor tool spec ("silence is not success") is preserved by the three-topic alternation — every termination path fires at least one matching event. Server-side change only; requires `/mcp` reconnect to take effect.
+
 ### Added (LH-10: Monitor closure parity — correlation_id on terminal.closed + monitors[] reconcile)
 
 Completes the LH-9 invariants for the Monitor surface. Two surgical changes, both additive to existing LH-9 code paths.
