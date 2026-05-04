@@ -87,5 +87,28 @@ assert.ok(/await\s+sleep\(300\)/.test(MCP),
 assert.ok(/text:\s*payload,\s*newline:\s*true,\s*paste:\s*true/.test(MCP),
   'mcp_server.js: runBlockingWorker baseline (paste:true newline:true) must be preserved');
 
-console.log('worker-boot-paste-collapse.test.js: 12/12 PASS');
+// ─── 8. dispatch_subworker paste-collapse recovery (LH-3 parity) ─────────
+//
+// Extract the dispatch_subworker watcher section, starting from the LH-3
+// recovery comment block (anchored after the _dswMission paste-send) down
+// to the first occurrence of '_dswTick'. This scopes the assertions to the
+// dispatch_subworker block, preventing false-positives from runBlockingWorker.
+const dswBlockMatch = MCP.match(/PASTE-COLLAPSE RECOVERY \(LH-3[\s\S]{0,3000}_dswTick/);
+assert.ok(dswBlockMatch,
+  'mcp_server.js: dispatch_subworker block must contain LH-3 paste-collapse recovery section');
+const dswBlock = dswBlockMatch[0];
+
+assert.ok(/_dswRbPlaceholderGone/.test(dswBlock) || /_dswRb/.test(dswBlock),
+  'dispatch_subworker: recovery loop must use _dswRb* prefix variables (_dswRbPlaceholderGone)');
+
+assert.ok(/_dswRbClaudeResponded/.test(dswBlock),
+  'dispatch_subworker: recovery loop must check _dswRbClaudeResponded signal');
+
+assert.ok(/Date\.now\(\)\s*\+\s*15000/.test(dswBlock),
+  'dispatch_subworker: paste-collapse recovery deadline must be 15000ms');
+
+assert.ok(/text:\s*'\\r'/.test(dswBlock) && /_dswRbNudges\s*<\s*5/.test(dswBlock),
+  'dispatch_subworker: recovery must send CR (\\r) up to 5 times (_dswRbNudges < 5)');
+
+console.log('worker-boot-paste-collapse.test.js: 16/16 PASS');
 console.log('  worker boot paste-collapse fix is LOCKED IN — must never regress');

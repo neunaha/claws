@@ -200,6 +200,10 @@ export class ClawsServer {
           silentMs,
           ts: new Date().toISOString(),
         });
+        const { terminalId } = this.waveRegistry.markSubWorkerAutoClosed(waveId, role);
+        if (terminalId) {
+          opts.terminalManager.close(terminalId, 'wave_violation');
+        }
       },
       (waveId, subWorkerCount) => {
         void this.emitSystemEvent(`wave.${waveId}.violation`, {

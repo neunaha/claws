@@ -53,16 +53,22 @@ export type ViolationCallback = (waveId: string, role: SubWorkerRole, silentMs: 
  */
 export type LeadViolationCallback = (waveId: string, subWorkerCount: number) => void;
 
-const VIOLATION_THRESHOLD_MS = 25_000;
+const DEFAULT_VIOLATION_THRESHOLD_MS = 25_000;
 
 export class WaveRegistry {
   private readonly waves = new Map<string, WaveRecord>();
   private readonly onViolation: ViolationCallback;
   private readonly onLeadViolation?: LeadViolationCallback;
+  private readonly violationThresholdMs: number;
 
-  constructor(onViolation: ViolationCallback, onLeadViolation?: LeadViolationCallback) {
+  constructor(
+    onViolation: ViolationCallback,
+    onLeadViolation?: LeadViolationCallback,
+    violationThresholdMs: number = DEFAULT_VIOLATION_THRESHOLD_MS,
+  ) {
     this.onViolation = onViolation;
     this.onLeadViolation = onLeadViolation;
+    this.violationThresholdMs = violationThresholdMs;
   }
 
   /** Create a new wave. Idempotent — returns existing wave if waveId already registered. */
@@ -82,7 +88,7 @@ export class WaveRegistry {
       const entry: WaveSubWorkerEntry = { role, lastHeartbeatMs: now, complete: false };
       const timer = setTimeout(() => {
         this._checkViolation(waveId, role);
-      }, VIOLATION_THRESHOLD_MS);
+      }, this.violationThresholdMs);
       entry.violationTimer = timer;
       subWorkers.set(role, entry);
     }
@@ -121,7 +127,7 @@ export class WaveRegistry {
     if (!entry.complete && !wave.complete) {
       entry.violationTimer = setTimeout(() => {
         this._checkViolation(waveId, role);
-      }, VIOLATION_THRESHOLD_MS);
+      }, this.violationThresholdMs);
     }
   }
 
@@ -150,6 +156,23 @@ export class WaveRegistry {
       clearTimeout(entry.violationTimer);
       entry.violationTimer = undefined;
     }
+  }
+
+  /**
+   * Used by the violation callback to silence further violations once the sub-worker is auto-closed.
+   * Idempotent — safe to call twice.
+   */
+  markSubWorkerAutoClosed(waveId: string, role: SubWorkerRole): { terminalId: string | undefined; found: boolean } {
+    const wave = this.waves.get(waveId);
+    if (!wave) return { terminalId: undefined, found: false };
+    const entry = wave.subWorkers.get(role);
+    if (!entry) return { terminalId: undefined, found: false };
+    if (entry.violationTimer !== undefined) {
+      clearTimeout(entry.violationTimer);
+      entry.violationTimer = undefined;
+    }
+    entry.complete = true;
+    return { terminalId: entry.terminalId, found: true };
   }
 
   /**
@@ -252,7 +275,7 @@ export class WaveRegistry {
   private _scheduleLeadViolation(waveId: string): ReturnType<typeof setTimeout> {
     return setTimeout(() => {
       this._checkLeadViolation(waveId);
-    }, VIOLATION_THRESHOLD_MS);
+    }, this.violationThresholdMs);
   }
 
   private _checkLeadViolation(waveId: string): void {
@@ -273,12 +296,11 @@ export class WaveRegistry {
     if (!entry || entry.complete) return;
 
     const silentMs = Date.now() - entry.lastHeartbeatMs;
-    if (silentMs >= VIOLATION_THRESHOLD_MS) {
+    if (silentMs >= this.violationThresholdMs) {
       this.onViolation(waveId, role, silentMs);
-      // Reschedule for next window so violations keep firing until resolved.
-      entry.violationTimer = setTimeout(() => {
-        this._checkViolation(waveId, role);
-      }, VIOLATION_THRESHOLD_MS);
+      if (!entry.complete) {
+        entry.violationTimer = setTimeout(() => this._checkViolation(waveId, role), this.violationThresholdMs);
+      }
     }
   }
 }

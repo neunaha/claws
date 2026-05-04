@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
 
+### Added (LH-1: wave violation auto-close)
+
+- Layer LH-1 lifecycle hardening: when a sub-worker is silent past the violation threshold (default 25s), `WaveRegistry` now auto-closes the sub-worker's terminal via `terminalManager.close(id, 'wave_violation')`. Plugs the silent leak. New close origin `'wave_violation'` added to `TerminalCloseOriginEnum`. New method `markSubWorkerAutoClosed(waveId, role)` on `WaveRegistry` clears the violation timer and marks the entry complete; `_checkViolation` skips reschedule once entry is auto-closed (no zombie timer cycles). Constructor accepts optional `violationThresholdMs` parameter for fast unit tests. Files: `extension/src/event-schemas.ts`, `extension/src/wave-registry.ts`, `extension/src/server.ts`. Test: `extension/test/wave-violation-close.test.js` (8/8 PASS).
+
+### Fixed (LH-3: dispatch_subworker boot parity)
+
+- Layer LH-3 lifecycle hardening: `claws_dispatch_subworker` boot path now has paste-collapse submit verification at parity with `runBlockingWorker` (commit 9fd97ac). Previously, sub-worker missions large enough to trigger Claude TUI's paste-collapse would sit in the input box without submitting — silent leak. Same defensive recovery loop: `_dswRb*` prefix, signal-based predicates (`_dswRbPlaceholderGone` / `_dswRbClaudeResponded`), 15s deadline, up to 5 CR nudges with 2s throttle. File: `mcp_server.js`. Test: `extension/test/worker-boot-paste-collapse.test.js` extended to 16/16 PASS with 4 new dispatch_subworker assertions.
+
+### Fixed (incidental, surfaced by LH-1 verification)
+
+- `extension/src/lifecycle-store.ts` — TS cast tightened from `as Record<...>` to `as unknown as Record<...>` to satisfy tsc strict (`TS2352: Conversion of type 'LifecycleState' to type 'Record<string, unknown>' may be a mistake`). Pre-existing latent error, surfaced by workerTS's `tsc --noEmit` check during LH-1 work. Functionally inert at runtime.
+- `extension/test/event-schemas.test.js` — `SCHEMA_BY_NAME` count check updated from 36 to 37. Pre-existing test gap from commit `cd66b87` (T3) which added `terminal-closed-v1` to the registry but did not update the expected-names list. Surfaced by LH-1 full-suite verification.
+- `extension/test/topic-registry.test.js` — `TOPIC_REGISTRY` count check updated from 37 to 38. Same pre-existing gap from cd66b87 (T3): `terminal-closed-v1` was added to the topic registry but the expected count was not updated. Surfaced by LH-1 full-suite verification.
+
 ### Added (project-scoped binary override)
 
 - `getClaudeBin()` helper in `mcp_server.js` — resolves the claude binary name for worker spawns. Lookup order: (1) `<cwd>/.claws/claude-bin` file (per-project override, gitignored — first line is the binary name), (2) `CLAWS_CLAUDE_BIN` env var, (3) default `claude`. Used at all three spawn sites: `runBlockingWorker` (claws_fleet), fast-path (claws_worker), `dispatch_subworker` (wave army). Enables Claws-on-Claws development to spawn workers under a different Claude account (e.g., personal-account `claude-neu` shell alias) without affecting end users — they get default `claude` because they don't have the marker file. Verified live: worker spawned with `.claws/claude-bin=claude-neu` reports `CLAUDE_CONFIG_DIR=/Users/.../.claude-neu` in env.

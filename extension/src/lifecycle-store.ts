@@ -286,7 +286,7 @@ export class LifecycleStore {
       if (this.isValidV3(raw)) {
         // Back-fill failure_cause for state files written before T9
         if (raw.failure_cause === undefined) {
-          (raw as Record<string, unknown>)['failure_cause'] = null;
+          (raw as unknown as Record<string, unknown>)['failure_cause'] = null;
         }
         this.state = raw;
       }

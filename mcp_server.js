@@ -2551,6 +2551,31 @@ async function _dispatchTool(name, args, sock) {
         let _dswMarkerScanFrom = (_dswPreMissionSnap.ok && typeof _dswPreMissionSnap.bytes === 'string') ? _dswPreMissionSnap.bytes.length : 0;
         await clawsRpc(_dswSock, { cmd: 'send', id: termId, text: _dswMission, newline: true, paste: true });
 
+        // PASTE-COLLAPSE RECOVERY (LH-3 parity with runBlockingWorker):
+        // If the mission is large enough to trigger Claude TUI paste-collapse (~30-50 lines),
+        // the mission text sits in the input box with a "[Pasted text #N]" placeholder and
+        // the implicit newline=true submit may not fire (auth modal or MCP slowness). Poll
+        // for 15 s; if the placeholder is still present, nudge with CR up to 5 times.
+        try {
+          const _dswRbDeadline = Date.now() + 15000;
+          let _dswRbNudges = 0;
+          let _dswRbLastNudgeAt = Date.now();
+          while (Date.now() < _dswRbDeadline) {
+            await sleep(300);
+            const _dswRbSnap = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+            const _dswRbTxt = (_dswRbSnap.ok && typeof _dswRbSnap.bytes === 'string') ? _dswRbSnap.bytes : '';
+            const _dswRbPlaceholderGone = !/\[Pasted text #\d+/.test(_dswRbTxt);
+            const _dswRbClaudeResponded = /●|⏺|in:\s*\d+/.test(_dswRbTxt);
+            if (_dswRbPlaceholderGone || _dswRbClaudeResponded) break;
+            if (Date.now() - _dswRbLastNudgeAt >= 2000 && _dswRbNudges < 5) {
+              await clawsRpc(_dswSock, { cmd: 'send', id: termId, text: '\r', newline: false });
+              _dswRbNudges++;
+              _dswRbLastNudgeAt = Date.now();
+            }
+          }
+          if (_dswRbNudges > 0) log(`dispatch_subworker paste-collapse recovery: sent ${_dswRbNudges} CR nudges`);
+        } catch (e) { /* recovery failure must never break the watcher path */ }
+
         // BUG-09: register auto-close watcher mirroring the fast-path detach watcher pattern.
         const _dswStartedAt = Date.now();
         let _dswScanOffset = 0;

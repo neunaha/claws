@@ -231,12 +231,13 @@ export type SystemMalformedReceived = z.infer<typeof SystemMalformedReceivedV1>;
 // ── Terminal close schemas (server-emitted on every close) ───────────────
 
 export const TerminalCloseOriginEnum = z.enum([
-  'marker',        // worker printed completion marker
-  'error',         // worker printed error_marker
-  'timeout',       // watcher timed out
-  'orchestrator',  // claws_close called by MCP client
-  'user',          // user clicked X in VS Code (or VS Code reload)
-  'pub_complete',  // worker published complete event
+  'marker',         // worker printed completion marker
+  'error',          // worker printed error_marker
+  'timeout',        // watcher timed out
+  'orchestrator',   // claws_close called by MCP client
+  'user',           // user clicked X in VS Code (or VS Code reload)
+  'pub_complete',   // worker published complete event
+  'wave_violation', // sub-worker silent past threshold; auto-closed by WaveRegistry
 ]);
 export type TerminalCloseOrigin = z.infer<typeof TerminalCloseOriginEnum>;
 
