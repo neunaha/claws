@@ -1876,6 +1876,8 @@ async function _dispatchTool(name, args, sock) {
     let _fpProgressBurst = [];               // HB-L5: tool events in current window
     let _fpProgressBurstStart = 0;           // HB-L5: window open timestamp
     let _fpLastPublishedToolCount = 0;       // HB-L5: toolCount at last progress publish
+    let _fpLastTodoSig = '';                 // HB-L6: last published todoItems JSON sig
+    let _fpLastPublishedErrorsCount = 0;     // HB-L6: errorsCount at last error publish
 
     const _fpTick = async () => {
       try {
@@ -1949,6 +1951,49 @@ async function _dispatchTool(name, args, sock) {
             } catch (e) { log('hb-l5 progress publish failed: ' + (e && e.message || e)); }
             _fpProgressBurst = [];
             _fpProgressBurstStart = 0;
+          }
+          // HB-L6: kind=approach (TodoWrite changes) — single-fire per distinct todoItems content
+          const _fpL6Snap = _fpHbState.snapshot();
+          const _fpTodoSig = _fpL6Snap.todoItems ? JSON.stringify(_fpL6Snap.todoItems) : '';
+          if (_fpTodoSig && _fpTodoSig !== _fpLastTodoSig) {
+            _fpLastTodoSig = _fpTodoSig;
+            try {
+              await _pconnEnsureRegistered(sock);
+              await _pconnWrite({
+                cmd: 'publish', protocol: 'claws/2',
+                topic: `worker.${termId}.heartbeat`,
+                payload: {
+                  kind: 'approach',
+                  summary: `planning: ${_fpL6Snap.todoItems.length} task${_fpL6Snap.todoItems.length !== 1 ? 's' : ''}`,
+                  approach_detail: _fpL6Snap.todoItems,
+                  current_action: _fpL6Snap.state,
+                  duration_ms: _fpL6Snap.durationMs,
+                  captured_at: new Date().toISOString(),
+                  correlation_id: _fpCorrId,
+                },
+              });
+            } catch (e) { log('hb-l6 approach publish failed: ' + (e && e.message || e)); }
+          }
+          // HB-L6: kind=error (new error indicators) — single-fire per new batch
+          if (_fpL6Snap.errorsCount > _fpLastPublishedErrorsCount) {
+            const _fpNewErrors = _fpHbState.lastErrors.slice(_fpLastPublishedErrorsCount);
+            _fpLastPublishedErrorsCount = _fpL6Snap.errorsCount;
+            try {
+              await _pconnEnsureRegistered(sock);
+              await _pconnWrite({
+                cmd: 'publish', protocol: 'claws/2',
+                topic: `worker.${termId}.heartbeat`,
+                payload: {
+                  kind: 'error',
+                  summary: `${_fpNewErrors.length} error${_fpNewErrors.length !== 1 ? 's' : ''} detected`,
+                  error_detail: _fpNewErrors.map(e => e.detail || e.summary || String(e)).slice(0, 5).join('; '),
+                  current_action: _fpL6Snap.state,
+                  duration_ms: _fpL6Snap.durationMs,
+                  captured_at: new Date().toISOString(),
+                  correlation_id: _fpCorrId,
+                },
+              });
+            } catch (e) { log('hb-l6 error publish failed: ' + (e && e.message || e)); }
           }
           // HB-L7: POST_WORK→COMPLETE fires kind=mission_complete heartbeat (observation only)
           const _fpCompleteThisTick = _fpTransitions.some(t => t.from === 'POST_WORK' && t.to === 'COMPLETE');
