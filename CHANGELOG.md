@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
 
+### Added (LH-10: Monitor closure parity — correlation_id on terminal.closed + monitors[] reconcile)
+
+Completes the LH-9 invariants for the Monitor surface. Two surgical changes, both additive to existing LH-9 code paths.
+
+**Layer A — `correlation_id` on `system.terminal.closed`**:
+
+- `extension/src/server.ts` — `setTerminalCloseCallback` now looks up `correlation_id` from `lifecycleStore.snapshot().spawned_workers` for the closing terminal and includes it in the `system.terminal.closed` payload (`...(correlationId ? { correlation_id: correlationId } : {})`). Per-worker Monitors filter upstream on `correlation_id`; before this fix, `system.terminal.closed` events were invisible to those Monitors. Terminal close paths via `wave_violation`, `idle_timeout`, `ttl_max`, and user-X that don't route through `system.worker.completed` (the fast-path watcher's event) now feed Monitor self-exit. Raw `claws_create` terminals (no `registerSpawn` record) emit without the field — matches `TerminalClosedV1.correlation_id: z.string().optional()`, which was already declared correctly — no schema change.
+
+**Layer B — `monitors[]` metadata reconcile (mirror of LH-9 `spawned_workers` reconcile)**:
+
+- `extension/src/lifecycle-store.ts` — new `removeMonitorByTerminalId(terminalId: string): boolean`. Idempotent; flushes to disk only when a record was removed. Wired into `setTerminalCloseCallback` (after `markWorkerStatus`) so monitor metadata heals on every close through the same single chokepoint.
+- `lifecycle-store.ts` — `reconcileWithLiveTerminals` extended: also drops every `monitors[]` entry whose `terminal_id` is not in `liveIds`. Return type upgraded from `string[]` to `{ workersClosed: string[]; monitorsDropped: string[] }`. Boot-reconcile log in `server.ts` updated to print both counts. Clears the 22+ stale `monitors[]` entries that accumulated in `lifecycle-state.json` from prior sessions (stale state that was previously append-only).
+
+**LH-9 invariants preserved**: Layer A flows through the existing `setTerminalCloseCallback` chokepoint — no new close paths added. Layer B reuses the same chokepoint for `removeMonitorByTerminalId`. `reconcileWithLiveTerminals` return-type change is backward-incompatible in signature but all callers (server.ts boot reconcile) are updated. `TerminalClosedV1.correlation_id` was already `z.string().optional()` — populating an existing optional field is additive, no schema version bump.
+
+**Tests**:
+
+- `extension/test/lh9-state-bulletproof.test.js`: 33→40 (+7: fixed 1 pre-existing regex window that was too small, added 6 LH-10 contract checks). 40/40 PASS.
+- `extension/test/lifecycle-store.test.js`: 52→58 (+6 LH-10 unit cases: `removeMonitorByTerminalId` — match/no-match/no-flush, `reconcileWithLiveTerminals` — drops orphans, return shape, preserves live record). 58/58 PASS.
+
 ### Added (LH-9: bulletproof state management — TTL watchdog + reconcile-on-boot + Stop-hook defang)
 
 Re-architected worker lifetime around three deterministic signals — replacing the "honor-system + Stop-hook force-close" model that was killing detached workers between assistant turns. The contract is now: single-writer (the extension), single chokepoint for close (`setTerminalCloseCallback` → `markWorkerStatus`), self-healing on boot (reconcile against live terminals), and explicit lifetime via TTL (10 min idle, 4 h hard ceiling).

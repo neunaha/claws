@@ -460,8 +460,8 @@ check('LH-9 reconcileWithLiveTerminals — closes missing entries', () => {
   store.registerSpawn('t1', '00000000-0000-4000-8000-000000000008', 'w1');
   store.registerSpawn('t2', '00000000-0000-4000-8000-000000000009', 'w2');
   store.registerSpawn('t3', '00000000-0000-4000-8000-00000000000a', 'w3');
-  const reconciled = store.reconcileWithLiveTerminals(new Set(['t2']));
-  assert.deepStrictEqual(reconciled.sort(), ['t1', 't3']);
+  const { workersClosed } = store.reconcileWithLiveTerminals(new Set(['t2']));
+  assert.deepStrictEqual(workersClosed.sort(), ['t1', 't3']);
   const snap = store.snapshot();
   assert.strictEqual(snap.spawned_workers.find(w => w.id === 't1').status, 'closed');
   assert.strictEqual(snap.spawned_workers.find(w => w.id === 't2').status, 'spawned');
@@ -475,8 +475,8 @@ check('LH-9 reconcileWithLiveTerminals — empty live set closes everyone', () =
   store.plan('m', 'single', 2);
   store.registerSpawn('t1', '00000000-0000-4000-8000-00000000000b', 'w1');
   store.registerSpawn('t2', '00000000-0000-4000-8000-00000000000c', 'w2');
-  const reconciled = store.reconcileWithLiveTerminals(new Set());
-  assert.deepStrictEqual(reconciled.sort(), ['t1', 't2']);
+  const { workersClosed } = store.reconcileWithLiveTerminals(new Set());
+  assert.deepStrictEqual(workersClosed.sort(), ['t1', 't2']);
 });
 
 check('LH-9 reconcileWithLiveTerminals — already-closed worker untouched (idempotent)', () => {
@@ -484,8 +484,8 @@ check('LH-9 reconcileWithLiveTerminals — already-closed worker untouched (idem
   store.plan('m', 'single', 1);
   store.registerSpawn('t1', '00000000-0000-4000-8000-00000000000d', 'w1');
   store.markWorkerStatus('t1', 'closed');
-  const reconciled = store.reconcileWithLiveTerminals(new Set());
-  assert.deepStrictEqual(reconciled, []);
+  const { workersClosed } = store.reconcileWithLiveTerminals(new Set());
+  assert.deepStrictEqual(workersClosed, []);
 });
 
 check('LH-9 findExpiredWorkers — flags worker past idle window', () => {
@@ -569,6 +569,73 @@ check('LH-9 reconcile persists to disk (roundtrip)', () => {
   const onDisk = JSON.parse(fs.readFileSync(stateFile(ws), 'utf8'));
   assert.strictEqual(onDisk.spawned_workers[0].status, 'closed');
   assert.strictEqual(onDisk.workers[0].closed, true);
+});
+
+// ─── LH-10: removeMonitorByTerminalId + reconcile monitor parity ─────────────
+
+check('LH-10 removeMonitorByTerminalId — returns true and drops record on match', () => {
+  const store = new LifecycleStore(mkWorkspace());
+  store.plan('m', 'single', 1);
+  store.registerSpawn('t1', '00000000-0000-4000-8000-000000000020', 'w1');
+  store.registerMonitor('t1', '00000000-0000-4000-8000-000000000020', 'grep -m1 completed');
+  assert.strictEqual(store.snapshot().monitors.length, 1);
+  const removed = store.removeMonitorByTerminalId('t1');
+  assert.strictEqual(removed, true);
+  assert.strictEqual(store.snapshot().monitors.length, 0);
+});
+
+check('LH-10 removeMonitorByTerminalId — returns false when no match (idempotent)', () => {
+  const store = new LifecycleStore(mkWorkspace());
+  store.plan('m', 'single', 1);
+  const removed = store.removeMonitorByTerminalId('does-not-exist');
+  assert.strictEqual(removed, false);
+});
+
+check('LH-10 removeMonitorByTerminalId — does not flush when nothing removed (no-op)', () => {
+  const ws = mkWorkspace();
+  const store = new LifecycleStore(ws);
+  store.plan('m', 'single', 1);
+  // Capture mtime after plan() flush
+  const sf = path.join(ws, '.claws', 'lifecycle-state.json');
+  const mtimeBefore = fs.statSync(sf).mtimeMs;
+  store.removeMonitorByTerminalId('no-such-terminal');
+  const mtimeAfter = fs.statSync(sf).mtimeMs;
+  assert.strictEqual(mtimeBefore, mtimeAfter, 'disk should not be touched when nothing removed');
+});
+
+check('LH-10 reconcileWithLiveTerminals — drops orphan monitor records (mirror behavior)', () => {
+  const store = new LifecycleStore(mkWorkspace());
+  store.plan('m', 'single', 2);
+  store.registerSpawn('t1', '00000000-0000-4000-8000-000000000021', 'w1');
+  store.registerSpawn('t2', '00000000-0000-4000-8000-000000000022', 'w2');
+  store.registerMonitor('t1', '00000000-0000-4000-8000-000000000021', 'cmd1');
+  store.registerMonitor('t2', '00000000-0000-4000-8000-000000000022', 'cmd2');
+  const { monitorsDropped } = store.reconcileWithLiveTerminals(new Set(['t2']));
+  assert.deepStrictEqual(monitorsDropped, ['t1']);
+  assert.strictEqual(store.snapshot().monitors.length, 1);
+  assert.strictEqual(store.snapshot().monitors[0].terminal_id, 't2');
+});
+
+check('LH-10 reconcileWithLiveTerminals — return shape is {workersClosed, monitorsDropped}', () => {
+  const store = new LifecycleStore(mkWorkspace());
+  store.plan('m', 'single', 1);
+  store.registerSpawn('t1', '00000000-0000-4000-8000-000000000023', 'w1');
+  store.registerMonitor('t1', '00000000-0000-4000-8000-000000000023', 'cmd');
+  const result = store.reconcileWithLiveTerminals(new Set());
+  assert('workersClosed' in result, 'result must have workersClosed field');
+  assert('monitorsDropped' in result, 'result must have monitorsDropped field');
+  assert(Array.isArray(result.workersClosed));
+  assert(Array.isArray(result.monitorsDropped));
+});
+
+check('LH-10 reconcileWithLiveTerminals — monitor record for live terminal is preserved', () => {
+  const store = new LifecycleStore(mkWorkspace());
+  store.plan('m', 'single', 1);
+  store.registerSpawn('t1', '00000000-0000-4000-8000-000000000024', 'w1');
+  store.registerMonitor('t1', '00000000-0000-4000-8000-000000000024', 'cmd');
+  const { monitorsDropped } = store.reconcileWithLiveTerminals(new Set(['t1']));
+  assert.deepStrictEqual(monitorsDropped, []);
+  assert.strictEqual(store.snapshot().monitors.length, 1);
 });
 
 // ─── results ───────────────────────────────────────────────────────────────

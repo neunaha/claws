@@ -91,7 +91,7 @@ check(
 );
 check(
   'lifecycle-store.ts: registerSpawn seeds last_activity_at = spawned_at',
-  /registerSpawn[\s\S]{0,1500}last_activity_at:\s*spawnedAt/.test(STORE),
+  /registerSpawn\s*\(\s*terminalId[\s\S]{0,2000}last_activity_at:\s*spawnedAt/.test(STORE),
   'registerSpawn must seed last_activity_at to the just-set spawned_at',
 );
 check(
@@ -157,7 +157,7 @@ check(
 // ─── Layer 1A: server close-callback updates lifecycle ────────────────────────
 check(
   'server.ts: setTerminalCloseCallback wires markWorkerStatus',
-  /setTerminalCloseCallback\(\([^)]+\)\s*=>\s*\{[\s\S]{0,800}lifecycleStore\.markWorkerStatus\(String\(id\),\s*'closed'\)/.test(SERVER),
+  /setTerminalCloseCallback\(\([^)]+\)\s*=>\s*\{[\s\S]{0,1200}lifecycleStore\.markWorkerStatus\(String\(id\),\s*'closed'\)/.test(SERVER),
   "setTerminalCloseCallback handler must call lifecycleStore.markWorkerStatus(id, 'closed')",
 );
 
@@ -241,6 +241,50 @@ check(
   'stop-claws.js: still removes pre-tool-use grace file (preserved)',
   /claws-pretooluse-grace-/.test(STOP),
   'grace file unlink must remain — only the force-close logic was removed',
+);
+
+// ─── LH-10: Monitor closure parity contract checks ────────────────────────────
+
+// LH-10 Layer A: correlation_id flows into system.terminal.closed payload
+check(
+  'server.ts: setTerminalCloseCallback includes correlation_id in payload via lifecycleStore.snapshot lookup',
+  /setTerminalCloseCallback[\s\S]{0,600}lifecycleStore\.snapshot\(\)[\s\S]{0,300}spawned_workers[\s\S]{0,200}\.correlation_id/.test(SERVER),
+  'setTerminalCloseCallback must look up correlation_id from lifecycleStore.snapshot().spawned_workers and include it in system.terminal.closed payload',
+);
+
+// LH-10 Layer B: removeMonitorByTerminalId called after markWorkerStatus in close callback
+check(
+  'server.ts: setTerminalCloseCallback calls removeMonitorByTerminalId after markWorkerStatus',
+  /setTerminalCloseCallback[\s\S]{0,2500}markWorkerStatus\(String\(id\),\s*'closed'\)[\s\S]{0,400}removeMonitorByTerminalId\(String\(id\)\)/.test(SERVER),
+  "setTerminalCloseCallback must call removeMonitorByTerminalId(String(id)) after markWorkerStatus to heal monitor metadata on every close",
+);
+
+// LH-10 Layer B: removeMonitorByTerminalId method exists in lifecycle-store
+check(
+  'lifecycle-store.ts: removeMonitorByTerminalId method defined',
+  /removeMonitorByTerminalId\s*\(\s*terminalId:\s*string\s*\):\s*boolean/.test(STORE),
+  'Add public removeMonitorByTerminalId(terminalId: string): boolean to LifecycleStore',
+);
+
+// LH-10 Layer B: reconcileWithLiveTerminals return type upgraded to {workersClosed, monitorsDropped}
+check(
+  'lifecycle-store.ts: reconcileWithLiveTerminals returns {workersClosed, monitorsDropped} shape',
+  /reconcileWithLiveTerminals[\s\S]{0,300}:\s*\{\s*workersClosed:\s*string\[\];\s*monitorsDropped:\s*string\[\]/.test(STORE),
+  'reconcileWithLiveTerminals return type must be { workersClosed: string[]; monitorsDropped: string[] }',
+);
+
+// LH-10 Layer B: reconcileWithLiveTerminals touches monitors[] array
+check(
+  'lifecycle-store.ts: reconcileWithLiveTerminals also touches monitors[] array',
+  /reconcileWithLiveTerminals[\s\S]{0,3000}monitors:\s*newMonitors/.test(STORE),
+  'reconcileWithLiveTerminals must assign newMonitors into state (drop orphan monitor records)',
+);
+
+// LH-10: no schema change — TerminalClosedV1.correlation_id was already optional
+check(
+  'event-schemas.ts: TerminalClosedV1.correlation_id already z.string().optional() (no schema change)',
+  /TerminalClosedV1[\s\S]{0,400}correlation_id:\s*z\.string\(\)\.optional\(\)/.test(SCHEMAS),
+  'TerminalClosedV1 must already have correlation_id: z.string().optional() — no schema change needed for LH-10',
 );
 
 // ─── Print results ─────────────────────────────────────────────────────────────

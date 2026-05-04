@@ -329,27 +329,50 @@ export class LifecycleStore {
   }
 
   /**
-   * LH-9: Boot reconciliation — given the live terminal IDs from
-   * TerminalManager, mark every spawned_worker NOT in liveIds as closed.
-   * Self-heals stale state from extension reload / VS Code crash. Returns
-   * the list of IDs that were reconciled.
+   * LH-9/LH-10: Boot reconciliation — given the live terminal IDs from
+   * TerminalManager, mark every spawned_worker NOT in liveIds as closed, AND
+   * drop every monitors[] entry whose terminal_id is not live. Self-heals
+   * stale state from extension reload / VS Code crash. Returns both the list
+   * of worker IDs reconciled and the list of monitor terminal_ids dropped.
    */
-  reconcileWithLiveTerminals(liveIds: ReadonlySet<string>): string[] {
-    if (!this.state) return [];
-    const reconciled: string[] = [];
+  reconcileWithLiveTerminals(liveIds: ReadonlySet<string>): { workersClosed: string[]; monitorsDropped: string[] } {
+    if (!this.state) return { workersClosed: [], monitorsDropped: [] };
+    const workersClosed: string[] = [];
     const newSpawned = this.state.spawned_workers.map(w => {
       if (w.status !== 'spawned' || liveIds.has(w.id)) return w;
-      reconciled.push(w.id);
+      workersClosed.push(w.id);
       return { ...w, status: 'closed' as WorkerStatus, completed_at: new Date().toISOString() };
     });
-    if (reconciled.length === 0) return [];
-    const reconciledSet = new Set(reconciled);
+    // LH-10: also drop orphan monitor records (mirrors spawned_workers reconcile)
+    const newMonitors = this.state.monitors.filter(m => liveIds.has(m.terminal_id));
+    const monitorsDropped = this.state.monitors
+      .filter(m => !liveIds.has(m.terminal_id))
+      .map(m => m.terminal_id);
+    if (workersClosed.length === 0 && monitorsDropped.length === 0) {
+      return { workersClosed: [], monitorsDropped: [] };
+    }
+    const reconciledSet = new Set(workersClosed);
     const newWorkers = this.state.workers.map(w =>
       reconciledSet.has(w.id) ? { ...w, closed: true } : w
     );
-    this.state = { ...this.state, spawned_workers: newSpawned, workers: newWorkers };
+    this.state = { ...this.state, spawned_workers: newSpawned, workers: newWorkers, monitors: newMonitors };
     this.flushToDisk();
-    return reconciled;
+    return { workersClosed, monitorsDropped };
+  }
+
+  /**
+   * LH-10: Remove the monitor record for a terminal. Idempotent — returns
+   * true if a record was found and removed, false if no match. Flushes to
+   * disk only when a record was actually removed.
+   */
+  removeMonitorByTerminalId(terminalId: string): boolean {
+    if (!this.state) return false;
+    const before = this.state.monitors.length;
+    const filtered = this.state.monitors.filter(m => m.terminal_id !== terminalId);
+    if (filtered.length === before) return false;
+    this.state = { ...this.state, monitors: filtered };
+    this.flushToDisk();
+    return true;
   }
 
   /**

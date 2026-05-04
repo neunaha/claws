@@ -197,9 +197,9 @@ export class ClawsServer {
     // is a stale entry from a prior session and gets marked closed.
     try {
       const liveIds = opts.terminalManager.liveTerminalIds();
-      const reconciled = this.lifecycleStore.reconcileWithLiveTerminals(liveIds);
-      if (reconciled.length > 0) {
-        opts.logger(`[claws] lifecycle reconcile on boot: ${reconciled.length} stale worker(s) marked closed: ${reconciled.join(', ')}`);
+      const { workersClosed, monitorsDropped } = this.lifecycleStore.reconcileWithLiveTerminals(liveIds);
+      if (workersClosed.length > 0 || monitorsDropped.length > 0) {
+        opts.logger(`[claws] lifecycle reconcile on boot: ${workersClosed.length} stale worker(s) closed: ${workersClosed.join(', ')}; ${monitorsDropped.length} orphan monitor(s) dropped: ${monitorsDropped.join(', ')}`);
       }
     } catch (err) {
       opts.logger(`[claws] lifecycle reconcile failed (non-fatal): ${(err as Error).message}`);
@@ -253,10 +253,15 @@ export class ClawsServer {
       void this.emitSystemEvent(`vehicle.${id}.content`, payload);
     });
     opts.terminalManager.setTerminalCloseCallback((id, wrapped, origin) => {
+      // LH-10: look up correlation_id from lifecycle state so per-worker Monitors
+      // (filtered on correlation_id) can self-exit on terminal close — Monitor closure parity.
+      const correlationId = this.lifecycleStore.snapshot()
+        ?.spawned_workers.find(w => w.id === String(id))?.correlation_id;
       void this.emitSystemEvent('system.terminal.closed', {
         terminal_id: id,
         close_origin: origin,
         closed_at: new Date().toISOString(),
+        ...(correlationId ? { correlation_id: correlationId } : {}),
       });
       if (wrapped) {
         void this.emitSystemEvent('system.worker.terminated', {
@@ -272,6 +277,7 @@ export class ClawsServer {
       try {
         const updated = this.lifecycleStore.markWorkerStatus(String(id), 'closed');
         if (updated) this.lifecycleEngine.onWorkerEvent('terminal-close-callback:' + id);
+        this.lifecycleStore.removeMonitorByTerminalId(String(id)); // LH-10: heal monitor metadata on close
       } catch (_err) { /* non-fatal */ }
     });
   }
