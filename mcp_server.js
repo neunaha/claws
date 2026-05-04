@@ -1073,6 +1073,32 @@ async function runBlockingWorker(sock, args) {
         }
       }
     } catch (e) { /* keep markerScanFrom=0; degraded but not fatal */ }
+
+    // PASTE-COLLAPSE RECOVERY: the settle loop above accepts "[Pasted text...]"
+    // placeholder as a settle indicator, but placeholder VISIBLE != submission
+    // SUCCEEDED. If MCP modal is interfering or TUI ate the implicit \r, the
+    // mission sits in the input box forever. Detect this case and retry submit
+    // with up to 5 explicit CR nudges over 15s. Cheap when not needed (one
+    // readLog + early exit). Same defensive pattern as the fast-path fix.
+    try {
+      const _rbDeadline = Date.now() + 15000;
+      let _rbNudges = 0;
+      let _rbLastNudgeAt = Date.now();
+      while (Date.now() < _rbDeadline) {
+        await sleep(300);
+        const _rbSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+        const _rbTxt = (_rbSnap.ok && typeof _rbSnap.bytes === 'string') ? _rbSnap.bytes : '';
+        const _rbPlaceholderGone = !/\[Pasted text #\d+/.test(_rbTxt);
+        const _rbClaudeResponded = /●|⏺|in:\s*\d+/.test(_rbTxt);
+        if (_rbPlaceholderGone || _rbClaudeResponded) break; // submission verified
+        if (Date.now() - _rbLastNudgeAt >= 2000 && _rbNudges < 5) {
+          await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+          _rbNudges++;
+          _rbLastNudgeAt = Date.now();
+        }
+      }
+      if (_rbNudges > 0) log(`runBlockingWorker paste-collapse recovery: sent ${_rbNudges} CR nudges`);
+    } catch (e) { /* recovery failure must never break the watcher path */ }
   }
 
   // 5. Detach shortcut — register background watcher that runs the SAME poll
@@ -1862,20 +1888,35 @@ async function _dispatchTool(name, args, sock) {
       await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: false, paste: true });
       await sleep(300);
       await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
-      // Event-driven submit verification: poll for buffer growth (Claude processing).
-      // If no growth in 5s, send another explicit CR nudge.
-      const _submitDeadline = Date.now() + 5000;
+      // Event-driven submit verification — robust against paste-collapse.
+      // Claude TUI collapses pastes >~30 lines into "[Pasted text #N +M lines]"
+      // placeholder. Old byte-count check (payload.length + 200) NEVER passed
+      // for collapsed pastes because rendered placeholder is ~50 bytes. We now
+      // check two stronger signals: (a) placeholder DISAPPEARED, OR (b) Claude
+      // rendered output (●, ⏺, "in: <N>"). Retries CR every 2s up to 5 times,
+      // 15s total deadline. Latent bug — exists in v0.7.11 too.
+      const _submitDeadline = Date.now() + 15000;
       let _submitVerified = false;
+      let _lastNudgeAt = Date.now();
+      let _nudges = 0;
       while (Date.now() < _submitDeadline) {
-        await sleep(150);
+        await sleep(200);
         const _vs = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
-        if (_vs.ok && typeof _vs.bytes === 'string' && _vs.bytes.length > _missionPreLen + payload.length + 200) {
+        const _txt = (_vs.ok && typeof _vs.bytes === 'string') ? _vs.bytes : '';
+        const _grewBig = _txt.length > _missionPreLen + payload.length + 200;
+        const _placeholderGone = !/\[Pasted text #\d+/.test(_txt);
+        const _claudeResponded = /●|⏺|in:\s*\d+/.test(_txt);
+        if (_grewBig || (_placeholderGone && _claudeResponded)) {
           _submitVerified = true; break;
+        }
+        if (Date.now() - _lastNudgeAt >= 2000 && _nudges < 5) {
+          await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+          _nudges++;
+          _lastNudgeAt = Date.now();
         }
       }
       if (!_submitVerified) {
-        log('mission submit not verified within 5s, sending another CR');
-        await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+        log(`mission submit verification FAILED after 15s: nudges=${_nudges}, payload_len=${payload.length}`);
       }
       // BUG-A: snapshot post-mission log size so _fpTick scans only what comes
       // after the mission text — prevents false-positive completion when the
