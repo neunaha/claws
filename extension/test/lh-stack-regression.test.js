@@ -290,6 +290,59 @@ check(
   );
 }
 
+// ─── SECTION H — LH-14 completion convention (5 checks) ─────────────────────
+// Ref commit: LH-14 — __CLAWS_DONE__ canonical marker + claws_publish PRIMARY
+
+// H1: Phase 4a header contains 'claws_publish' AND 'PRIMARY' in the same window
+{
+  const headerIdx = MCP.indexOf('Completion signaling');
+  const window = headerIdx >= 0 ? MCP.slice(headerIdx, headerIdx + 800) : '';
+  check(
+    'H1: mcp_server.js Phase 4a header contains claws_publish AND PRIMARY together',
+    headerIdx >= 0 && window.includes('claws_publish') && window.includes('PRIMARY'),
+    'Phase 4a header must contain "Completion signaling", "claws_publish", and "PRIMARY" together',
+  );
+}
+
+// H2: mcp_server.js references __CLAWS_DONE__ canonical marker
+check(
+  'H2: mcp_server.js contains the canonical marker __CLAWS_DONE__',
+  MCP.includes('__CLAWS_DONE__'),
+  'Canonical marker __CLAWS_DONE__ must be present in mcp_server.js',
+);
+
+// H3: mcp_server.js does NOT use MISSION_COMPLETE as a default marker value
+check(
+  "H3: mcp_server.js does NOT contain || 'MISSION_COMPLETE' as default marker",
+  !/\|\| ['"]MISSION_COMPLETE['"]/.test(MCP),
+  "Default complete_marker must be '__CLAWS_DONE__', not 'MISSION_COMPLETE'",
+);
+
+// H4: CLAUDE.md (project root) contains __CLAWS_DONE__ AND claws_publish AND F3 AND F4 AND F5
+{
+  const CLAUDE_MD = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  check(
+    'H4: CLAUDE.md contains __CLAWS_DONE__, claws_publish, F3, F4, and F5',
+    CLAUDE_MD.includes('__CLAWS_DONE__') &&
+    CLAUDE_MD.includes('claws_publish') &&
+    CLAUDE_MD.includes('F3') &&
+    CLAUDE_MD.includes('F4') &&
+    CLAUDE_MD.includes('F5'),
+    'CLAUDE.md must document the 5-layer convention with all required elements',
+  );
+}
+
+// H5: both templates contain __CLAWS_DONE__
+{
+  const GLOBAL_TPL = fs.readFileSync(path.join(ROOT, 'templates/CLAUDE.global.md'), 'utf8');
+  const PROJECT_TPL = fs.readFileSync(path.join(ROOT, 'templates/CLAUDE.project.md'), 'utf8');
+  check(
+    'H5: templates/CLAUDE.global.md AND templates/CLAUDE.project.md both contain __CLAWS_DONE__',
+    GLOBAL_TPL.includes('__CLAWS_DONE__') && PROJECT_TPL.includes('__CLAWS_DONE__'),
+    'Both templates must reference __CLAWS_DONE__ so future installs get the new convention',
+  );
+}
+
 // ─── Print results ─────────────────────────────────────────────────────────────
 
 const total = passed + failed;

@@ -209,6 +209,29 @@ See `.local/README.md` for the full rubric.
 - `script(1)` wrapper must work on macOS and Linux (BSD vs GNU `script` flags differ).
 - Protocol is versioned: `{ protocol: "claws/1", ... }` in handshake. claws/2 extends this with peer identity, pub/sub, and task assignment — all backward compatible with claws/1 clients.
 
+## Worker completion signaling (5-layer convention)
+
+Every Claude worker mission MUST end with these layers, in order. The first three are independent close triggers — any one of them firing causes the worker to auto-close cleanly. F4 and F5 exist as belt-and-suspenders backups.
+
+F1 (Bash tool call): git status --short                  — verify state
+F2 (Bash tool call): git log --oneline -5                 — verify commits
+
+F3 (MCP tool call — PRIMARY completion signal, REQUIRED):
+  claws_publish(
+    topic="worker.<your-terminal-id>.complete",
+    payload={"status": "completed", "marker": "__CLAWS_DONE__"}
+  )
+
+F4 (Bash tool call — BACKUP, REQUIRED):
+  printf '%s\n' '__CLAWS_DONE__'
+
+F5 (chat narration — last-resort BACKUP):
+  End your final assistant message with the literal string __CLAWS_DONE__ on its own line.
+
+Why five layers: F1/F2 verify outcomes. F3 is the structural completion (MCP call → bus event → server picks up). F4 is the pty-byte backup that fires even if Claude skips the MCP call. F5 catches the case where Claude bypasses both tool calls and just narrates — the marker text in the chat message reaches the pty via the TUI render and the marker scanner catches it.
+
+Standard marker: __CLAWS_DONE__ — same string for every worker. correlation_id distinguishes which worker on the bus; the marker just signals "done".
+
 **Behavioral injection enforcement** (v0.6.1):
 The enforcement chain — every layer auto-loads, outer layers are fallbacks for inner:
 1. `~/.claude/CLAUDE.md` (global, always loaded) — written by `inject-global-claude-md.js` from `templates/CLAUDE.global.md`

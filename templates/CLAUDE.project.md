@@ -74,6 +74,31 @@ blind the orchestrator to the remaining workers. See the orchestration-engine SK
 7. **CLEANUP** — close every terminal you created
 8. **REFLECT** — summarise outcomes, commit if relevant
 
+### Worker completion signaling (5-layer convention)
+
+Every Claude worker mission MUST end with these layers, in order. F3 is the primary close trigger; F4 and F5 are independent backups.
+
+F1 (Bash tool call): git status --short                  — verify state
+F2 (Bash tool call): git log --oneline -5                 — verify commits
+
+F3 (MCP tool call — PRIMARY, REQUIRED):
+```
+claws_publish(
+  topic="worker.<your-terminal-id>.complete",
+  payload={"status": "completed", "marker": "__CLAWS_DONE__"}
+)
+```
+
+F4 (Bash tool call — BACKUP, REQUIRED):
+```
+printf '%s\n' '__CLAWS_DONE__'
+```
+
+F5 (chat narration — last-resort BACKUP):
+End your final assistant message with the literal string `__CLAWS_DONE__` on its own line.
+
+Standard marker: `__CLAWS_DONE__` — same string for every worker.
+
 ### Wave Discipline Contract (mandatory for Wave Army sub-workers)
 
 Every sub-worker spawned as part of a Wave Army MUST:

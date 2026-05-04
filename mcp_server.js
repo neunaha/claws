@@ -908,7 +908,7 @@ async function runBlockingWorker(sock, args) {
     // full boot_wait_ms on every spawn before falling through. 'bypass permissions'
     // is in the bypass-mode footer/banner and matches reliably.
     boot_marker: 'bypass permissions',
-    complete_marker: 'MISSION_COMPLETE',
+    complete_marker: '__CLAWS_DONE__',
     error_markers: ['MISSION_FAILED'],
     poll_interval_ms: 1500,
     harvest_lines: 200,
@@ -1039,7 +1039,7 @@ async function runBlockingWorker(sock, args) {
   // some pty quirk, the answer is NO. The mission is a user prompt. Period.
   // Strip bracketed-paste escape sequences so a crafted mission cannot break out of paste mode.
   // Phase 4a: prepend bus-completion header so workers know to publish worker.<termId>.complete.
-  const _phase4Header = hasMission ? `## Worker identity (Phase 4a)\nYour terminal_id is ${termId}. When your mission is complete, publish to the bus:\n  claws_publish(topic="worker.${termId}.complete", payload={"status":"completed"})\nThis signals completion via the bus — more reliable than pty marker scraping. Marker stays as fallback.\n\n---\n` : '';
+  const _phase4Header = hasMission ? `## Completion signaling (REQUIRED — do this BEFORE your final assistant message)\n\nYour terminal_id is ${termId}. The completion sequence has THREE INDEPENDENT LAYERS — fire ALL THREE in order. Each is a separate, deliberate action; do NOT collapse them into one summary message.\n\nLAYER 1 (PRIMARY — MCP tool call, REQUIRED):\n  claws_publish(\n    topic="worker.${termId}.complete",\n    payload={"status": "completed", "marker": "__CLAWS_DONE__"}\n  )\n\nLAYER 2 (BACKUP — Bash tool call, REQUIRED):\n  printf '%s\\n' '__CLAWS_DONE__'\n\nLAYER 3 (BACKUP — chat narration):\n  End your final assistant message with the literal string __CLAWS_DONE__ on its own line.\n\nWhy three layers: Layer 1 is structural (MCP call → bus event); Layer 2 is independent (Bash → pty bytes); Layer 3 catches the case where you skip both tool calls and just narrate. Three independent paths so a single behavior slip doesn't leave the worker hanging.\n\nRun all three. If you skip Layer 1 because you "already said you're done in chat" — you didn't actually do it. The publish is the action. Run it.\n\n---\n` : '';
   const safeMission = hasMission
     ? (_phase4Header + args.mission).replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
     : args.mission;
@@ -1907,7 +1907,7 @@ async function _dispatchTool(name, args, sock) {
     }
 
     // Phase 4a: prepend bus-completion header so the worker knows to publish worker.<termId>.complete.
-    const _fpPhase4Header = hasMission ? `## Worker identity (Phase 4a)\nYour terminal_id is ${termId}. When your mission is complete, publish to the bus:\n  claws_publish(topic="worker.${termId}.complete", payload={"status":"completed"})\nThis signals completion via the bus — more reliable than pty marker scraping. Marker stays as fallback.\n\n---\n` : '';
+    const _fpPhase4Header = hasMission ? `## Completion signaling (REQUIRED — do this BEFORE your final assistant message)\n\nYour terminal_id is ${termId}. The completion sequence has THREE INDEPENDENT LAYERS — fire ALL THREE in order. Each is a separate, deliberate action; do NOT collapse them into one summary message.\n\nLAYER 1 (PRIMARY — MCP tool call, REQUIRED):\n  claws_publish(\n    topic="worker.${termId}.complete",\n    payload={"status": "completed", "marker": "__CLAWS_DONE__"}\n  )\n\nLAYER 2 (BACKUP — Bash tool call, REQUIRED):\n  printf '%s\\n' '__CLAWS_DONE__'\n\nLAYER 3 (BACKUP — chat narration):\n  End your final assistant message with the literal string __CLAWS_DONE__ on its own line.\n\nWhy three layers: Layer 1 is structural (MCP call → bus event); Layer 2 is independent (Bash → pty bytes); Layer 3 catches the case where you skip both tool calls and just narrate. Three independent paths so a single behavior slip doesn't leave the worker hanging.\n\nRun all three. If you skip Layer 1 because you "already said you're done in chat" — you didn't actually do it. The publish is the action. Run it.\n\n---\n` : '';
     const payload = hasMission
       ? (_fpPhase4Header + args.mission).replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
       : hasCommand ? args.command : '';
@@ -1970,7 +1970,7 @@ async function _dispatchTool(name, args, sock) {
     // and auto-close fires when complete_marker is detected — mirrors the
     // runBlockingWorker(detach:true) watcher but without boot-polling overhead.
     const _fpOpt = {
-      complete_marker: typeof args.complete_marker === 'string' ? args.complete_marker : 'MISSION_COMPLETE',
+      complete_marker: typeof args.complete_marker === 'string' ? args.complete_marker : '__CLAWS_DONE__',
       error_markers: Array.isArray(args.error_markers) ? args.error_markers : ['MISSION_FAILED'],
       timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : 5 * 60 * 1000,
       poll_interval_ms: typeof args.poll_interval_ms === 'number' ? args.poll_interval_ms : 1500,
@@ -2222,7 +2222,7 @@ async function _dispatchTool(name, args, sock) {
       return toolError('ERROR: terminal_ids must be a non-empty array');
     }
     const completeMarker = typeof args.complete_marker === 'string' && args.complete_marker.length > 0
-      ? args.complete_marker : 'MISSION_COMPLETE';
+      ? args.complete_marker : '__CLAWS_DONE__';
     const errorMarkers = Array.isArray(args.error_markers) ? args.error_markers : ['MISSION_FAILED'];
     const timeoutMs = typeof args.timeout_ms === 'number' && args.timeout_ms > 0 ? args.timeout_ms : 5 * 60 * 1000;
     const pollIntervalMs = typeof args.poll_interval_ms === 'number' && args.poll_interval_ms > 0 ? args.poll_interval_ms : 1500;
@@ -2526,12 +2526,12 @@ async function _dispatchTool(name, args, sock) {
     const _dswSock = sock;
     // GAP-D1: strip bracketed-paste escapes from mission to prevent keystroke injection.
     // Phase 4a: prepend bus-completion header so sub-worker publishes worker.<termId>.complete.
-    const _dswPhase4Header = `## Worker identity (Phase 4a)\nYour terminal_id is ${termId}. When your mission is complete, publish to the bus:\n  claws_publish(topic="worker.${termId}.complete", payload={"status":"completed"})\nThis signals completion via the bus — more reliable than pty marker scraping. Marker stays as fallback.\n\n---\n`;
+    const _dswPhase4Header = `## Completion signaling (REQUIRED — do this BEFORE your final assistant message)\n\nYour terminal_id is ${termId}. The completion sequence has THREE INDEPENDENT LAYERS — fire ALL THREE in order. Each is a separate, deliberate action; do NOT collapse them into one summary message.\n\nLAYER 1 (PRIMARY — MCP tool call, REQUIRED):\n  claws_publish(\n    topic="worker.${termId}.complete",\n    payload={"status": "completed", "marker": "__CLAWS_DONE__"}\n  )\n\nLAYER 2 (BACKUP — Bash tool call, REQUIRED):\n  printf '%s\\n' '__CLAWS_DONE__'\n\nLAYER 3 (BACKUP — chat narration):\n  End your final assistant message with the literal string __CLAWS_DONE__ on its own line.\n\nWhy three layers: Layer 1 is structural (MCP call → bus event); Layer 2 is independent (Bash → pty bytes); Layer 3 catches the case where you skip both tool calls and just narrate. Three independent paths so a single behavior slip doesn't leave the worker hanging.\n\nRun all three. If you skip Layer 1 because you "already said you're done in chat" — you didn't actually do it. The publish is the action. Run it.\n\n---\n`;
     const _dswMission = (_dswPhase4Header + (args.mission || '')).replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
     const _dswWid = args.waveId;
     const _dswRole = args.role;
     // BUG-09: capture watcher options for auto-close watcher registered after mission send.
-    const _dswCompleteMarker = typeof args.complete_marker === 'string' ? args.complete_marker : 'MISSION_COMPLETE';
+    const _dswCompleteMarker = typeof args.complete_marker === 'string' ? args.complete_marker : '__CLAWS_DONE__';
     const _dswErrorMarkers = Array.isArray(args.error_markers) ? args.error_markers : ['MISSION_FAILED'];
     const _dswTimeoutMs = typeof args.timeout_ms === 'number' ? args.timeout_ms : 5 * 60 * 1000;
     const _dswPollMs = typeof args.poll_interval_ms === 'number' ? args.poll_interval_ms : 1500;

@@ -22,8 +22,8 @@ Action:
 ```
 claws_worker(
   name="worker-<short-slug>",
-  mission="<full mission text ending with: print MARK_<SLUG>_OK when done. go.>",
-  complete_marker="MARK_<SLUG>_OK",
+  mission="<full mission text ending with: print __CLAWS_DONE__ when done. go.>",
+  complete_marker="__CLAWS_DONE__",
   timeout_ms=600000
 )
 ```

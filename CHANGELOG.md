@@ -7,6 +7,19 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Changed (LH-14: completion convention — __CLAWS_DONE__ marker + claws_publish PRIMARY)
+
+Closes the Final Report TUI hang gap. Claude workers occasionally finished their work but skipped the F3 printf marker because they treated it as redundant narration ("I already said I'm done"). The LH-13 consolidation worker hit this exact gap and required manual close.
+
+Three coordinated changes:
+1. **Canonical marker** — replaced per-worker variants (MARK_LH12_OK_SILVER, MARK_LH13_OK_INDIGO, MARK_LH_REGRESSION_OK_TEAL, etc.) with a single string: `__CLAWS_DONE__`. correlation_id already uniquely identifies workers on the bus; the marker just signals completion. Default `complete_marker` in mcp_server.js changed from `MISSION_COMPLETE` to `__CLAWS_DONE__`.
+2. **Phase 4a reframe** — the header injected into every Claude worker mission now elevates `claws_publish` from advisory side-note ("more reliable than pty marker scraping. Marker stays as fallback.") to PRIMARY required action. The new header explains the 3-layer compliance stack and why each layer exists.
+3. **5-layer convention** — F1/F2 verify outcomes; F3 publishes via MCP (primary); F4 prints marker via Bash (backup); F5 includes the marker in the final assistant message (last-resort backup, exploits Claude's wrap-up bias). Three independent close triggers.
+
+Server-side change is ~5 lines (Phase 4a header text + default marker constant). Rest is documentation: CLAUDE.md, templates/, claws-prompt-templates skill, /claws-do.md command. 5 regression checks (lh-stack-regression.test.js: 30 → 35) lock the convention against drift.
+
+Compliance gain comes from leveraging Claude's behavioral asymmetry: tool calls (Layer 1) and Bash calls with side effects (Layer 2 if user notices output) almost never get substituted with chat narration, while inert printf calls (the old F3) sometimes do. Three independent layers ensure that even if Claude's wrap-up bias drops one or two, the third catches.
+
 ### Changed (LH-13: command + skill consolidation — 27→8 commands, 6→3 skills)
 
 - Deleted 19 commands that duplicated MCP tools or taught the obsolete 7-step manual boot sequence; deleted 3 skills (`prompt-templates` duplicate, `claws-orchestration-engine` teaching manual boot, `dev-protocol-piafeur` internal-only)

@@ -51,26 +51,32 @@ When you receive a Wave Army mission you are a sub-worker. You MUST:
    - Print the role sentinel ONLY AFTER the complete event is published. The LEAD waits on this
      event via `claws_drain_events`; if the sentinel appears before the event, the LEAD may time out.
 
-### Phase 4a — bus-based completion (PREFERRED)
+### Worker completion signaling (5-layer convention)
 
-Workers spawned by `claws_worker` / `claws_fleet` / `claws_dispatch_subworker` receive a header at the top of their mission that identifies their `terminal_id` and instructs them to publish completion directly to the bus:
+Every Claude worker mission MUST end with these layers, in order. The first three are independent close triggers — any one of them firing causes the worker to auto-close cleanly. F4 and F5 exist as belt-and-suspenders backups.
 
+F1 (Bash tool call): git status --short                  — verify state
+F2 (Bash tool call): git log --oneline -5                 — verify commits
+
+F3 (MCP tool call — PRIMARY completion signal, REQUIRED):
 ```
-claws_publish(topic="worker.<termId>.complete", payload={"status":"completed"})
+claws_publish(
+  topic="worker.<your-terminal-id>.complete",
+  payload={"status": "completed", "marker": "__CLAWS_DONE__"}
+)
 ```
 
-The orchestrator's watcher subscribes to `worker.+.complete` (wildcard) via the persistent `_pconn` connection. When the push frame arrives, `detectCompletion` fires immediately with `signal: 'pub_complete_v2'` — bypassing all pty scraping. Round-trip latency is ~100ms.
+F4 (Bash tool call — BACKUP, REQUIRED):
+```
+printf '%s\n' '__CLAWS_DONE__'
+```
 
-**Why this is preferred over pty marker scraping:**
-- No ANSI strip artifacts (⏺/⎿ box-drawing chars corrupting marker text)
-- No Claude TUI version-specific rendering differences
-- No race with Claude's prompt-suggestion-accept (1500ms tick)
-- Mission text containing the marker string cannot cause false-positives
-- Works even when pty output is buffered or delayed
+F5 (chat narration — last-resort BACKUP):
+End your final assistant message with the literal string `__CLAWS_DONE__` on its own line.
 
-**Fallback chain** (if bus publish is not called): pty marker → error marker → pub_complete-v1 → terminated (Wave D).
+Why five layers: F1/F2 verify outcomes. F3 is the structural completion (MCP call → bus event → server picks up with `signal: 'pub_complete_v2'`). F4 is the pty-byte backup that fires even if Claude skips the MCP call. F5 catches the case where Claude bypasses both tool calls and just narrates.
 
-Workers complete via bus publish (`worker.<id>.complete`) or natural terminal close. No marker required.
+Standard marker: `__CLAWS_DONE__` — same string for every worker. `correlation_id` distinguishes workers on the bus; the marker just signals "done".
 
 ### Sidecar is mandatory
 
