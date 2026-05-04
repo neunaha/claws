@@ -877,7 +877,8 @@ else
       ln -sf ../mcp_server.js "$INSTALL_DIR/.claws-bin/mcp_server.js"
       ln -sf ../scripts/shell-hook.sh "$INSTALL_DIR/.claws-bin/shell-hook.sh"
       ln -sf ../scripts/stream-events.js "$INSTALL_DIR/.claws-bin/stream-events.js"
-      rm -rf "$INSTALL_DIR/.claws-bin/hooks" && ln -sf ../scripts/hooks "$INSTALL_DIR/.claws-bin/hooks"
+      rm -rf "$INSTALL_DIR/.claws-bin/hooks"
+      ln -sf ../scripts/hooks "$INSTALL_DIR/.claws-bin/hooks"
       echo '[install] dev mode: symlinked .claws-bin → source'
     else
       cp "$INSTALL_DIR/mcp_server.js" "$PROJECT_ROOT/.claws-bin/mcp_server.js"
