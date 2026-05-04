@@ -508,7 +508,8 @@ function parseToolIndicators(text, sinceOffset) {
   };
 
   // ⏺ ToolName(args) — Claude Code's standard indicator line
-  const RE = /⏺\s+([\w]+)\(([^)]*)\)/g;
+  // \s* not \s+: TUI renders ⏺Bash( with zero whitespace (audit 6c1bd43)
+  const RE = /⏺\s*([\w]+)\(([^)]*)\)/g;
   const results = [];
   let m;
   while ((m = RE.exec(slice)) !== null) {
