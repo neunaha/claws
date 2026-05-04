@@ -143,6 +143,28 @@ function clawsRpc(sockPath, req, timeout = 30000) {
   });
 }
 
+// ─── Worker binary resolution (project-scoped override) ─────────────────────
+// Returns the claude binary name to spawn for workers. Lookup order:
+//   1. <cwd>/.claws/claude-bin file (per-project override, gitignored) — read
+//      first line, trimmed. Used by Claws-on-Claws development to spawn workers
+//      under a different Claude account (e.g. 'claude-neu' shell alias).
+//   2. CLAWS_CLAUDE_BIN env var (per-shell override).
+//   3. Default: 'claude' (end-user default — no behavior change for downstream).
+// File-based override is preferred because .claws/ is project-local and survives
+// MCP restarts without requiring shell-env propagation through Claude Code.
+function getClaudeBin(cwd) {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const f = path.join(cwd || process.cwd(), '.claws', 'claude-bin');
+    if (fs.existsSync(f)) {
+      const v = fs.readFileSync(f, 'utf8').trim().split(/\r?\n/)[0];
+      if (v) return v;
+    }
+  } catch (_e) { /* fall through */ }
+  return process.env.CLAWS_CLAUDE_BIN || 'claude';
+}
+
 // ─── Persistent connection for stateful claws/2 commands ─────────────────────
 // claws/2 peer state (registered by hello, consumed by publish/subscribe/
 // broadcast/task.*) is bound to a single TCP connection on the server. Per-call
@@ -950,7 +972,7 @@ async function runBlockingWorker(sock, args) {
   if (launchClaude) {
     await clawsRpc(sock, {
       cmd: 'send', id: termId,
-      text: `claude --dangerously-skip-permissions --model ${opt.model}`, newline: true,
+      text: `${getClaudeBin(args && args.cwd)} --dangerously-skip-permissions --model ${opt.model}`, newline: true,
     });
     // Event-driven READINESS detection: ❯ alone exits too early — Claude's
     // React/Ink renders the input prompt before MCP auth + render pipeline
@@ -1844,7 +1866,7 @@ async function _dispatchTool(name, args, sock) {
     if (launchClaude) {
       await clawsRpc(sock, {
         cmd: 'send', id: termId,
-        text: `claude --dangerously-skip-permissions --model ${model}`, newline: true,
+        text: `${getClaudeBin(args && args.cwd)} --dangerously-skip-permissions --model ${model}`, newline: true,
       });
       // CRITICAL FIX (2026-05-02): wait for Claude TUI to be FULLY READY before
       // sending mission paste. Without this, mission lands in shell prompt while
@@ -2503,7 +2525,7 @@ async function _dispatchTool(name, args, sock) {
         await sleep(400);
         await clawsRpc(_dswSock, {
           cmd: 'send', id: termId,
-          text: 'claude --model claude-sonnet-4-6 --dangerously-skip-permissions', newline: true,
+          text: `${getClaudeBin(_dswCwd)} --model claude-sonnet-4-6 --dangerously-skip-permissions`, newline: true,
         });
         // BUG-F fix: poll for Claude TUI ready state (❯ + cost:$) instead of stale 'trust' substring.
         // --dangerously-skip-permissions bypasses trust prompt — no '1' send needed.

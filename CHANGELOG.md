@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
 
+### Added (project-scoped binary override)
+
+- `getClaudeBin()` helper in `mcp_server.js` — resolves the claude binary name for worker spawns. Lookup order: (1) `<cwd>/.claws/claude-bin` file (per-project override, gitignored — first line is the binary name), (2) `CLAWS_CLAUDE_BIN` env var, (3) default `claude`. Used at all three spawn sites: `runBlockingWorker` (claws_fleet), fast-path (claws_worker), `dispatch_subworker` (wave army). Enables Claws-on-Claws development to spawn workers under a different Claude account (e.g., personal-account `claude-neu` shell alias) without affecting end users — they get default `claude` because they don't have the marker file. Verified live: worker spawned with `.claws/claude-bin=claude-neu` reports `CLAUDE_CONFIG_DIR=/Users/.../.claude-neu` in env.
+
 ### Fixed (worker boot reliability)
 
 - Regression guard: `extension/test/worker-boot-paste-collapse.test.js` — 12 assertions verify the paste-collapse submit fix cannot be reverted accidentally. Asserts both dispatch paths contain the recovery comment, signal-based check (placeholderGone + claudeResponded), 15s deadline, 5-nudge retry pattern, AND the proven baseline (paste:true → sleep(300) → \r) is preserved. Worker boot reliability is the user's #1 stability concern; regressing it is forbidden. Wired into `npm test` aggregator.
