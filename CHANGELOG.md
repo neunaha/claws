@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
 
+### Changed (LH-12: native --wait mode in stream-events.js — eliminate Monitor regex layer)
+
+Replaced the 5-layer awk/grep `monitor_arm_command` pipeline with a native `--wait <uuid>` mode in `scripts/stream-events.js`. The shell pipeline (JS template literal → JSON → shell command → awk regex → grep regex) accumulated five quoting layers and was the structural root of LH-11's regex bug and its LH-11.1 fix. LH-12 pushes the filter into Node.js itself — no regex, no awk, no shell expansion, just direct string equality on `payload.correlation_id`.
+
+**Design**: `--wait <uuid>` connects to the Claws socket, sends `hello` to register as an observer, then subscribes to `system.worker.completed` and `system.terminal.closed` with `fromCursor:'0000:0'`. The `fromCursor` parameter makes the server atomically replay matching events from the event log before delivering live pushes — this closes the subscribe-before-drain gap without a separate drain round-trip. All events (historical and live) arrive as identical push frames; the handler checks `msg.payload.correlation_id === uuid` and exits 0 on first match. Builds directly on LH-9 (single-writer state, TTL watchdog) and LH-10 (`correlation_id` on `system.terminal.closed`) invariants — those two guarantees make the match structurally bulletproof.
+
+**Exit codes**: 0 on match, 1 on connect failure or invalid args, 2 on socket close before match, 3 on timeout (default 10 min, override via `--timeout-ms`). SIGTERM → 143, SIGINT → 130, SIGPIPE → 141.
+
+**Files changed** (4 total):
+- `scripts/stream-events.js` — additive `--wait` mode; existing default/`--auto-sidecar` behavior unchanged.
+- `mcp_server.js` — 5 `monitor_arm_command` templates collapsed from multi-line awk pipelines to `node ${STREAM_EVENTS_JS} --wait ${corrId}`. Env vars `CLAWS_TOPIC`, `CLAWS_PEER_NAME`, `CLAWS_ROLE` dropped (not needed in `--wait` mode).
+- `extension/test/stream-events-wait.test.js` — 8 new unit tests using mock Unix socket servers: arg validation (tests 1–4), drained-buffer match (5), live-push match (6), wrong-corrId timeout (7), clean socket-close exit (8). **PASS:8 FAIL:0**.
+- `CHANGELOG.md` — this entry.
+
+LH-9/LH-10 regression suites unaffected: `lifecycle-store.test.js` 58/58 PASS, `lh9-state-bulletproof.test.js` 40/40 PASS. Requires `/mcp` reconnect to take effect.
+
 ### Fixed (LH-11.1: awk regex bug in Monitor template — `\\.` matched nothing)
 
 The LH-11 silent template introduced a latent regex bug that made every per-worker Monitor stay silent forever — including on close. Root cause: `\\.` inside an awk regex literal is parsed as `\\` (literal backslash) + `.` (any char), so `system\\.worker\\.completed` was looking for "system" + literal `\` + any-char + "worker" + literal `\` + any-char + "completed" — which never matches the JSON string `"topic":"system.worker.completed"`. The bug was hidden in the LH-9 template because action 1 (`{print; fflush()}`) had no pattern and always fired; only the exit-action's regex was broken, so the Monitor printed every event but never auto-exited (we always closed it manually, masking the issue). LH-11's silent-mode flip made the regex the **sole** trigger → every Monitor went dark.
