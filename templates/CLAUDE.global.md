@@ -53,18 +53,16 @@ When you receive a Wave Army mission you are a sub-worker. You MUST:
 
 ### Worker completion signaling (5-layer convention)
 
-Every Claude worker mission MUST end with these layers, in order. The first three are independent close triggers — any one of them firing causes the worker to auto-close cleanly. F4 and F5 exist as belt-and-suspenders backups.
+Every Claude worker mission MUST end with these layers, in order. F3 is the primary close trigger — one zero-arg call handles everything. F4 and F5 are independent backups.
 
 F1 (Bash tool call): git status --short                  — verify state
 F2 (Bash tool call): git log --oneline -5                 — verify commits
 
 F3 (MCP tool call — PRIMARY completion signal, REQUIRED):
 ```
-claws_publish(
-  topic="worker.<your-terminal-id>.complete",
-  payload={"status": "completed", "marker": "__CLAWS_DONE__"}
-)
+claws_done()
 ```
+(reads CLAWS_TERMINAL_ID from env, publishes system.worker.completed, closes terminal)
 
 F4 (Bash tool call — BACKUP, REQUIRED):
 ```
@@ -74,7 +72,9 @@ printf '%s\n' '__CLAWS_DONE__'
 F5 (chat narration — last-resort BACKUP):
 End your final assistant message with the literal string `__CLAWS_DONE__` on its own line.
 
-Why five layers: F1/F2 verify outcomes. F3 is the structural completion (MCP call → bus event → server picks up with `signal: 'pub_complete_v2'`). F4 is the pty-byte backup that fires even if Claude skips the MCP call. F5 catches the case where Claude bypasses both tool calls and just narrates.
+Why five layers: F1/F2 verify outcomes. F3 is the structural completion (MCP call → bus event → server picks up via `system.worker.completed`). F4 is the pty-byte backup that fires even if Claude skips the MCP call. F5 catches the case where Claude bypasses both tool calls and just narrates.
+
+Deprecated (kept as fallback): `claws_publish(topic="worker.<id>.complete", payload={...})` still works via the existing pub/sub path.
 
 Standard marker: `__CLAWS_DONE__` — same string for every worker. `correlation_id` distinguishes workers on the bus; the marker just signals "done".
 

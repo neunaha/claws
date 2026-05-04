@@ -1015,6 +1015,15 @@
     }
   },
   {
+    "name": "claws_done",
+    "description": "Signal that this worker is complete. Reads CLAWS_TERMINAL_ID from the environment, publishes system.worker.completed to the Claws bus, and closes the terminal. Zero arguments — call this as the final action when your mission is finished.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "claws_dispatch_subworker",
     "description": "Spawn a wrapped terminal for a wave sub-worker, launch Claude Code with --dangerously-skip-permissions, wait for the trust prompt, confirm bypass, and send the mission prompt. Returns terminalId and bootOk status. Use inside a wave after claws_wave_create.",
     "inputSchema": {

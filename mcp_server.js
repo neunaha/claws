@@ -1056,8 +1056,8 @@ async function runBlockingWorker(sock, args) {
   // to write the mission to /tmp and send a "Read <file>..." referrer to dodge
   // some pty quirk, the answer is NO. The mission is a user prompt. Period.
   // Strip bracketed-paste escape sequences so a crafted mission cannot break out of paste mode.
-  // Phase 4a: prepend bus-completion header so workers know to publish worker.<termId>.complete.
-  const _phase4Header = hasMission ? `## Completion signaling (REQUIRED — do this BEFORE your final assistant message)\n\nYour terminal_id is ${termId}. The completion sequence has THREE INDEPENDENT LAYERS — fire ALL THREE in order. Each is a separate, deliberate action; do NOT collapse them into one summary message.\n\nLAYER 1 (PRIMARY — MCP tool call, REQUIRED):\n  claws_publish(\n    topic="worker.${termId}.complete",\n    payload={"status": "completed", "marker": "__CLAWS_DONE__"}\n  )\n\nLAYER 2 (BACKUP — Bash tool call, REQUIRED):\n  printf '%s\\n' '__CLAWS_DONE__'\n\nLAYER 3 (BACKUP — chat narration):\n  End your final assistant message with the literal string __CLAWS_DONE__ on its own line.\n\nWhy three layers: Layer 1 is structural (MCP call → bus event); Layer 2 is independent (Bash → pty bytes); Layer 3 catches the case where you skip both tool calls and just narrate. Three independent paths so a single behavior slip doesn't leave the worker hanging.\n\nRun all three. If you skip Layer 1 because you "already said you're done in chat" — you didn't actually do it. The publish is the action. Run it.\n\n---\n` : '';
+  // Phase 4a: one-line completion hint — claws_done() handles the rest.
+  const _phase4Header = hasMission ? `When you're finished, call \`claws_done()\`. That's it.\n\n---\n` : '';
   const safeMission = hasMission
     ? (_phase4Header + args.mission).replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
     : args.mission;
@@ -1768,6 +1768,26 @@ async function _dispatchTool(name, args, sock) {
    * Role requirements: caller must have handshaked with role='orchestrator'.
    * Returns: deliveredTo (number of peers the broadcast reached).
    */
+  /**
+   * claws_done — zero-arg completion signal. Reads CLAWS_TERMINAL_ID from env,
+   * publishes system.worker.completed, then closes the terminal. Workers call
+   * this as their final action; no payload or schema required.
+   */
+  if (name === 'claws_done') {
+    const termId = process.env.CLAWS_TERMINAL_ID;
+    if (!termId) return toolError('ERROR: CLAWS_TERMINAL_ID not set — claws_done must be called from inside a Claws worker terminal (wrapped=true).');
+    try {
+      await clawsRpcStateful(sock, {
+        cmd: 'publish',
+        topic: 'system.worker.completed',
+        payload: { terminal_id: termId, status: 'completed', completion_signal: 'claws_done', marker: '__CLAWS_DONE__' },
+        echo: false,
+      });
+    } catch (_e) { /* non-fatal — still close */ }
+    try { await clawsRpc(sock, { cmd: 'close', id: termId, close_origin: 'claws_done' }); } catch (_e) { /* non-fatal */ }
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, terminalId: termId }) }] };
+  }
+
   if (name === 'claws_broadcast') {
     const resp = await clawsRpcStateful(sock, {
       cmd: 'broadcast',
@@ -1927,8 +1947,8 @@ async function _dispatchTool(name, args, sock) {
       await sleep(5000);
     }
 
-    // Phase 4a: prepend bus-completion header so the worker knows to publish worker.<termId>.complete.
-    const _fpPhase4Header = hasMission ? `## Completion signaling (REQUIRED — do this BEFORE your final assistant message)\n\nYour terminal_id is ${termId}. The completion sequence has THREE INDEPENDENT LAYERS — fire ALL THREE in order. Each is a separate, deliberate action; do NOT collapse them into one summary message.\n\nLAYER 1 (PRIMARY — MCP tool call, REQUIRED):\n  claws_publish(\n    topic="worker.${termId}.complete",\n    payload={"status": "completed", "marker": "__CLAWS_DONE__"}\n  )\n\nLAYER 2 (BACKUP — Bash tool call, REQUIRED):\n  printf '%s\\n' '__CLAWS_DONE__'\n\nLAYER 3 (BACKUP — chat narration):\n  End your final assistant message with the literal string __CLAWS_DONE__ on its own line.\n\nWhy three layers: Layer 1 is structural (MCP call → bus event); Layer 2 is independent (Bash → pty bytes); Layer 3 catches the case where you skip both tool calls and just narrate. Three independent paths so a single behavior slip doesn't leave the worker hanging.\n\nRun all three. If you skip Layer 1 because you "already said you're done in chat" — you didn't actually do it. The publish is the action. Run it.\n\n---\n` : '';
+    // Phase 4a: one-line completion hint — claws_done() handles the rest.
+    const _fpPhase4Header = hasMission ? `When you're finished, call \`claws_done()\`. That's it.\n\n---\n` : '';
     const payload = hasMission
       ? (_fpPhase4Header + args.mission).replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
       : hasCommand ? wrapShellCommand(args.command, termId) : '';
@@ -2546,8 +2566,8 @@ async function _dispatchTool(name, args, sock) {
     // BUG-08: fire-and-forget — return after create so parallel dispatch_subworker calls don't serialize.
     const _dswSock = sock;
     // GAP-D1: strip bracketed-paste escapes from mission to prevent keystroke injection.
-    // Phase 4a: prepend bus-completion header so sub-worker publishes worker.<termId>.complete.
-    const _dswPhase4Header = `## Completion signaling (REQUIRED — do this BEFORE your final assistant message)\n\nYour terminal_id is ${termId}. The completion sequence has THREE INDEPENDENT LAYERS — fire ALL THREE in order. Each is a separate, deliberate action; do NOT collapse them into one summary message.\n\nLAYER 1 (PRIMARY — MCP tool call, REQUIRED):\n  claws_publish(\n    topic="worker.${termId}.complete",\n    payload={"status": "completed", "marker": "__CLAWS_DONE__"}\n  )\n\nLAYER 2 (BACKUP — Bash tool call, REQUIRED):\n  printf '%s\\n' '__CLAWS_DONE__'\n\nLAYER 3 (BACKUP — chat narration):\n  End your final assistant message with the literal string __CLAWS_DONE__ on its own line.\n\nWhy three layers: Layer 1 is structural (MCP call → bus event); Layer 2 is independent (Bash → pty bytes); Layer 3 catches the case where you skip both tool calls and just narrate. Three independent paths so a single behavior slip doesn't leave the worker hanging.\n\nRun all three. If you skip Layer 1 because you "already said you're done in chat" — you didn't actually do it. The publish is the action. Run it.\n\n---\n`;
+    // Phase 4a: one-line completion hint — claws_done() handles the rest.
+    const _dswPhase4Header = `When you're finished, call \`claws_done()\`. That's it.\n\n---\n`;
     const _dswMission = (_dswPhase4Header + (args.mission || '')).replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
     const _dswWid = args.waveId;
     const _dswRole = args.role;

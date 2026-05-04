@@ -209,18 +209,38 @@ See `.local/README.md` for the full rubric.
 - `script(1)` wrapper must work on macOS and Linux (BSD vs GNU `script` flags differ).
 - Protocol is versioned: `{ protocol: "claws/1", ... }` in handshake. claws/2 extends this with peer identity, pub/sub, and task assignment — all backward compatible with claws/1 clients.
 
+## Extension dev loop — REQUIRED after every `extension/` change
+
+VS Code loads the Claws extension from `~/.vscode/extensions/neunaha.claws-<version>/`, which is a **separate copy** from `extension/dist/` in this repo. Editing TS source and running `npm run build` only updates the workspace copy. Until the installed copy is replaced AND the VS Code window is reloaded, the running extension still has the OLD code — every "fix" you committed is invisible to the runtime.
+
+This has been the root cause of multiple "fixed but not really fixed" bugs. The commit landed, the build succeeded, the static regression test passed (parsing source) — but VS Code kept loading the stale bundle and live workers hit the old behavior.
+
+**Whenever ANY file under `extension/src/`, `extension/test/`, `extension/package.json`, `extension/esbuild.mjs`, or `extension/native/` changes, the workflow MUST end with:**
+
+```bash
+bash scripts/dev-vsix-install.sh
+# then in VS Code:
+# Cmd+Shift+P → Developer: Reload Window
+```
+
+`dev-vsix-install.sh` rebuilds, repackages as VSIX, and installs into VS Code (`~25s`). The window reload is manual — only the user can trigger it.
+
+Worker tasks that touch the extension MUST tell the orchestrator (or user) at completion: "extension change deployed; **window reload required before validation.**" Until reload happens, do NOT run runtime validation, claim auto-close works, or close the task as verified.
+
+What does NOT need this:
+- Edits to `mcp_server.js` — picked up by `/mcp reconnect`, no reload needed
+- Edits to `scripts/`, `templates/`, `.claude/`, `docs/`, `CHANGELOG.md`, `README.md` — no extension runtime involvement
+
 ## Worker completion signaling (5-layer convention)
 
-Every Claude worker mission MUST end with these layers, in order. The first three are independent close triggers — any one of them firing causes the worker to auto-close cleanly. F4 and F5 exist as belt-and-suspenders backups.
+Every Claude worker mission MUST end with these layers, in order. F3 is the primary close trigger — one zero-arg call handles everything. F4 and F5 are independent backups.
 
 F1 (Bash tool call): git status --short                  — verify state
 F2 (Bash tool call): git log --oneline -5                 — verify commits
 
 F3 (MCP tool call — PRIMARY completion signal, REQUIRED):
-  claws_publish(
-    topic="worker.<your-terminal-id>.complete",
-    payload={"status": "completed", "marker": "__CLAWS_DONE__"}
-  )
+  claws_done()
+  (reads CLAWS_TERMINAL_ID from env, publishes system.worker.completed, closes terminal)
 
 F4 (Bash tool call — BACKUP, REQUIRED):
   printf '%s\n' '__CLAWS_DONE__'
@@ -228,7 +248,9 @@ F4 (Bash tool call — BACKUP, REQUIRED):
 F5 (chat narration — last-resort BACKUP):
   End your final assistant message with the literal string __CLAWS_DONE__ on its own line.
 
-Why five layers: F1/F2 verify outcomes. F3 is the structural completion (MCP call → bus event → server picks up). F4 is the pty-byte backup that fires even if Claude skips the MCP call. F5 catches the case where Claude bypasses both tool calls and just narrates — the marker text in the chat message reaches the pty via the TUI render and the marker scanner catches it.
+Why five layers: F1/F2 verify outcomes. F3 is the structural completion (MCP call → bus event → server picks up via system.worker.completed). F4 is the pty-byte backup that fires even if Claude skips the MCP call. F5 catches the case where Claude bypasses both tool calls and just narrates — the marker text in the chat message reaches the pty via the TUI render and the marker scanner catches it.
+
+Deprecated (kept as fallback): `claws_publish(topic="worker.<id>.complete", payload={...})` still works via the existing pub/sub path.
 
 Standard marker: __CLAWS_DONE__ — same string for every worker. correlation_id distinguishes which worker on the bus; the marker just signals "done".
 

@@ -81,6 +81,8 @@ const DESC = {
     'List all pipelines currently registered on the Claws server.',
   claws_pipeline_close:
     'Close and remove a pipeline from the Claws server by pipelineId.',
+  claws_done:
+    'Signal that this worker is complete. Reads CLAWS_TERMINAL_ID from the environment, publishes system.worker.completed to the Claws bus, and closes the terminal. Zero arguments — call this as the final action when your mission is finished.',
   claws_dispatch_subworker:
     'Spawn a wrapped terminal for a wave sub-worker, launch Claude Code with --dangerously-skip-permissions, wait for the trust prompt, confirm bypass, and send the mission prompt. Returns terminalId and bootOk status. Use inside a wave after claws_wave_create.',
   claws_fleet:
@@ -323,6 +325,8 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
     tool('claws_pipeline_close', z.object({
       pipelineId: z.string().describe('Pipeline ID as returned by claws_pipeline_create.'),
     })),
+
+    tool('claws_done', z.object({})),
 
     tool('claws_dispatch_subworker', z.object({
       waveId:  z.string().describe('Wave identifier (from claws_wave_create) this sub-worker belongs to.'),

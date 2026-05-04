@@ -28,6 +28,7 @@ const EXPECTED_NAMES = [
   // D-1: 5 tools present in mcp_server.js but missing from schema file
   'claws_drain_events',
   'claws_pipeline_create', 'claws_pipeline_list', 'claws_pipeline_close',
+  'claws_done',
   'claws_dispatch_subworker',
 ];
 
@@ -55,11 +56,11 @@ check('schemas/mcp-tools.json exists', () => {
 
 const TOOLS = fs.existsSync(TOOLS_JSON) ? require(TOOLS_JSON) : [];
 
-check('tool count is 38', () => {
-  assert.strictEqual(TOOLS.length, 38, `expected 38 tools, got ${TOOLS.length}`);
+check('tool count is 39', () => {
+  assert.strictEqual(TOOLS.length, 39, `expected 39 tools, got ${TOOLS.length}`);
 });
 
-check('all 38 tool names present in correct order', () => {
+check('all 39 tool names present in correct order', () => {
   const names = TOOLS.map((t) => t.name);
   assert.deepStrictEqual(names, EXPECTED_NAMES, `tool names or order mismatch`);
 });
@@ -93,7 +94,7 @@ check('each tool has name, description, and inputSchema', () => {
 
 // ─── mcp_server.js tools/list smoke test ─────────────────────────────────────
 
-check('mcp_server.js tools/list returns 38 tools with correct names', () => {
+check('mcp_server.js tools/list returns 39 tools with correct names', () => {
   const input = [
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}',
     '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}',
@@ -113,7 +114,7 @@ check('mcp_server.js tools/list returns 38 tools with correct names', () => {
   const parsed = JSON.parse(toolsResp);
   const tools  = parsed.result.tools;
   assert.ok(Array.isArray(tools), 'tools is not an array');
-  assert.strictEqual(tools.length, 38, `expected 38 tools from mcp_server, got ${tools.length}`);
+  assert.strictEqual(tools.length, 39, `expected 39 tools from mcp_server, got ${tools.length}`);
   const names = tools.map((t) => t.name);
   assert.deepStrictEqual(names, EXPECTED_NAMES, 'mcp_server tool names or order mismatch');
 });

@@ -32,6 +32,8 @@ const SCHEMAS       = fs.readFileSync(path.join(SRC,   'event-schemas.ts'), 'utf
 const STORE         = fs.readFileSync(path.join(SRC,   'lifecycle-store.ts'), 'utf8');
 const MCP           = fs.readFileSync(path.join(ROOT,  'mcp_server.js'), 'utf8');
 const STREAM_EVENTS = fs.readFileSync(path.join(ROOT,  'scripts/stream-events.js'), 'utf8');
+const CLAWS_PTY     = fs.readFileSync(path.join(SRC,   'claws-pty.ts'), 'utf8');
+const MCP_TOOLS_JSON = fs.readFileSync(path.join(ROOT, 'schemas/mcp-tools.json'), 'utf8');
 
 let passed = 0;
 let failed = 0;
@@ -293,14 +295,14 @@ check(
 // ─── SECTION H — LH-14 completion convention (5 checks) ─────────────────────
 // Ref commit: LH-14 — __CLAWS_DONE__ canonical marker + claws_publish PRIMARY
 
-// H1: Phase 4a header contains 'claws_publish' AND 'PRIMARY' in the same window
+// H1: Phase 4a header references claws_done (LH-18: trimmed to one-liner)
 {
-  const headerIdx = MCP.indexOf('Completion signaling');
-  const window = headerIdx >= 0 ? MCP.slice(headerIdx, headerIdx + 800) : '';
+  const h1Match = MCP.match(/const _phase4Header\s*=\s*hasMission[^;]+;/);
+  const h1Str = h1Match ? h1Match[0] : '';
   check(
-    'H1: mcp_server.js Phase 4a header contains claws_publish AND PRIMARY together',
-    headerIdx >= 0 && window.includes('claws_publish') && window.includes('PRIMARY'),
-    'Phase 4a header must contain "Completion signaling", "claws_publish", and "PRIMARY" together',
+    'H1: mcp_server.js _phase4Header references claws_done (trimmed in LH-18)',
+    h1Str.length > 0 && h1Str.includes('claws_done'),
+    '_phase4Header must reference claws_done() after LH-18 trim',
   );
 }
 
@@ -458,11 +460,74 @@ check(
   'detach describe() string must include "Default depends on mode" (updated in LH-14.1)',
 );
 
+// ─── SECTION K — LH-18: claws_done tool + env injection + preamble trim ────────
+// Ref commit: LH-18
+
+// K1: mcp_server.js registers claws_done tool (in schemas/mcp-tools.json)
+{
+  let k1Pass = false;
+  try {
+    const tools = JSON.parse(MCP_TOOLS_JSON);
+    k1Pass = Array.isArray(tools) && tools.some(t => t.name === 'claws_done');
+  } catch (_) { /* parse error — stays false */ }
+  check(
+    'K1: schemas/mcp-tools.json contains claws_done descriptor',
+    k1Pass,
+    'run `node scripts/codegen/index.mjs` and ensure claws_done is in gen-mcp-tools.mjs',
+  );
+}
+
+// K2: claws_done handler reads process.env.CLAWS_TERMINAL_ID
+check(
+  'K2: claws_done handler reads process.env.CLAWS_TERMINAL_ID',
+  /if\s*\(\s*name\s*===\s*'claws_done'\s*\)[\s\S]{0,500}process\.env\.CLAWS_TERMINAL_ID/.test(MCP),
+  'claws_done handler must read process.env.CLAWS_TERMINAL_ID to identify the worker terminal',
+);
+
+// K3: claws_done handler publishes system.worker.completed and calls close
+{
+  const k3Match = MCP.match(/if\s*\(\s*name\s*===\s*'claws_done'\s*\)([\s\S]*?)(?=\n\s*\/\*\*|\n\s*if\s*\(\s*name\s*===)/);
+  const k3Block = k3Match ? k3Match[1] : '';
+  check(
+    'K3: claws_done handler publishes system.worker.completed and calls close',
+    k3Block.length > 0 &&
+    k3Block.includes('system.worker.completed') &&
+    k3Block.includes("cmd: 'close'"),
+    'claws_done block must contain both system.worker.completed publish and close call',
+  );
+}
+
+// K4: claws-pty.ts injects CLAWS_TERMINAL_ID into the pty env at spawn time
+check(
+  'K4: claws-pty.ts injects CLAWS_TERMINAL_ID into pty env at spawn',
+  CLAWS_PTY.includes('CLAWS_TERMINAL_ID') && CLAWS_PTY.includes('this.opts.terminalId'),
+  'claws-pty.ts must set CLAWS_TERMINAL_ID in the ptyEnv so workers inherit it',
+);
+
+// K5: _phase4Header is trimmed (mentions claws_done and is < 5 lines)
+{
+  const k5Match = MCP.match(/const _phase4Header\s*=\s*hasMission\s*\?[^:]+:[^;]+;/);
+  const k5Str = k5Match ? k5Match[0] : '';
+  const lineCount = k5Str.split('\\n').length;
+  check(
+    'K5: _phase4Header mentions claws_done and is trimmed (< 5 embedded newlines)',
+    k5Str.length > 0 && k5Str.includes('claws_done') && lineCount < 5,
+    `_phase4Header must mention claws_done and have <5 embedded \\n sequences (found ${lineCount})`,
+  );
+}
+
+// K6: gen-mcp-tools.mjs contains claws_done in DESC and tool() call
+check(
+  'K6: gen-mcp-tools.mjs contains claws_done descriptor and tool() call',
+  GEN_MCP_TOOLS.includes("claws_done:") && GEN_MCP_TOOLS.includes("tool('claws_done'"),
+  'gen-mcp-tools.mjs must define claws_done in DESC and register tool(\'claws_done\', z.object({}))',
+);
+
 // ─── Print results ─────────────────────────────────────────────────────────────
 
 const total = passed + failed;
 results.forEach(r => console.log(r));
 console.log('');
-console.log(`lh-stack-regression.test.js: ${passed}/${total} PASS${failed > 0 ? ` (${failed} FAIL)` : ''} (target: 43/43)`);
+console.log(`lh-stack-regression.test.js: ${passed}/${total} PASS${failed > 0 ? ` (${failed} FAIL)` : ''} (target: 49/49)`);
 
 if (failed > 0) process.exit(1);
