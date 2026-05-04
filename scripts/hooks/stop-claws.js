@@ -71,40 +71,37 @@ try {
         if (fs.existsSync(graceFile)) fs.unlinkSync(graceFile);
       } catch { /* grace file removal must never block the hook */ }
 
+      // RIP F4 + HOOK P3 (v0.7.13): replace advisory "you must close terminals" text
+      // with deterministic auto-close action. The Stop hook now actively closes any
+      // worker terminal still alive — no honor system, no LLM cooperation required.
+      // See docs/ENFORCEMENT.md for the principle.
       const state = readState ? (function () { try { return readState(cwd); } catch { return null; } })() : null;
+      if (!state) { process.exit(0); return; }
 
-      if (!state) {
-        try {
-          process.stderr.write(
-            `[claws] Session ending — if you created terminals this session, close them now:\n` +
-            `        claws_list → identify terminals you own → claws_close each one.\n`
-          );
-        } catch {}
-        process.exit(0);
-        return;
-      }
-
-      // Check for unclosed workers
       const workers = Array.isArray(state.workers) ? state.workers : [];
       const unclosed = workers.filter(w => typeof w === 'object' ? !w.closed : false);
       if (unclosed.length > 0) {
-        const ids = unclosed.map(w => w.id).join(', ');
         try {
-          process.stderr.write(
-            `[LIFECYCLE CLEANUP] ${unclosed.length} terminal(s) still open: ${ids}.\n` +
-            `        Close them with claws_close before ending.\n`
-          );
-        } catch {}
-      }
-
-      // Check for missing REFLECT phase
-      const phases_completed = Array.isArray(state.phases_completed) ? state.phases_completed : [];
-      if (!phases_completed.includes('REFLECT')) {
-        try {
-          process.stderr.write(
-            `[LIFECYCLE REFLECT] Write your reflect summary to .claws/lifecycle-reflect.md\n` +
-            `        — what succeeded, what failed, what to improve next time.\n`
-          );
+          const net = require('net');
+          for (const w of unclosed) {
+            try {
+              const c = net.createConnection(socketPath);
+              c.setTimeout(800, () => { try { c.destroy(); } catch {} });
+              c.on('error', () => { try { c.destroy(); } catch {} });
+              c.on('connect', () => {
+                try {
+                  // Protocol uses one `id` field as both rpc correlation id and
+                  // close target id. Server returns it back in response.
+                  c.write(JSON.stringify({
+                    cmd: 'close',
+                    id: w.id,
+                    close_origin: 'orchestrator',
+                  }) + '\n');
+                } catch {}
+                setTimeout(() => { try { c.destroy(); } catch {} }, 200);
+              });
+            } catch {}
+          }
         } catch {}
       }
 
