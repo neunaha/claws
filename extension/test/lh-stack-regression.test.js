@@ -397,11 +397,72 @@ check(
   );
 }
 
+// ─── SECTION J — LH-14.1: loose worker-complete schema + mode-aware detach ────
+// Ref commit: LH-14.1
+
+const WORKER_COMPLETE_SCHEMA = fs.readFileSync(
+  path.join(ROOT, 'schemas/json/worker-complete-v1.json'), 'utf8',
+);
+const GEN_MCP_TOOLS = fs.readFileSync(
+  path.join(ROOT, 'scripts/codegen/gen-mcp-tools.mjs'), 'utf8',
+);
+
+// J1: worker-complete-v1.json required array contains exactly ["result"]
+{
+  let j1Pass = false;
+  try {
+    const schema = JSON.parse(WORKER_COMPLETE_SCHEMA);
+    const def = schema.definitions?.['worker-complete-v1'] || schema.definitions?.['WorkerCompleteV1'];
+    const required = def?.required || schema?.required;
+    j1Pass = Array.isArray(required) && required.length === 1 && required[0] === 'result';
+  } catch (e) { /* parse error — j1Pass stays false */ }
+  check(
+    'J1: worker-complete-v1.json required array contains exactly ["result"]',
+    j1Pass,
+    'required array must be ["result"] — all other fields are now optional',
+  );
+}
+
+// J2: event-schemas.ts WorkerCompleteV1 has all fields except result marked .optional()
+{
+  const wcMatch = SCHEMAS.match(/export\s+const\s+WorkerCompleteV1\s*=\s*z\.object\(([\s\S]*?)\);\s*export\s+type\s+WorkerComplete/);
+  const wcBlock = wcMatch ? wcMatch[1] : '';
+  const optionalCount = (wcBlock.match(/\.optional\(\)/g) || []).length;
+  // Check only the result: line itself — not the entire 60-char window
+  const resultLineHasOptional = /result:[^\n]*\.optional\(\)/.test(wcBlock);
+  check(
+    'J2: event-schemas.ts WorkerCompleteV1 has all 6 non-result fields marked .optional()',
+    wcBlock.length > 0 && optionalCount >= 6 && !resultLineHasOptional,
+    `wcBlock found=${wcBlock.length > 0}, optionals=${optionalCount} (need ≥6), result-line.optional=${resultLineHasOptional} (must be false)`,
+  );
+}
+
+// J3: mcp_server.js claws_worker handler uses mode-aware detach default
+{
+  const j3WorkerMatch = MCP.match(
+    /if\s*\(\s*name\s*===\s*'claws_worker'\s*\)([\s\S]*?)(?=\n\s*if\s*\(\s*name\s*===)/,
+  );
+  const j3WorkerBlock = j3WorkerMatch ? j3WorkerMatch[1] : '';
+  check(
+    'J3: mcp_server.js claws_worker handler uses mode-aware detach default (hasCommand in expression)',
+    j3WorkerBlock.length > 0 &&
+    /const\s+detach\s*=\s*args\.detach\s*!==\s*undefined[\s\S]{0,200}!hasCommand/.test(j3WorkerBlock),
+    'claws_worker handler must contain: const detach = args.detach !== undefined ? ... : !hasCommand',
+  );
+}
+
+// J4: gen-mcp-tools.mjs detach description reflects mode-aware default
+check(
+  'J4: gen-mcp-tools.mjs detach description reflects mode-aware default',
+  GEN_MCP_TOOLS.includes('Default depends on mode'),
+  'detach describe() string must include "Default depends on mode" (updated in LH-14.1)',
+);
+
 // ─── Print results ─────────────────────────────────────────────────────────────
 
 const total = passed + failed;
 results.forEach(r => console.log(r));
 console.log('');
-console.log(`lh-stack-regression.test.js: ${passed}/${total} PASS${failed > 0 ? ` (${failed} FAIL)` : ''}`);
+console.log(`lh-stack-regression.test.js: ${passed}/${total} PASS${failed > 0 ? ` (${failed} FAIL)` : ''} (target: 43/43)`);
 
 if (failed > 0) process.exit(1);

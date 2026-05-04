@@ -7,6 +7,10 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Changed (LH-14.1: loose worker-complete schema + mode-aware detach default)
+
+Two coordinated changes make shell-worker completion reliable end-to-end. First, the `worker.<id>.complete` schema (`schemas/json/worker-complete-v1.json` and `WorkerCompleteV1` Zod type in `event-schemas.ts`) now requires only `result` — the six envelope fields (`summary`, `artifacts`, `phases_completed`, `total_tokens`, `total_cost_usd`, `duration_ms`) are optional. Workers calling `claws_publish(topic="worker.<id>.complete", payload={result:"ok"})` were previously silently rejected as `system.malformed.received` because the schema demanded the full envelope. Second, `claws_worker`'s `detach` default is now mode-aware: mission mode (no `command`) defaults to `detach=true` (fire-and-return), while command mode (`command` present) defaults to `detach=false` (blocking). The decision uses `hasCommand` declared before the blocking gate, keeping the existing `args.wait === true` opt-in path unchanged. 4 new regression checks (J1–J4) in `lh-stack-regression.test.js` lock both changes; 3 new assertions in `non-blocking-defaults.test.js` lock the detach logic. Suite total: 39→43 PASS.
+
 ### Fixed (LH-15: shell-worker marker — regex tolerance + auto-wrap)
 
 Two coordinated bugs prevented claws_worker(command=...) shell missions from auto-closing reliably. Discovered via the LH-14 A/B validation test: terms 18 + 19 both timed out despite the marker firing in the pty.

@@ -131,12 +131,12 @@ export type WorkerHeartbeat = z.infer<typeof WorkerHeartbeatV1>;
 
 export const WorkerCompleteV1 = z.object({
   result:           ResultEnum,
-  summary:          z.string().min(1),
-  artifacts:        z.array(ArtifactSchema),
-  phases_completed: z.array(PhaseEnum),
-  total_tokens:     z.number().nonnegative(),
-  total_cost_usd:   z.number().nonnegative(),
-  duration_ms:      z.number().nonnegative(),
+  summary:          z.string().min(1).optional(),
+  artifacts:        z.array(ArtifactSchema).optional(),
+  phases_completed: z.array(PhaseEnum).optional(),
+  total_tokens:     z.number().nonnegative().optional(),
+  total_cost_usd:   z.number().nonnegative().optional(),
+  duration_ms:      z.number().nonnegative().optional(),
 });
 export type WorkerComplete = z.infer<typeof WorkerCompleteV1>;
 

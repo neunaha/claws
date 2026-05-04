@@ -169,7 +169,7 @@
         },
         "detach": {
           "type": "boolean",
-          "description": "Return immediately after spawning (legacy behavior, default false)."
+          "description": "Return immediately after spawning. Default depends on mode: true for mission, false for command. Pass explicitly to override."
         },
         "timeout_ms": {
           "type": "integer",

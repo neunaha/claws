@@ -145,7 +145,7 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
       cwd:               z.string().describe('Working directory for the worker terminal. Defaults to the MCP server cwd (project root) so the worker lands in a trusted folder with the project MCP socket reachable.').optional(),
       model:             z.string().describe('Claude Code model flag value. Defaults to "claude-sonnet-4-6" — Sonnet is mandatory for workers per project policy.').optional(),
       launch_claude:     z.boolean().describe('Launch claude --dangerously-skip-permissions before sending mission (default: true if mission present, false if command present)').optional(),
-      detach:            z.boolean().describe('Return immediately after spawning (legacy behavior, default false).').optional(),
+      detach:            z.boolean().describe('Return immediately after spawning. Default depends on mode: true for mission, false for command. Pass explicitly to override.').optional(),
       timeout_ms:        z.number().int().describe('Max wait for completion in ms (default 300000 = 5 min).').optional(),
       boot_wait_ms:      z.number().int().describe('Max wait for Claude Code boot before sending mission (default 8000).').optional(),
       boot_marker:       z.string().describe('Substring that indicates Claude booted (default "Claude Code").').optional(),

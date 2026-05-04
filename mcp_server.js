@@ -1819,8 +1819,12 @@ async function _dispatchTool(name, args, sock) {
 
   if (name === 'claws_worker') {
     try { await _ensureSidecarOrThrow(); } catch (e) { return toolError('SPAWN REFUSED: sidecar unavailable — ' + e.message); }
-    // Blocking mode: explicit wait:true OR detach:false are both treated as blocking.
-    if (args.wait === true || args.detach === false) { // BUG-05: detach:false was ignored
+    const hasCommand = typeof args.command === 'string' && args.command.length > 0;
+    const detach = args.detach !== undefined
+      ? args.detach !== false
+      : !hasCommand;  // mission-mode default: detach=true; command-mode default: detach=false
+    // Blocking mode: explicit wait:true OR detach:false (command-mode default) are both treated as blocking.
+    if (args.wait === true || !detach) {
       // Legacy blocking path — guarded at 8 s to protect MCP stdio.
       return withMaxHold(
         runBlockingWorker(sock, args).then((result) => {
@@ -1851,7 +1855,6 @@ async function _dispatchTool(name, args, sock) {
       return toolError(`ERROR: invalid model name '${model}' — must match /^[a-zA-Z0-9._-]+$/`);
     }
     const hasMission = typeof args.mission === 'string' && args.mission.length > 0;
-    const hasCommand = typeof args.command === 'string' && args.command.length > 0;
     const launchClaude = args.launch_claude !== undefined ? !!args.launch_claude : hasMission;
     const workerCwd = typeof args.cwd === 'string' && args.cwd.length > 0 ? args.cwd : process.cwd();
 

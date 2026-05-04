@@ -89,6 +89,34 @@ check(
   'non-blocking return value must include terminal_id and a hint field',
 );
 
+// ─── (2b) claws_worker: mode-aware detach default ────────────────────────────
+//
+// LH-14.1: detach default is now mode-aware.
+//   mission mode (no command):  detach defaults to true  (fire-and-return)
+//   command mode (has command): detach defaults to false (blocking via !detach)
+//
+// The implementation declares `const hasCommand` before the blocking gate and
+// uses `!hasCommand` as the detach default when args.detach is not explicit.
+
+check(
+  'claws_worker handler contains hasCommand-based detach default',
+  /const\s+detach\s*=\s*args\.detach\s*!==\s*undefined[\s\S]{0,200}!hasCommand/.test(workerBlock),
+  'expected: const detach = args.detach !== undefined ? args.detach !== false : !hasCommand',
+);
+
+check(
+  'mission-mode default remains detach=true (!hasCommand is false when no command → detach=true)',
+  /!\s*hasCommand/.test(workerBlock),
+  'detach default expression must contain !hasCommand so mission mode defaults to detach=true',
+);
+
+check(
+  'command-mode default flips to detach=false (hasCommand=true → !hasCommand=false → detach=false)',
+  /!\s*hasCommand/.test(workerBlock) &&
+  /args\.detach\s*!==\s*undefined/.test(workerBlock),
+  '!hasCommand in the detach ternary ensures command mode defaults to detach=false',
+);
+
 // ─── (3) withMaxHold helper exists with Promise.race guard ───────────────────
 //
 // The main tool dispatcher wraps every handler call in withMaxHold(8000) so

@@ -74,13 +74,7 @@
         }
       },
       "required": [
-        "result",
-        "summary",
-        "artifacts",
-        "phases_completed",
-        "total_tokens",
-        "total_cost_usd",
-        "duration_ms"
+        "result"
       ],
       "additionalProperties": false
     }
