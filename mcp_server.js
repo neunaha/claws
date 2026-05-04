@@ -1566,6 +1566,16 @@ async function _dispatchTool(name, args, sock) {
   if (name === 'claws_close') {
     const resp = await clawsRpc(sock, { cmd: 'close', id: args.id });
     if (!resp.ok) return toolError(`ERROR: ${resp.error}`);
+    // BUG-B-close: cancel matching _detachWatcher when the orchestrator explicitly
+    // closes a worker terminal. Without this, the watcher keeps polling for up to
+    // 10 min then logs a spurious 'timeout'/'user-closed' result.
+    const _bugBCloseTermId = String(args.id);
+    const _bugBCloseWatcher = _detachWatchers.get(_bugBCloseTermId);
+    if (_bugBCloseWatcher) {
+      log(`BUG-B-close: cancelling _detachWatcher for orchestrator-closed term=${_bugBCloseTermId}`);
+      if (_bugBCloseWatcher.intervalId) clearInterval(_bugBCloseWatcher.intervalId);
+      _detachWatchers.delete(_bugBCloseTermId);
+    }
     return { content: [{ type: 'text', text: `closed terminal ${args.id}` }] };
   }
 
@@ -1808,6 +1818,9 @@ async function _dispatchTool(name, args, sock) {
     const payload = hasMission
       ? args.mission.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
       : hasCommand ? args.command : '';
+    // BUG-A: track log offset after mission injection so detectCompletion never
+    // false-positives on marker strings embedded in the mission body itself.
+    let _fpMarkerScanFrom = 0;
     if (payload) {
       // Proven pattern from claws_dispatch_subworker (which submits reliably):
       //   paste:true newline:false  →  sleep(300)  →  explicit \r
@@ -1834,6 +1847,15 @@ async function _dispatchTool(name, args, sock) {
         log('mission submit not verified within 5s, sending another CR');
         await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
       }
+      // BUG-A: snapshot post-mission log size so _fpTick scans only what comes
+      // after the mission text — prevents false-positive completion when the
+      // mission body itself contains the marker string.
+      try {
+        const _postMissionSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 1024 });
+        _fpMarkerScanFrom = (_postMissionSnap.ok && typeof _postMissionSnap.totalSize === 'number')
+          ? _postMissionSnap.totalSize
+          : (_postMissionSnap.ok && typeof _postMissionSnap.bytes === 'string' ? _postMissionSnap.bytes.length : 0);
+      } catch (e) { /* non-fatal — defaults to 0, degraded but safe */ }
     }
 
     // BUG-24+25: register detach watcher so system.worker.completed is published
@@ -1981,7 +2003,10 @@ async function _dispatchTool(name, args, sock) {
         if (text.length > _fpScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_fpScanOffset), sock);
         _fpScanOffset = text.length;
         const _fpNow = Date.now();
-        const _fpDet = detectCompletion(text, _fpOpt, String(termId), _workerTerminatedSet);
+        // BUG-A: slice past mission body so marker strings in the mission text
+        // don't trigger false-positive completion before work begins.
+        const _fpScanText = text.length > _fpMarkerScanFrom ? text.slice(_fpMarkerScanFrom) : '';
+        const _fpDet = detectCompletion(_fpScanText, _fpOpt, String(termId), _workerTerminatedSet);
         const _fpStatus = _fpDet ? _fpDet.status : null;
         const _fpMarkerLine = _fpDet ? _fpDet.line : null;
         const _fpSignal = _fpDet ? _fpDet.signal : null;
@@ -2409,28 +2434,45 @@ async function _dispatchTool(name, args, sock) {
           cmd: 'send', id: termId,
           text: 'claude --model claude-sonnet-4-6 --dangerously-skip-permissions', newline: true,
         });
-        // Poll for trust prompt (~25 s), tracking log offset to avoid re-reading.
+        // BUG-F fix: poll for Claude TUI ready state (❯ + cost:$) instead of stale 'trust' substring.
+        // --dangerously-skip-permissions bypasses trust prompt — no '1' send needed.
         let bootOk = false;
-        let logOffset = 0;
+        let _dswBootStable = 0;
         const bootDeadline = Date.now() + 25_000;
         while (Date.now() < bootDeadline) {
-          const snap = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, offset: logOffset, limit: 32 * 1024 });
-          if (snap.ok && typeof snap.bytes === 'string') {
-            if (snap.bytes.includes('trust')) { bootOk = true; break; }
-            if (typeof snap.nextOffset === 'number') logOffset = snap.nextOffset;
+          const _dswBs = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+          const _dswBytes = (_dswBs.ok && typeof _dswBs.bytes === 'string') ? _dswBs.bytes : '';
+          if (_dswBytes.includes('❯') && (_dswBytes.includes('cost:$') || _dswBytes.includes('cost: $'))) {
+            _dswBootStable++;
+            if (_dswBootStable >= 3) { bootOk = true; break; }
+          } else {
+            _dswBootStable = 0;
           }
-          await sleep(500);
+          await sleep(300);
         }
-        if (!bootOk) log(`claws_dispatch_subworker: trust prompt not seen for ${workerName} — continuing anyway`);
-        await clawsRpc(_dswSock, { cmd: 'send', id: termId, text: '1', newline: false });
-        await sleep(1000);
+        if (!bootOk) log(`claws_dispatch_subworker: Claude TUI ready signal not seen for ${workerName} — continuing anyway`);
+        await sleep(5000);
         // GAP-D1: _dswMission already sanitized above — send as-is.
-        // Single call: see claws_worker comment for rationale.
+        // BUG-C fix: record log offset before mission send to prevent false-positive marker detection.
+        const _dswPreMissionSnap = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
+        let _dswMarkerScanFrom = (_dswPreMissionSnap.ok && typeof _dswPreMissionSnap.bytes === 'string') ? _dswPreMissionSnap.bytes.length : 0;
         await clawsRpc(_dswSock, { cmd: 'send', id: termId, text: _dswMission, newline: true, paste: true });
 
         // BUG-09: register auto-close watcher mirroring the fast-path detach watcher pattern.
         const _dswStartedAt = Date.now();
         let _dswScanOffset = 0;
+
+        // BUG-E fix: HeartbeatStateMachine for sub-worker observability (mirrors _fpTick pattern).
+        const _dswHbState = new WorkerHeartbeatStateMachine({
+          terminalId: termId,
+          correlationId: _dswCorrId,
+        });
+        let _dswHbLastPublishedAt = Date.now();
+        let _dswProgressBurst = [];
+        let _dswProgressBurstStart = 0;
+        let _dswLastPublishedToolCount = 0;
+        let _dswLastTodoSig = '';
+        let _dswLastPublishedErrorsCount = 0;
 
         const _dswOpt = { complete_marker: _dswCompleteMarker, error_markers: _dswErrorMarkers, timeout_ms: _dswTimeoutMs, poll_interval_ms: _dswPollMs, close_on_complete: _dswCloseOnComplete };
         const _dswTick = async () => {
@@ -2453,10 +2495,113 @@ async function _dispatchTool(name, args, sock) {
             }
             const snap = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
             const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
+            // BUG-E: observe pty for heartbeat state machine + publish backstop heartbeat
+            try {
+              _dswHbState.observe(text);
+              const _dswHbNow = Date.now();
+              if (_dswHbNow - _dswHbLastPublishedAt >= 30000) {
+                const dswHbSnap = _dswHbState.snapshot();
+                const elapsedSec = Math.floor(dswHbSnap.durationMs / 1000);
+                await _pconnEnsureRegistered(_dswSock);
+                await _pconnWrite({
+                  cmd: 'publish', protocol: 'claws/2',
+                  topic: `worker.${termId}.heartbeat`,
+                  payload: {
+                    kind: 'heartbeat',
+                    summary: `still active · ${elapsedSec}s elapsed`,
+                    current_action: dswHbSnap.state,
+                    duration_ms: dswHbSnap.durationMs,
+                    tokens_in: dswHbSnap.cumulative.tokens_in || undefined,
+                    tokens_out: dswHbSnap.cumulative.tokens_out || undefined,
+                    captured_at: new Date().toISOString(),
+                    correlation_id: _dswCorrId,
+                  },
+                });
+                _dswHbLastPublishedAt = _dswHbNow;
+              }
+              // L5: progress event burst aggregation (5s window)
+              const _dswL5Snap = _dswHbState.snapshot();
+              const _dswNewTools = _dswL5Snap.toolCount - _dswLastPublishedToolCount;
+              if (_dswNewTools > 0) {
+                _dswProgressBurst.push({ kind: 'tools', count: _dswNewTools, ts: Date.now() });
+                if (_dswProgressBurstStart === 0) _dswProgressBurstStart = Date.now();
+                _dswLastPublishedToolCount = _dswL5Snap.toolCount;
+              }
+              if (_dswProgressBurst.length > 0 && (Date.now() - _dswProgressBurstStart) >= 5000) {
+                const _dswBurstTotal = _dswProgressBurst.reduce((a, e) => a + e.count, 0);
+                const _dswBurstElapsed = Math.round((Date.now() - _dswProgressBurstStart) / 1000);
+                try {
+                  await _pconnEnsureRegistered(_dswSock);
+                  await _pconnWrite({
+                    cmd: 'publish', protocol: 'claws/2',
+                    topic: `worker.${termId}.heartbeat`,
+                    payload: {
+                      kind: 'progress',
+                      summary: `${_dswBurstTotal} tool call${_dswBurstTotal !== 1 ? 's' : ''} in last ${_dswBurstElapsed}s`,
+                      current_action: _dswL5Snap.state,
+                      duration_ms: _dswL5Snap.durationMs,
+                      total_tool_calls: _dswL5Snap.toolCount,
+                      tokens_in: _dswL5Snap.cumulative.tokens_in || undefined,
+                      tokens_out: _dswL5Snap.cumulative.tokens_out || undefined,
+                      captured_at: new Date().toISOString(),
+                      correlation_id: _dswCorrId,
+                    },
+                  });
+                } catch (e) { log('hb-l5 dsw progress publish failed: ' + (e && e.message || e)); }
+                _dswProgressBurst = [];
+                _dswProgressBurstStart = 0;
+              }
+              // L6: kind=approach (TodoWrite changes)
+              const _dswL6Snap = _dswHbState.snapshot();
+              const _dswTodoSig = _dswL6Snap.todoItems ? JSON.stringify(_dswL6Snap.todoItems) : '';
+              if (_dswTodoSig && _dswTodoSig !== _dswLastTodoSig) {
+                _dswLastTodoSig = _dswTodoSig;
+                try {
+                  await _pconnEnsureRegistered(_dswSock);
+                  await _pconnWrite({
+                    cmd: 'publish', protocol: 'claws/2',
+                    topic: `worker.${termId}.heartbeat`,
+                    payload: {
+                      kind: 'approach',
+                      summary: `planning: ${_dswL6Snap.todoItems.length} task${_dswL6Snap.todoItems.length !== 1 ? 's' : ''}`,
+                      approach_detail: _dswL6Snap.todoItems,
+                      current_action: _dswL6Snap.state,
+                      duration_ms: _dswL6Snap.durationMs,
+                      captured_at: new Date().toISOString(),
+                      correlation_id: _dswCorrId,
+                    },
+                  });
+                } catch (e) { log('hb-l6 dsw approach publish failed: ' + (e && e.message || e)); }
+              }
+              // L6: kind=error
+              if (_dswL6Snap.errorsCount > _dswLastPublishedErrorsCount) {
+                const _dswNewErrors = _dswHbState.lastErrors.slice(_dswLastPublishedErrorsCount);
+                _dswLastPublishedErrorsCount = _dswL6Snap.errorsCount;
+                try {
+                  await _pconnEnsureRegistered(_dswSock);
+                  await _pconnWrite({
+                    cmd: 'publish', protocol: 'claws/2',
+                    topic: `worker.${termId}.heartbeat`,
+                    payload: {
+                      kind: 'error',
+                      summary: `${_dswNewErrors.length} error${_dswNewErrors.length !== 1 ? 's' : ''} detected`,
+                      error_detail: _dswNewErrors.map(e => e.detail || e.summary || String(e)).slice(0, 5).join('; '),
+                      current_action: _dswL6Snap.state,
+                      duration_ms: _dswL6Snap.durationMs,
+                      captured_at: new Date().toISOString(),
+                      correlation_id: _dswCorrId,
+                    },
+                  });
+                } catch (e) { log('hb-l6 dsw error publish failed: ' + (e && e.message || e)); }
+              }
+            } catch (e) {
+              log('hb-dsw backstop publish failed: ' + (e && e.message || e));
+            }
             if (text.length > _dswScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_dswScanOffset), _dswSock);
             _dswScanOffset = text.length;
-            const _dswNow = Date.now();
-            const _dswDet = detectCompletion(text, _dswOpt, String(termId), _workerTerminatedSet);
+            // BUG-C fix: scan completion only from post-mission offset to prevent false-positive detection.
+            const _dswDetText = text.slice(_dswMarkerScanFrom);
+            const _dswDet = detectCompletion(_dswDetText, _dswOpt, String(termId), _workerTerminatedSet);
             const _dswStatus = _dswDet ? _dswDet.status : null;
             const _dswMarkerLine = _dswDet ? _dswDet.line : null;
             const _dswSignal = _dswDet ? _dswDet.signal : null;
