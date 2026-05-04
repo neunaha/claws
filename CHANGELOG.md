@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
 
+### Added (dev tooling)
+
+- `scripts/dev-vsix-install.sh` + `npm run install:vsix` (in `extension/`) — full extension reinstall path: `npm run build` → `vsce package` → `code --install-extension --force`. Complements the existing fast `npm run deploy:dev` (~5s, copies dist into installed dir but does not refresh `extensions.json` metadata). Use `install:vsix` (~25s) when you want VS Code's Extensions panel to actually reflect the new install (refreshes `installedTimestamp`, version label, panel date) — prevents silently iterating against a stale extension. Reload window after running.
+
 ### Added (LH-1: wave violation auto-close)
 
 - Layer LH-1 lifecycle hardening: when a sub-worker is silent past the violation threshold (default 25s), `WaveRegistry` now auto-closes the sub-worker's terminal via `terminalManager.close(id, 'wave_violation')`. Plugs the silent leak. New close origin `'wave_violation'` added to `TerminalCloseOriginEnum`. New method `markSubWorkerAutoClosed(waveId, role)` on `WaveRegistry` clears the violation timer and marks the entry complete; `_checkViolation` skips reschedule once entry is auto-closed (no zombie timer cycles). Constructor accepts optional `violationThresholdMs` parameter for fast unit tests. Files: `extension/src/event-schemas.ts`, `extension/src/wave-registry.ts`, `extension/src/server.ts`. Test: `extension/test/wave-violation-close.test.js` (8/8 PASS).

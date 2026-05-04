@@ -54,6 +54,7 @@
     "bundle-native": "node scripts/bundle-native.mjs",
     "watch": "node esbuild.mjs --watch",
     "deploy:dev": "npm run build && node scripts/deploy-dev.mjs",
+    "install:vsix": "bash ../scripts/dev-vsix-install.sh",
     "typecheck": "tsc --noEmit",
     "test:smoke": "node test/smoke.test.js",
     "test:native": "node test/native-bundle.test.js",
