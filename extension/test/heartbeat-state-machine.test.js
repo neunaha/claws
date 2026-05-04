@@ -173,23 +173,21 @@ check('observe: spinner active → stays WORKING, updates lastSpinnerAt', () => 
   assert.strictEqual(m.lastNewBytesAt, 200);
 });
 
-// ─── Test 6: WORKING → POST_WORK after 5s idle ───────────────────────────────
+// ─── Test 6: WORKING → POST_WORK ─────────────────────────────────────────────
 
-check('observe: WORKING→POST_WORK when spinner stopped + prompt idle + bytes idle 5s', () => {
+check('observe: WORKING→POST_WORK when spinner stopped + prompt idle', () => {
   const m = new WorkerHeartbeatStateMachine({ terminalId: 6, correlationId: 'x' });
   const readyText = 'bypass permissions on\n❯';
   m.observe(readyText, 0);
 
-  // Enter WORKING with tool call, lastNewBytesAt=100
+  // Enter WORKING with tool call
   const workText = readyText + '\n⏺ Read(docs.md)\n❯';
   m.observe(workText, 100);
   assert.strictEqual(m.state, 'WORKING');
-  assert.strictEqual(m.lastNewBytesAt, 100);
 
-  // 5100ms later: same text (no new bytes), no spinner, prompt idle
+  // 5100ms later: no spinner, prompt idle (bytesIdle not required)
   const transitions = m.observe(workText, 5201);
   // lastSpinnerAt=null → spinnerStopped=true
-  // 5201 - 100 = 5101 > 5000 → bytesIdle=true
   // parsePromptIdle(workText) → last non-empty line is '❯' → true
   assert.strictEqual(transitions.length, 1);
   assert.strictEqual(transitions[0].from, 'WORKING');
@@ -198,15 +196,24 @@ check('observe: WORKING→POST_WORK when spinner stopped + prompt idle + bytes i
   assert.strictEqual(m.postWorkEnteredAt, 5201);
 });
 
-check('observe: WORKING stays WORKING when bytes not yet idle (< 5s)', () => {
+check('observe: WORKING→POST_WORK fires even with recent pty bytes (prompt-suggestion simulation)', () => {
+  // Claude Code renders auto-suggested follow-up prompts in the ❯ area when idle,
+  // emitting new pty bytes each render. The old bytesIdle gate was indefinitely
+  // blocked by this. Verify POST_WORK fires despite recent bytes (t=5200 → t=5201).
   const m = new WorkerHeartbeatStateMachine({ terminalId: 6, correlationId: 'x' });
   m.observe('bypass permissions on\n❯', 0);
   const workText = 'bypass permissions on\n❯\n⏺ Bash(ls)\n❯';
-  m.observe(workText, 100);   // READY→WORKING, lastNewBytesAt=100
-  // Only 2s elapsed since lastNewBytesAt — bytesIdle=false
-  const t = m.observe(workText, 2100);
-  assert.ok(Array.isArray(t) && t.length === 0, 'expected no transitions');
+  m.observe(workText, 100);   // READY→WORKING
   assert.strictEqual(m.state, 'WORKING');
+
+  // Simulate prompt-suggestion byte at t=5200 (1ms before observe at t=5201)
+  m.lastNewBytesAt = 5200;  // bytesIdle would be false (only 1ms elapsed)
+
+  // Spinner has been gone for >5s, prompt is visible → POST_WORK must fire
+  const t = m.observe(workText, 5201);
+  assert.strictEqual(t.length, 1, 'expected WORKING→POST_WORK transition despite recent bytes');
+  assert.strictEqual(t[0].to, 'POST_WORK');
+  assert.strictEqual(m.state, 'POST_WORK');
 });
 
 // ─── Test 7: POST_WORK → WORKING on Claude resumption ────────────────────────
@@ -293,8 +300,8 @@ check('observe: chunked text evolves state correctly across multiple calls', () 
   assert.strictEqual(m.state, 'WORKING', 'tool call: WORKING');
   assert.strictEqual(m.toolCount, 1);
 
-  // Chunk 4: second tool
-  m.observe('bypass permissions on\n❯\n⏺ Write(out.txt)\n⏺ Bash(git add .)\n', 300);
+  // Chunk 4: second tool with active spinner → stays WORKING (spinner suppresses POST_WORK)
+  m.observe('bypass permissions on\n❯\n⏺ Write(out.txt)\n✻ Thinking for 2s\n⏺ Bash(git add .)\n', 300);
   assert.strictEqual(m.state, 'WORKING', 'second tool: still WORKING');
   assert.strictEqual(m.toolCount, 2);
 });

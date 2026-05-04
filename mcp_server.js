@@ -807,16 +807,16 @@ class WorkerHeartbeatStateMachine {
       }
 
     } else if (this.state === 'WORKING') {
-      // WORKING → POST_WORK: all four conditions must hold simultaneously
-      // 1) spinner absent (no spinner seen in last 5s)
-      // 2) cursor at ❯ prompt (final assistant message rendered)
-      // 3) no new pty bytes in last 5s (render is complete)
+      // WORKING → POST_WORK: spinner stopped + prompt visible.
+      // We deliberately do NOT require "no new pty bytes in 5s" because Claude Code's
+      // prompt suggestion feature renders auto-suggestions in the ❯ area when idle,
+      // producing pty bytes indefinitely. The spinner+prompt combination already
+      // proves Claude has finished work and returned to idle prompt.
       const spinnerStopped = this.lastSpinnerAt === null || (now - this.lastSpinnerAt > 5000);
-      const bytesIdle = this.lastNewBytesAt === null || (now - this.lastNewBytesAt > 5000);
       const promptIdle = parsePromptIdle(text);
-      if (spinnerStopped && bytesIdle && promptIdle) {
+      if (spinnerStopped && promptIdle) {
         this.postWorkEnteredAt = now;
-        detected.push(this._transition('WORKING', 'POST_WORK', 'spinner-stopped+prompt-idle+bytes-idle', now));
+        detected.push(this._transition('WORKING', 'POST_WORK', 'spinner-stopped+prompt-idle', now));
       }
 
     } else if (this.state === 'POST_WORK') {
