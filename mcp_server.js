@@ -951,7 +951,7 @@ async function runBlockingWorker(sock, args) {
 
   // D+F: register spawn + monitor atomically before proceeding. Best-effort (lifecycle may not be in active mission).
   try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _bCorrId, name: args.name || 'claws-worker' }); } catch (e) { /* non-fatal */ }
-  const _bMonitorCmd = `Monitor(command="CLAWS_TOPIC='worker.${termId}.heartbeat,system.worker.*' CLAWS_PEER_NAME='monitor-term-${termId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_bCorrId}\\"' | awk '{print; fflush()} /system\\\\.worker\\\\.completed/{exit}'", description="claws monitor | term=${termId} | corr=${_bCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
+  const _bMonitorCmd = `Monitor(command="CLAWS_TOPIC='**' CLAWS_PEER_NAME='monitor-term-${termId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_bCorrId}\\"' | awk '{print; fflush()} /system\\\\.worker\\\\.completed/{exit}'", description="claws monitor | term=${termId} | corr=${_bCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
   try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _bCorrId, command: _bMonitorCmd }); } catch (e) { /* non-fatal */ }
 
   // 2. Give shell a moment to emit prompt
@@ -1523,7 +1523,7 @@ async function _dispatchTool(name, args, sock) {
     if (!resp.ok) return toolError(`ERROR: ${_lifecycleErrMsg(resp.error)}`);
     const eventsLogPath = path.join(path.dirname(path.resolve(sock)), 'events.log');
     const _createTermId = resp.id;
-    const _createMonitorCmd = `Monitor(command="CLAWS_TOPIC='worker.${_createTermId}.heartbeat,system.worker.*' CLAWS_PEER_NAME='monitor-term-${_createTermId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_createCorrId}\\"' | awk '{print; fflush()} /system\\\\.worker\\\\.completed/{exit}'", description="claws monitor | term=${_createTermId} | corr=${_createCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
+    const _createMonitorCmd = `Monitor(command="CLAWS_TOPIC='**' CLAWS_PEER_NAME='monitor-term-${_createTermId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_createCorrId}\\"' | awk '{print; fflush()} /system\\\\.worker\\\\.completed/{exit}'", description="claws monitor | term=${_createTermId} | corr=${_createCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
     // D+F: register spawn + monitor atomically before returning. Best-effort (lifecycle may not be in active mission).
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(_createTermId), correlationId: _createCorrId, name: args.name || 'claws' }); } catch (e) { /* lifecycle not initialized — non-fatal for claws_create */ }
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(_createTermId), correlationId: _createCorrId, command: _createMonitorCmd }); } catch (e) { /* non-fatal */ }
@@ -1791,7 +1791,7 @@ async function _dispatchTool(name, args, sock) {
 
     // D+F: register spawn + monitor atomically. Best-effort (lifecycle may not be in active mission).
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _fpCorrId, name: args.name || 'claws-worker' }); } catch (e) { /* non-fatal */ }
-    const _fpMonitorCmd = `Monitor(command="CLAWS_TOPIC='worker.${termId}.heartbeat,system.worker.*' CLAWS_PEER_NAME='monitor-term-${termId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_fpCorrId}\\"' | awk '{print; fflush()} /system\\\\.worker\\\\.completed/{exit}'", description="claws monitor | term=${termId} | corr=${_fpCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
+    const _fpMonitorCmd = `Monitor(command="CLAWS_TOPIC='**' CLAWS_PEER_NAME='monitor-term-${termId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_fpCorrId}\\"' | awk '{print; fflush()} /system\\\\.worker\\\\.completed/{exit}'", description="claws monitor | term=${termId} | corr=${_fpCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _fpCorrId, command: _fpMonitorCmd }); } catch (e) { /* non-fatal */ }
 
     await sleep(400);
@@ -2003,7 +2003,7 @@ async function _dispatchTool(name, args, sock) {
             duration_ms: r.duration_ms,
             marker_line: r.marker_line,
             monitor_arm_command: (_fTermId && _fCorrId)
-              ? `Monitor(command="CLAWS_TOPIC='worker.${_fTermId}.heartbeat,system.worker.*' CLAWS_PEER_NAME='monitor-term-${_fTermId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_fCorrId}\\"' | awk '{print; fflush()} /system\\\\.worker\\\\.completed/{exit}'", description="claws monitor | term=${_fTermId} | corr=${_fCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`
+              ? `Monitor(command="CLAWS_TOPIC='**' CLAWS_PEER_NAME='monitor-term-${_fTermId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_fCorrId}\\"' | awk '{print; fflush()} /system\\\\.worker\\\\.completed/{exit}'", description="claws monitor | term=${_fTermId} | corr=${_fCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`
               : null,
           };
         }),
@@ -2311,7 +2311,7 @@ async function _dispatchTool(name, args, sock) {
 
     // D+F: register spawn + monitor atomically. Best-effort (lifecycle may not be in active mission).
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _dswCorrId, name: workerName }); } catch (e) { /* non-fatal */ }
-    const _dswMonitorCmd = `Monitor(command="CLAWS_TOPIC='worker.${termId}.heartbeat,system.worker.*' CLAWS_PEER_NAME='monitor-term-${termId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_dswCorrId}\\"' | awk '{print; fflush()} /system\\\\.worker\\\\.completed/{exit}'", description="claws monitor | term=${termId} | corr=${_dswCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
+    const _dswMonitorCmd = `Monitor(command="CLAWS_TOPIC='**' CLAWS_PEER_NAME='monitor-term-${termId}' CLAWS_ROLE='observer' node ${STREAM_EVENTS_JS} 2>&1 | grep --line-buffered '\\"correlation_id\\":\\"${_dswCorrId}\\"' | awk '{print; fflush()} /system\\\\.worker\\\\.completed/{exit}'", description="claws monitor | term=${termId} | corr=${_dswCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _dswCorrId, command: _dswMonitorCmd }); } catch (e) { /* non-fatal */ }
 
     // BUG-08: fire-and-forget — return after create so parallel dispatch_subworker calls don't serialize.
