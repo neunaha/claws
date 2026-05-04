@@ -16,7 +16,7 @@
 //   F3     → --timeout-ms 0 → exit 1  (stream-events-wait tests --auto-sidecar mutex)
 //
 // Run: node extension/test/lh-stack-regression.test.js
-// Exits 0 on 30 PASS, 1 on any FAIL.
+// Exits 0 on 51 PASS, 1 on any FAIL.
 'use strict';
 
 const fs   = require('fs');
@@ -523,11 +523,33 @@ check(
   'gen-mcp-tools.mjs must define claws_done in DESC and register tool(\'claws_done\', z.object({}))',
 );
 
+// K7: claws_done handler uses _pconnEnsureRegistered (not clawsRpcStateful)
+{
+  const k7Match = MCP.match(/if\s*\(\s*name\s*===\s*'claws_done'\s*\)([\s\S]*?)(?=\n\s*\/\*\*|\n\s*if\s*\(\s*name\s*===)/);
+  const k7Block = k7Match ? k7Match[1] : '';
+  check(
+    'K7: claws_done handler uses _pconnEnsureRegistered for publish (not clawsRpcStateful)',
+    k7Block.includes('_pconnEnsureRegistered') && !k7Block.includes('clawsRpcStateful'),
+    'claws_done publish block must call _pconnEnsureRegistered(sock) before _pconnWrite; clawsRpcStateful must not appear in this block',
+  );
+}
+
+// K8: claws_done publish includes protocol: 'claws/2' field
+{
+  const k8Match = MCP.match(/if\s*\(\s*name\s*===\s*'claws_done'\s*\)([\s\S]*?)(?=\n\s*\/\*\*|\n\s*if\s*\(\s*name\s*===)/);
+  const k8Block = k8Match ? k8Match[1] : '';
+  check(
+    "K8: claws_done publish payload includes protocol: 'claws/2'",
+    k8Block.includes("protocol: 'claws/2'"),
+    "claws_done _pconnWrite call must include `protocol: 'claws/2'` for bus routing",
+  );
+}
+
 // ─── Print results ─────────────────────────────────────────────────────────────
 
 const total = passed + failed;
 results.forEach(r => console.log(r));
 console.log('');
-console.log(`lh-stack-regression.test.js: ${passed}/${total} PASS${failed > 0 ? ` (${failed} FAIL)` : ''} (target: 49/49)`);
+console.log(`lh-stack-regression.test.js: ${passed}/${total} PASS${failed > 0 ? ` (${failed} FAIL)` : ''} (target: 51/51)`);
 
 if (failed > 0) process.exit(1);

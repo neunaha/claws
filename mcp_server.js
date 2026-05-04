@@ -1777,12 +1777,12 @@ async function _dispatchTool(name, args, sock) {
     const termId = process.env.CLAWS_TERMINAL_ID;
     if (!termId) return toolError('ERROR: CLAWS_TERMINAL_ID not set — claws_done must be called from inside a Claws worker terminal (wrapped=true).');
     try {
-      await clawsRpcStateful(sock, {
-        cmd: 'publish',
+      await _pconnEnsureRegistered(sock);
+      await _pconnWrite({
+        cmd: 'publish', protocol: 'claws/2',
         topic: 'system.worker.completed',
         payload: { terminal_id: termId, status: 'completed', completion_signal: 'claws_done', marker: '__CLAWS_DONE__' },
-        echo: false,
-      });
+      }, 3000);
     } catch (_e) { /* non-fatal — still close */ }
     try { await clawsRpc(sock, { cmd: 'close', id: termId, close_origin: 'claws_done' }); } catch (_e) { /* non-fatal */ }
     return { content: [{ type: 'text', text: JSON.stringify({ ok: true, terminalId: termId }) }] };

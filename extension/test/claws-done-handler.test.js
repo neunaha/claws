@@ -70,6 +70,20 @@ check(
   "publish payload must set completion_signal:'claws_done' so watchers can distinguish the path",
 );
 
+// ── T6: handler uses _pconnEnsureRegistered (not clawsRpcStateful) ─────────
+check(
+  'T6: handler uses _pconnEnsureRegistered for publish (not clawsRpcStateful)',
+  handlerBlock.includes('_pconnEnsureRegistered') && !handlerBlock.includes('clawsRpcStateful'),
+  'claws_done publish must call _pconnEnsureRegistered(sock) before _pconnWrite; clawsRpcStateful was the old broken path',
+);
+
+// ── T7: publish call includes protocol: 'claws/2' ──────────────────────────
+check(
+  "T7: _pconnWrite call includes protocol: 'claws/2'",
+  handlerBlock.includes("protocol: 'claws/2'"),
+  "_pconnWrite must include `protocol: 'claws/2'` for bus routing — required by broadcast path",
+);
+
 // ── Print results ──────────────────────────────────────────────────────────
 const total = passed + failed;
 results.forEach(r => console.log(r));
