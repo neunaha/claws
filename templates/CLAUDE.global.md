@@ -34,9 +34,9 @@ PLAN → SPAWN → DEPLOY → OBSERVE → RECOVER → HARVEST → CLEANUP → RE
 
 When you receive a Wave Army mission you are a sub-worker. You MUST:
 
-1. **Register** — call `claws_hello` with `waveId`, `subWorkerRole`, AND **`capabilities: ['push']`** within 60 s of boot.
-   - `capabilities: ['push']` is a required workaround (BUG-03): without it, all `claws_publish` calls
-     are silently rejected by the server. This workaround is mandatory until the server-side fix lands.
+1. **Register** — call `claws_hello` with `waveId` and `subWorkerRole` within 60 s of boot.
+   - As of v0.7.13: push capability is auto-granted on `claws_hello` — no need to specify `capabilities` explicitly.
+     Existing workers that still pass `capabilities: ['push']` continue to work (Set.add is idempotent).
 2. **Publish boot event** — publish `wave.<waveId>.<role>.boot` immediately after hello.
 3. **Heartbeat every 20 s** — publish `worker.<peerId>.heartbeat` continuously while active.
    - Use the `peerId` returned by `claws_hello` — NOT the role name — in the heartbeat topic.

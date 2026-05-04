@@ -1127,7 +1127,11 @@ export class ClawsServer {
       if (existingPeerIdForSocket) {
         const existingPeer = this.peers.get(existingPeerIdForSocket);
         if (existingPeer) {
-          if (r.capabilities !== undefined) existingPeer.capabilities = r.capabilities;
+          if (r.capabilities !== undefined) {
+            const caps = new Set<string>(r.capabilities);
+            caps.add('push'); // T2/Q6: auto-grant — idempotent hello still ensures push
+            existingPeer.capabilities = Array.from(caps);
+          }
           if (r.waveId !== undefined) existingPeer.waveId = r.waveId;
           if (r.subWorkerRole !== undefined) existingPeer.subWorkerRole = r.subWorkerRole;
           existingPeer.lastSeen = Date.now();
@@ -1148,7 +1152,10 @@ export class ClawsServer {
         ? fingerprintPeer(r.peerName ?? 'unnamed', r.role, r.instanceNonce)
         : undefined;
       const peerId = fingerprint ? `fp_${fingerprint}` : this.allocPeerId();
-      const capabilities = r.capabilities ?? [];
+      // T2/Q6: auto-grant push to every registered peer — publish is a core capability.
+      const capSet = new Set<string>(r.capabilities ?? []);
+      capSet.add('push');
+      const capabilities = Array.from(capSet);
 
       // Check for a disconnected peer with the same fingerprint.
       const tombstone = fingerprint ? this.disconnectedPeers.get(fingerprint) : undefined;

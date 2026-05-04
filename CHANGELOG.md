@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- T2/Q6 (auto-grant push): `server.ts` now adds `push` to every peer's capabilities set on `claws_hello` (both fresh registration and idempotent re-hello paths). Wave Army workers no longer need to include `capabilities: ['push']` as a BUG-03 workaround — it is auto-granted. `templates/CLAUDE.global.md` updated to remove the mandatory workaround note. Test: `extension/test/peer-registry-push.test.js`.
 - T1 (H2 regression guard): `extension/test/terminal-manager-h2.test.js` — static assertion that `close()` calls `.dispose()` before `this.byTerminal.delete()`. The reorder fix landed in v0.7.12 (commit 0843b03); this test prevents future regressions. Uses `this.byTerminal.delete` prefix to skip the explanatory comment that also contains the bare string.
 
 ## [0.7.12] - 2026-05-03 — Install UX hardening + heartbeat parser foundation
