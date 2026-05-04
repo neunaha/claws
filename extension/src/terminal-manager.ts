@@ -287,6 +287,13 @@ export class TerminalManager {
     this.stopContentDetection(rec);
     this.transitionState(rec, 'CLOSING');
     this.transitionState(rec, 'CLOSED');
+    // Invoke callback synchronously BEFORE dispose+map mutation. VS Code fires
+    // onDidCloseTerminal asynchronously, so by the time onTerminalClosed runs,
+    // byTerminal.delete has already cleared the entry and the function bails at
+    // its early-return guard — the callback was never reached. This direct call
+    // ensures system.worker.terminated always emits for programmatic closes.
+    // See .local/audits/lifecycle-silent-mutation-trace.md.
+    this.onTerminalClose?.(key, rec.wrapped);
     try { rec.terminal.dispose(); } catch { /* ignore */ }
     this.byTerminal.delete(rec.terminal);
     this.records.delete(key);
