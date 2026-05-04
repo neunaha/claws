@@ -20,16 +20,31 @@ interface Entry {
 
 const MIN_INITIAL_CAPACITY = 8 * 1024; // 8 KB — tiny writes stay cheap.
 
+export type CaptureAppendCallback = (id: string, chunkBytes: number) => void;
+
 export class CaptureStore {
   private entries = new Map<string, Entry>();
   private maxBytesPerTerminal: number;
+  // LH-9: optional sink that fires on every append. Used by ClawsServer to
+  // refresh per-worker activity timestamps for the TTL watchdog. Single
+  // callback (no list) — server is the only legitimate consumer.
+  private onAppend: CaptureAppendCallback | null = null;
 
   constructor(maxBytesPerTerminal: number) {
     this.maxBytesPerTerminal = maxBytesPerTerminal;
   }
 
+  /** LH-9: Wire an activity sink. Cleared by passing null. */
+  setOnAppend(cb: CaptureAppendCallback | null): void {
+    this.onAppend = cb;
+  }
+
   append(id: string, chunk: string | Buffer): void {
     const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8');
+    // Fire activity sink BEFORE the buffer mutation — cheap and cannot throw
+    // (callback-side errors are swallowed) so we never lose activity signal
+    // due to a mid-append exception. Zero-byte writes still count as a tick.
+    try { this.onAppend?.(id, data.length); } catch { /* sink errors must not break capture */ }
     let entry = this.entries.get(id);
     if (!entry) {
       const initialCap = Math.max(MIN_INITIAL_CAPACITY, Math.min(data.length * 2, this.maxBytesPerTerminal));

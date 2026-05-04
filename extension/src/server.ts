@@ -175,6 +175,8 @@ export class ClawsServer {
 
   private readonly eventLog = new EventLogWriter();
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  /** LH-9: TTL watchdog interval — scans expired workers every 30s. */
+  private ttlWatchdogTimer: NodeJS.Timeout | null = null;
   /** L11 Pipeline composition registry. */
   private readonly pipelineRegistry = new PipelineRegistry();
   /**
@@ -187,6 +189,27 @@ export class ClawsServer {
 
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
+    // LH-9 1D: reconcile against live terminals AFTER loadFromDisk has
+    // populated state from JSON. extension.ts has already called
+    // terminalManager.adoptExisting(vscode.window.terminals) by this point,
+    // so liveTerminalIds() reflects whatever VS Code preserved across the
+    // last extension reload. Anything in spawned_workers that isn't live
+    // is a stale entry from a prior session and gets marked closed.
+    try {
+      const liveIds = opts.terminalManager.liveTerminalIds();
+      const reconciled = this.lifecycleStore.reconcileWithLiveTerminals(liveIds);
+      if (reconciled.length > 0) {
+        opts.logger(`[claws] lifecycle reconcile on boot: ${reconciled.length} stale worker(s) marked closed: ${reconciled.join(', ')}`);
+      }
+    } catch (err) {
+      opts.logger(`[claws] lifecycle reconcile failed (non-fatal): ${(err as Error).message}`);
+    }
+    // LH-9: tap CaptureStore so every PTY byte refreshes the worker's
+    // last_activity_at. markActivity is a no-op for non-lifecycle terminals
+    // and self-throttles disk flushes (>5s gap).
+    opts.captureStore.setOnAppend((id, _bytes) => {
+      try { this.lifecycleStore.markActivity(String(id)); } catch { /* non-fatal */ }
+    });
     this.lifecycleEngine = new LifecycleEngine({
       store: this.lifecycleStore,
       emitEvent: (topic, payload) => this.emitServerEvent(topic, payload),
@@ -241,6 +264,15 @@ export class ClawsServer {
           terminated_at: new Date().toISOString(),
         });
       }
+      // LH-9 1A: every close path — UI X-button, programmatic close, pty
+      // exit, VS Code reload — funnels through this callback. Mark the
+      // worker closed in lifecycle so .claws/lifecycle-state.json never
+      // drifts from reality. Best-effort: non-lifecycle terminals (plain
+      // claws_create with no register-spawn) return null, which is fine.
+      try {
+        const updated = this.lifecycleStore.markWorkerStatus(String(id), 'closed');
+        if (updated) this.lifecycleEngine.onWorkerEvent('terminal-close-callback:' + id);
+      } catch (_err) { /* non-fatal */ }
     });
   }
 
@@ -408,6 +440,32 @@ export class ClawsServer {
         }
       })
       .then(() => {
+        // LH-9: TTL watchdog. Scans spawned_workers every 30s and closes any
+        // that have exceeded their idle window (default 10min) or hard
+        // ceiling (default 4h). The close call funnels through tm.close,
+        // which fires the close-callback, which marks lifecycle closed.
+        // No state drift possible — single chokepoint.
+        const TTL_SCAN_INTERVAL_MS = 30_000;
+        this.ttlWatchdogTimer = setInterval(() => {
+          try {
+            const expired = this.lifecycleStore.findExpiredWorkers();
+            for (const { id, reason } of expired) {
+              this.opts.logger(`[claws/ttl] worker ${id} expired (${reason}) — closing`);
+              try {
+                this.opts.terminalManager.close(id, reason);
+              } catch (err) {
+                this.opts.logger(`[claws/ttl] close ${id} failed: ${(err as Error).message}`);
+              }
+            }
+          } catch (err) {
+            this.opts.logger(`[claws/ttl] watchdog scan failed: ${(err as Error).message}`);
+          }
+        }, TTL_SCAN_INTERVAL_MS);
+        if (typeof this.ttlWatchdogTimer.unref === 'function') {
+          this.ttlWatchdogTimer.unref();
+        }
+      })
+      .then(() => {
         // L19 TRANSPORT-X — start WebSocket server alongside Unix socket if enabled.
         const wsCfg = this.getConfig().webSocket;
         if (wsCfg?.enabled) {
@@ -440,6 +498,12 @@ export class ClawsServer {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+    if (this.ttlWatchdogTimer !== null) {
+      clearInterval(this.ttlWatchdogTimer);
+      this.ttlWatchdogTimer = null;
+    }
+    // LH-9: detach activity sink so server stop doesn't leak references.
+    this.opts.captureStore.setOnAppend(null);
     this.waveRegistry.dispose();
     // L19 TRANSPORT-X — stop WebSocket server if running.
     this.wsTransport.stop();
@@ -1047,18 +1111,22 @@ export class ClawsServer {
       }
       // Use caller-supplied close_origin so semantic accuracy flows through
       // (e.g. mcp_server.js watchers pass 'marker'/'error'/'timeout').
-      const closeOrigin = (['marker','error','timeout','orchestrator','user','pub_complete'] as const)
+      const closeOrigin = (['marker','error','timeout','orchestrator','user','pub_complete','wave_violation','idle_timeout','ttl_max'] as const)
         .find(o => o === r.close_origin) ?? 'orchestrator';
-      const ok = tm.close(r.id, closeOrigin);
-      if (!ok) return { ok: true, alreadyClosed: true };
-      // T4: lifecycle parity — mark worker closed + trigger engine cascade.
-      // Best-effort: terminal may not be registered in lifecycle (non-worker terminals
-      // from plain claws_create have no lifecycle entry and markWorkerStatus returns null).
+      const idStr = String(r.id);
+      // LH-9 1B: mark lifecycle closed BEFORE attempting tm.close so that an
+      // already-gone terminal still produces a healed state record. Previously
+      // this lived after the alreadyClosed early-return, which left the JSON
+      // with closed:false forever for any terminal that died via VS Code's
+      // close-X / reload / pty exit but happened to be re-targeted by a
+      // belt-and-suspenders close call. The setTerminalCloseCallback covers
+      // the live path; this covers the stale path.
       try {
-        const idStr = String(r.id);
         const updated = this.lifecycleStore.markWorkerStatus(idStr, 'closed');
         if (updated) this.lifecycleEngine.onWorkerEvent('claws-close:' + idStr);
       } catch (_e) { /* non-fatal */ }
+      const ok = tm.close(r.id, closeOrigin);
+      if (!ok) return { ok: true, alreadyClosed: true };
       return { ok: true, alreadyClosed: false };
     }
 

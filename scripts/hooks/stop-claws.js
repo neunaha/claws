@@ -24,11 +24,10 @@ try {
     try {
       const fs   = require('fs');
       const path = require('path');
-      // Lazy-require lifecycle-state so a missing dep file never crashes
-      // the hook at module-load time. If readState is unavailable, we just
-      // skip the workers/reflect checks and exit 0.
-      let readState = null;
-      try { readState = require('./lifecycle-state').readState; } catch {}
+      // LH-9: lifecycle-state is no longer read by the Stop hook. The
+      // extension's TTL watchdog + reconcile-on-boot are the deterministic
+      // close mechanism. This hook is now responsible only for cleaning up
+      // sidecar/tail processes and the pre-tool-use grace file.
 
       let cwd = process.cwd();
       try {
@@ -71,40 +70,14 @@ try {
         if (fs.existsSync(graceFile)) fs.unlinkSync(graceFile);
       } catch { /* grace file removal must never block the hook */ }
 
-      // RIP F4 + HOOK P3 (v0.7.13): replace advisory "you must close terminals" text
-      // with deterministic auto-close action. The Stop hook now actively closes any
-      // worker terminal still alive — no honor system, no LLM cooperation required.
-      // See docs/ENFORCEMENT.md for the principle.
-      const state = readState ? (function () { try { return readState(cwd); } catch { return null; } })() : null;
-      if (!state) { process.exit(0); return; }
-
-      const workers = Array.isArray(state.workers) ? state.workers : [];
-      const unclosed = workers.filter(w => typeof w === 'object' ? !w.closed : false);
-      if (unclosed.length > 0) {
-        try {
-          const net = require('net');
-          for (const w of unclosed) {
-            try {
-              const c = net.createConnection(socketPath);
-              c.setTimeout(800, () => { try { c.destroy(); } catch {} });
-              c.on('error', () => { try { c.destroy(); } catch {} });
-              c.on('connect', () => {
-                try {
-                  // Protocol uses one `id` field as both rpc correlation id and
-                  // close target id. Server returns it back in response.
-                  c.write(JSON.stringify({
-                    cmd: 'close',
-                    id: w.id,
-                    close_origin: 'orchestrator',
-                  }) + '\n');
-                } catch {}
-                setTimeout(() => { try { c.destroy(); } catch {} }, 200);
-              });
-            } catch {}
-          }
-        } catch {}
-      }
-
+      // LH-9: force-close removed. The Stop hook fires at the end of every
+      // assistant turn (Anthropic semantics) — not at session shutdown — so
+      // closing detached workers here killed long-running missions between
+      // turns. Worker lifetime is now governed by the TTL watchdog inside
+      // the extension (default 10min idle, 4h hard ceiling), and stale
+      // entries in lifecycle-state.json self-heal via reconcile-on-boot in
+      // ClawsServer's constructor. The hook keeps only the sidecar/tail
+      // cleanup above.
       process.exit(0);
     } catch {
       process.exit(0);

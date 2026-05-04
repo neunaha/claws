@@ -207,6 +207,19 @@ let _pconnConnecting = null; // Promise | null — guards concurrent connect att
 // Wave D — terminal IDs (strings) for which system.worker.terminated was received.
 // Populated by _pconnHandleData; read by detectCompletion as 4th completion signal.
 const _workerTerminatedSet = new Set();
+
+// LH-9 hygiene: VS Code extension reload restarts the terminal id counter,
+// so a fresh spawn can legitimately reuse an id that lives in the stale
+// _workerTerminatedSet / _workerCompletedViaBusSet from a prior session.
+// Without this clear, the very first watcher tick after spawn fires the
+// terminated/completed branch in detectCompletion and instantly auto-closes
+// the new terminal (~1.5s lifespan). Every spawn handler must call this
+// before entering its watcher loop.
+function _clearStaleCompletionSignals(termId) {
+  const key = String(termId);
+  _workerTerminatedSet.delete(key);
+  _workerCompletedViaBusSet.delete(key);
+}
 // True once _pconn has subscribed to system.worker.terminated.
 let _workerTerminatedSubscribed = false;
 // Phase 4a — bus-based completion: termId -> { payload, ts } for workers that published
@@ -925,6 +938,7 @@ async function runBlockingWorker(sock, args) {
   });
   if (!cr.ok) return { status: 'error', error: `create failed: ${_lifecycleErrMsg(cr.error)}` };
   const termId = cr.id;
+  _clearStaleCompletionSignals(termId);
   const _bCorrId = randomUUID();
   const startedAt = Date.now();
 
@@ -1829,6 +1843,7 @@ async function _dispatchTool(name, args, sock) {
     });
     if (!cr.ok) return toolError(`ERROR: create failed: ${_lifecycleErrMsg(cr.error)}`);
     const termId = cr.id;
+    _clearStaleCompletionSignals(termId);
     const _fpCorrId = randomUUID();
     const _fpStartedAt = Date.now();
 
@@ -2473,6 +2488,7 @@ async function _dispatchTool(name, args, sock) {
     });
     if (!cr.ok) return toolError(`ERROR: create failed: ${_lifecycleErrMsg(cr.error)}`);
     const termId = cr.id;
+    _clearStaleCompletionSignals(termId);
     const _dswCorrId = randomUUID();
 
     // BUG-A: publish system.worker.spawned for sub-workers — best-effort.

@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
 
+### Added (LH-9: bulletproof state management — TTL watchdog + reconcile-on-boot + Stop-hook defang)
+
+Re-architected worker lifetime around three deterministic signals — replacing the "honor-system + Stop-hook force-close" model that was killing detached workers between assistant turns. The contract is now: single-writer (the extension), single chokepoint for close (`setTerminalCloseCallback` → `markWorkerStatus`), self-healing on boot (reconcile against live terminals), and explicit lifetime via TTL (10 min idle, 4 h hard ceiling).
+
+**Layer 1 — state-drift leak fixes** (every close path now updates `lifecycle-state.json`):
+
+- `extension/src/server.ts` (1A): `setTerminalCloseCallback` now calls `this.lifecycleStore.markWorkerStatus(id, 'closed')` for every close. This is the universal chokepoint — UI X-button, programmatic close, pty exit, VS Code reload all funnel through here. Previously the callback only emitted bus events; lifecycle was updated only in the explicit `cmd:close` path, so VS Code-side disposals left state with `closed:false` forever (the source of the 4 stale "open" entries id 11/20/21/25 carried across sessions).
+- `extension/src/server.ts` (1B): `cmd:close` handler runs `markWorkerStatus` BEFORE the `tm.close` early-return, so a close request against an already-gone terminal still heals state. The close-origin allowlist now includes `'wave_violation'`, `'idle_timeout'`, and `'ttl_max'`.
+- `extension/src/lifecycle-store.ts` (1C): new `reconcileWithLiveTerminals(liveIds: ReadonlySet<string>)`. Marks every `spawned_workers` entry not in `liveIds` as closed (idempotent — already-closed slots are skipped, no double-stamp).
+- `extension/src/server.ts` (1D): constructor calls reconcile immediately after `loadFromDisk`. Boot is self-healing; verified live — first reload after this lands cleared all 24 stale records (`all_closed: true`).
+- `extension/src/terminal-manager.ts`: new `liveTerminalIds(): Set<string>`.
+
+**Layer 2 — TTL watchdog + activity tracking**:
+
+- `extension/src/lifecycle-store.ts`: `SpawnedWorker` gains `idle_ms`, `max_ms`, `last_activity_at` (additive optional fields — schema v3 unchanged). Defaults exported as `DEFAULT_IDLE_MS = 600_000` (10 min, covers Claude TUI thinking pauses with 2x margin against observed 5-min worst case) and `DEFAULT_MAX_MS = 14_400_000` (4 h, 6x the longest legitimate workload — yesterday's 40-min audit fleet).
+- `lifecycle-store.ts`: new methods `markActivity(terminalId, atIso?)` (resets last_activity_at, self-throttles disk flush at 5s gap so PTY-byte rate doesn't IO-storm), `extendTtl(terminalId, addMs)` (atomic — refuses if status !== 'spawned' so a watchdog-already-firing race returns null), `findExpiredWorkers(nowMs?)` (scans for `now - spawned_at > max_ms` first, then `now - last_activity_at > idle_ms`; ttl_max wins when both have expired so close-events aren't double-emitted), and `registerSpawn(..., opts?: {idle_ms, max_ms})`.
+- `extension/src/server.ts` (2B): TTL watchdog `setInterval` runs every 30s in `start()`. Iterates `findExpiredWorkers()` output; calls `terminalManager.close(id, reason)` for each — close routes through the same chokepoint, no special-casing. Cleared and nulled in `stop()`. Uses `unref()` so the timer never holds the event loop open.
+- `extension/src/event-schemas.ts` (2C): `TerminalCloseOriginEnum` adds `'idle_timeout'` and `'ttl_max'`.
+- `extension/src/capture-store.ts` (2D): new `setOnAppend(cb)` hook fires on every PTY byte. `ClawsServer` constructor wires it to `lifecycleStore.markActivity(id)`, `stop()` detaches with `setOnAppend(null)`. Append-callback errors are swallowed inside the try/catch so a sink failure can never break capture. Activity sampling is in-memory only (5s flush throttle) — no per-byte JSON writes.
+
+**Layer 3 — defang Stop hook**:
+
+- `scripts/hooks/stop-claws.js` (3A): the lines 74-106 force-close block is gone. The hook fires at the end of every assistant turn (Anthropic semantics — not at session shutdown), so the previous behavior killed detached workers between turns. With LH-9, the TTL watchdog inside the extension is the deterministic close mechanism; reconcile-on-boot self-heals stale state. The hook now only kills the auto-sidecar / orphan tail processes and removes the pre-tool-use grace file. The `lifecycle-state` require is dropped — hook is no longer a control input on state.
+
+**Layer 4 — slot reuse on stale CLOSED entries** (exposed by LH-9 reconcile, fixed in same wave):
+
+- `lifecycle-store.ts`: `registerSpawn` previously threw `lifecycle:correlation-id-conflict` whenever an existing record with the same id had a different correlation_id, regardless of status. After LH-9, lifecycle-state.json is preserved across extension reloads, but VS Code's terminal-id counter restarts at 1 — so a fresh spawn legitimately reuses a terminal_id of a long-closed worker. The conflict check now fires only when `existing.status === 'spawned'` (a live collision); closed/completed/failed/timeout slots are overwritten in place. Both `spawned_workers` and the `workers[]` mirror are atomically replaced.
+
+**Hygiene fix in `mcp_server.js`** (long-lived process, surfaced by LH-9 slot reuse):
+
+- New helper `_clearStaleCompletionSignals(termId)` deletes the terminal-id key from both `_workerTerminatedSet` and `_workerCompletedViaBusSet`. Called at every spawn site (`claws_worker` fast-path, `runBlockingWorker` / `claws_fleet`, `claws_dispatch_subworker`). Without it, the in-memory sets retained yesterday's terminal IDs from completed/terminated workers; new spawns reusing those IDs hit `detectCompletion`'s `terminated` / `pub_complete_v2` branch on the first watcher tick (~1.5s) and instantly self-closed. Confirmed live: pre-fix workers died at 1.5s; post-fix workers ran 36-47s and self-closed via `marker`.
+
+**Tests**:
+
+- `extension/test/lh9-state-bulletproof.test.js` (NEW, 34 source-regex contract checks) — locks every wiring point: enum origins, store API surface, capture-store sink, server constructor reconcile, close-callback markWorkerStatus, close-handler order, TTL watchdog interval + close routing, Stop-hook defang (no socket close frames, no lifecycle-state require, sidecar/grace-file kill preserved). 34/34 PASS.
+- `extension/test/lifecycle-store.test.js` — extended from 35 to 52 checks. New cases cover registerSpawn TTL field seeding (defaults + opts override), markActivity (memory update, race guards for unknown/closed workers), extendTtl (push-forward semantics, race-loss returns null, rejects non-positive addMs), reconcileWithLiveTerminals (closes missing entries, empty live set closes everyone, idempotent on already-closed, persists to disk), findExpiredWorkers (idle window, ttl_max wins, skip closed, recent activity prevents idle), and the slot-reuse fix (overwrite stale CLOSED slot, still throw on live collision). 52/52 PASS.
+
+**Live verification**:
+
+- Boot reconcile: first reload after this landed cleared 24 stale entries (id 2-25 from prior sessions), `all_closed: true` immediately after extension activate.
+- Real-mission run across all three patterns: `claws_worker` (single, 41.5s, `marker`), `claws_fleet` of 2 (47.1s + 36.6s, both `marker`), `claws_dispatch_subworker` (wave army — closed at exactly 25.001s by `wave_violation` per LH-1 design, sub-worker boot exceeded the 25s heartbeat threshold). All close origins were `marker` or `wave_violation` — never `orchestrator`, confirming the Stop-hook force-close path is gone.
+- TTL field population verified live in lifecycle-state.json (idle_ms=600000, max_ms=14400000, last_activity_at advancing on PTY output).
+
+**Deferrals (T_session — orchestrator-crash detection)**: The original LH-9 plan had a third timer — a SessionStart-hook heartbeat to `.claws/session-alive.json` plus a watchdog branch that closes workers whose session has been silent >120s. This adds significant code (heartbeat process management, lifecycle wiring) for a corner case (Claude Code itself crashes mid-mission). T_idle (10 min) + T_max (4 h) + reconcile-on-boot already eliminate every active drift vector and bound orphan-worker lifetime to 4 h worst-case. T_session is tracked as a follow-up, not blocking LH-9.
+
 ### Added (dev tooling)
 
 - `scripts/dev-vsix-install.sh` + `npm run install:vsix` (in `extension/`) — full extension reinstall path: `npm run build` → `vsce package` → `code --install-extension --force`. Complements the existing fast `npm run deploy:dev` (~5s, copies dist into installed dir but does not refresh `extensions.json` metadata). Use `install:vsix` (~25s) when you want VS Code's Extensions panel to actually reflect the new install (refreshes `installedTimestamp`, version label, panel date) — prevents silently iterating against a stale extension. Reload window after running.

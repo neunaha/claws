@@ -238,6 +238,8 @@ export const TerminalCloseOriginEnum = z.enum([
   'user',           // user clicked X in VS Code (or VS Code reload)
   'pub_complete',   // worker published complete event
   'wave_violation', // sub-worker silent past threshold; auto-closed by WaveRegistry
+  'idle_timeout',   // LH-9: no PTY activity within idle TTL window
+  'ttl_max',        // LH-9: hard ceiling exceeded since spawn
 ]);
 export type TerminalCloseOrigin = z.infer<typeof TerminalCloseOriginEnum>;
 

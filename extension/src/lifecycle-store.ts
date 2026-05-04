@@ -27,6 +27,18 @@ export interface SpawnedWorker {
   spawned_at: string;          // ISO
   status: WorkerStatus;
   completed_at?: string;       // ISO; set when status leaves 'spawned'
+  // ── LH-9 TTL fields (additive, optional for v3 backward-compat) ──────────
+  // idle_ms: window of inactivity before idle_timeout close. Reset by PTY
+  // activity (log-file mtime sampling) and explicit extendTtl().
+  // max_ms:  hard ceiling since spawn — never reset by activity.
+  // Both default to LifecycleStore.DEFAULT_IDLE_MS / DEFAULT_MAX_MS.
+  idle_ms?: number;
+  max_ms?: number;
+  // last_activity_at: ISO timestamp of last observed PTY mtime / explicit
+  // extend. Initialized to spawned_at on registerSpawn. Watchdog computes:
+  //   idle_expired = now - last_activity_at > idle_ms
+  //   max_expired  = now - spawned_at      > max_ms
+  last_activity_at?: string;
 }
 
 export interface MonitorRecord {
@@ -62,6 +74,15 @@ const LEGAL_PHASES = new Set<Phase>([
 ]);
 
 const VALID_WORKER_MODES = new Set<WorkerMode>(['single', 'fleet', 'army']);
+
+// LH-9 TTL defaults — chosen against observed Claude Code TUI behavior.
+// idle: 10 min covers all measured thinking-pauses with 2x margin (longest
+//       observed pause was ~5 min during heavy planning).
+// max:  4 h covers the longest legitimate workload (40-min audit fleet) with
+//       6x margin. Anything longer should not be a Claude Code worker.
+// Both are configurable per-spawn via registerSpawn opts.
+export const DEFAULT_IDLE_MS = 600_000;       // 10 min
+export const DEFAULT_MAX_MS = 14_400_000;     // 4 h
 
 export class LifecycleStore {
   private state: LifecycleState | null = null;
@@ -194,33 +215,168 @@ export class LifecycleStore {
    * tool handler (claws_create / claws_worker / claws_fleet / claws_dispatch_subworker).
    * correlation_id is the orchestrator-supplied UUID (D) used to match worker.* events.
    */
-  registerSpawn(terminalId: string, correlationId: string, name: string): SpawnedWorker {
+  registerSpawn(
+    terminalId: string,
+    correlationId: string,
+    name: string,
+    opts?: { idle_ms?: number; max_ms?: number },
+  ): SpawnedWorker {
     if (!this.state) throw new Error('lifecycle:no-state');
     if (!correlationId || !correlationId.trim()) {
       throw new Error('lifecycle:correlation-id-required — orchestrator must supply correlation_id for race-free monitor');
     }
-    // Idempotent: same id+corrId → return existing
-    const existing = this.state.spawned_workers.find(w => w.id === terminalId);
+    const idx = this.state.spawned_workers.findIndex(w => w.id === terminalId);
+    const existing = idx === -1 ? null : this.state.spawned_workers[idx];
     if (existing) {
-      if (existing.correlation_id !== correlationId) {
+      // Idempotent: same id+corrId on a still-spawned worker returns existing.
+      if (existing.status === 'spawned' && existing.correlation_id === correlationId) {
+        return existing;
+      }
+      // LH-9: An existing entry with a different corrId is a conflict ONLY if
+      // the worker is still active. Closed/completed/failed/timeout slots
+      // are historical — VS Code reload restarts the terminal id counter, so
+      // a fresh spawn legitimately reuses a stale id. Block only on a live
+      // collision (the prior worker is still running).
+      if (existing.status === 'spawned' && existing.correlation_id !== correlationId) {
         throw new Error(`lifecycle:correlation-id-conflict — terminal ${terminalId} already registered with different corrId`);
       }
-      return existing;
+      // existing.status is non-spawned → fall through, overwrite below.
     }
+    const spawnedAt = new Date().toISOString();
+    const idleMs = opts?.idle_ms ?? DEFAULT_IDLE_MS;
+    const maxMs = opts?.max_ms ?? DEFAULT_MAX_MS;
     const rec: SpawnedWorker = {
       id: terminalId,
       correlation_id: correlationId,
       name,
-      spawned_at: new Date().toISOString(),
+      spawned_at: spawnedAt,
       status: 'spawned',
+      idle_ms: idleMs,
+      max_ms: maxMs,
+      last_activity_at: spawnedAt,
     };
-    this.state = {
-      ...this.state,
-      spawned_workers: [...this.state.spawned_workers, rec],
-      workers: [...this.state.workers, { id: terminalId, closed: false }],
-    };
+    let nextSpawned: SpawnedWorker[];
+    let nextWorkers: Array<{ id: string; closed: boolean }>;
+    if (idx === -1) {
+      nextSpawned = [...this.state.spawned_workers, rec];
+      nextWorkers = [...this.state.workers, { id: terminalId, closed: false }];
+    } else {
+      nextSpawned = [...this.state.spawned_workers];
+      nextSpawned[idx] = rec;
+      const wIdx = this.state.workers.findIndex(w => w.id === terminalId);
+      if (wIdx === -1) {
+        nextWorkers = [...this.state.workers, { id: terminalId, closed: false }];
+      } else {
+        nextWorkers = [...this.state.workers];
+        nextWorkers[wIdx] = { id: terminalId, closed: false };
+      }
+    }
+    this.state = { ...this.state, spawned_workers: nextSpawned, workers: nextWorkers };
     this.flushToDisk();
     return rec;
+  }
+
+  /**
+   * LH-9: Mark fresh activity for a worker. Resets the idle TTL window.
+   * Called by the watchdog when PTY log-file mtime advances or when an
+   * orchestrator MCP call touches the terminal. Cheap — only flushes to
+   * disk when the change is meaningful (>5s since last persist).
+   * Returns the new last_activity_at, or null if worker is unknown/closed.
+   */
+  markActivity(terminalId: string, atIso?: string): string | null {
+    if (!this.state) return null;
+    const idx = this.state.spawned_workers.findIndex(w => w.id === terminalId);
+    if (idx === -1) return null;
+    const cur = this.state.spawned_workers[idx];
+    if (cur.status !== 'spawned') return null;
+    const at = atIso ?? new Date().toISOString();
+    // Throttle disk flushes to avoid IO storm — in-memory state always
+    // reflects truth, but only persist when the gap is >5s. Watchdog reads
+    // in-memory snapshot, so durability lag is fine here.
+    const lastIso = cur.last_activity_at ?? cur.spawned_at;
+    const lastMs = Date.parse(lastIso);
+    const atMs = Date.parse(at);
+    const newSpawned = [...this.state.spawned_workers];
+    newSpawned[idx] = { ...cur, last_activity_at: at };
+    this.state = { ...this.state, spawned_workers: newSpawned };
+    if (atMs - lastMs >= 5000) {
+      this.flushToDisk();
+    }
+    return at;
+  }
+
+  /**
+   * LH-9: Atomically extend a worker's idle TTL by addMs. Used by orchestrator
+   * for long-running missions that exceed default idle window. Returns the
+   * new last_activity_at on success, or null if the worker is unknown or
+   * already non-spawned (lost race with watchdog).
+   */
+  extendTtl(terminalId: string, addMs: number): string | null {
+    if (!this.state) return null;
+    if (!Number.isFinite(addMs) || addMs <= 0) return null;
+    const idx = this.state.spawned_workers.findIndex(w => w.id === terminalId);
+    if (idx === -1) return null;
+    const cur = this.state.spawned_workers[idx];
+    if (cur.status !== 'spawned') return null;
+    // Push last_activity_at forward by addMs from now, equivalent to refreshing
+    // and adding a one-shot grace window. Caller-supplied addMs is the grace.
+    const newIso = new Date(Date.now() + addMs).toISOString();
+    const newSpawned = [...this.state.spawned_workers];
+    newSpawned[idx] = { ...cur, last_activity_at: newIso };
+    this.state = { ...this.state, spawned_workers: newSpawned };
+    this.flushToDisk();
+    return newIso;
+  }
+
+  /**
+   * LH-9: Boot reconciliation — given the live terminal IDs from
+   * TerminalManager, mark every spawned_worker NOT in liveIds as closed.
+   * Self-heals stale state from extension reload / VS Code crash. Returns
+   * the list of IDs that were reconciled.
+   */
+  reconcileWithLiveTerminals(liveIds: ReadonlySet<string>): string[] {
+    if (!this.state) return [];
+    const reconciled: string[] = [];
+    const newSpawned = this.state.spawned_workers.map(w => {
+      if (w.status !== 'spawned' || liveIds.has(w.id)) return w;
+      reconciled.push(w.id);
+      return { ...w, status: 'closed' as WorkerStatus, completed_at: new Date().toISOString() };
+    });
+    if (reconciled.length === 0) return [];
+    const reconciledSet = new Set(reconciled);
+    const newWorkers = this.state.workers.map(w =>
+      reconciledSet.has(w.id) ? { ...w, closed: true } : w
+    );
+    this.state = { ...this.state, spawned_workers: newSpawned, workers: newWorkers };
+    this.flushToDisk();
+    return reconciled;
+  }
+
+  /**
+   * LH-9: Watchdog scan. Returns workers whose idle or max window has
+   * elapsed. Read-only — caller is responsible for closing each via
+   * terminalManager.close(id, reason). Status check is inline so a worker
+   * already in-flight to closed (race) is not double-emitted.
+   */
+  findExpiredWorkers(nowMs: number = Date.now()): Array<{ id: string; reason: 'idle_timeout' | 'ttl_max' }> {
+    if (!this.state) return [];
+    const out: Array<{ id: string; reason: 'idle_timeout' | 'ttl_max' }> = [];
+    for (const w of this.state.spawned_workers) {
+      if (w.status !== 'spawned') continue;
+      const spawnedMs = Date.parse(w.spawned_at);
+      const maxMs = w.max_ms ?? DEFAULT_MAX_MS;
+      if (Number.isFinite(spawnedMs) && nowMs - spawnedMs > maxMs) {
+        out.push({ id: w.id, reason: 'ttl_max' });
+        continue;
+      }
+      const idleMs = w.idle_ms ?? DEFAULT_IDLE_MS;
+      const lastActivityIso = w.last_activity_at ?? w.spawned_at;
+      const lastMs = Date.parse(lastActivityIso);
+      if (Number.isFinite(lastMs) && nowMs - lastMs > idleMs) {
+        out.push({ id: w.id, reason: 'idle_timeout' });
+      }
+    }
+    return out;
   }
 
   /**

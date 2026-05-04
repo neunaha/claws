@@ -155,6 +155,15 @@ export class TerminalManager {
   }
 
   /**
+   * LH-9: Snapshot of currently-tracked terminal IDs. Used for boot
+   * reconciliation against lifecycle-state.json — any spawned_worker not
+   * in this set has died while we were down and should be marked closed.
+   */
+  liveTerminalIds(): Set<string> {
+    return new Set(this.records.keys());
+  }
+
+  /**
    * Describe a terminal WITHOUT mutating state. If the terminal has never
    * been adopted by the manager (no entry in byTerminal), we return a
    * minimal descriptor with `status: 'unknown'` and no stable id. Adoption
