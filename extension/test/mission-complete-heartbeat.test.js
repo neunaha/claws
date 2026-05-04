@@ -72,19 +72,7 @@ check(
   /current_action:\s*['"]COMPLETE['"]/.test(src)
 );
 
-// 9. No system.worker.completed publish added in the new block (L8 concern).
-// Extract the _fpMissionCompletePublished = true block and verify it contains no
-// system.worker.completed publish — that's the L8 wire we must NOT add here.
-const mcBlock = src.slice(
-  src.indexOf('_fpMissionCompletePublished = true'),
-  src.indexOf('_fpMissionCompletePublished = true') + 800
-);
-check(
-  'mission_complete block does NOT publish system.worker.completed (L8 guard)',
-  !mcBlock.includes('system.worker.completed')
-);
-
-// 10. Correlation ID threaded through
+// 9. Correlation ID threaded through (was check #10 — check #9 removed after L8 landed)
 check(
   'correlation_id in mission_complete payload',
   /correlation_id:\s*_fpCorrId/.test(src)

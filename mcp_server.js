@@ -1874,6 +1874,7 @@ async function _dispatchTool(name, args, sock) {
     });
     let _fpHbLastPublishedAt = Date.now();
     let _fpMissionCompletePublished = false;  // HB-L7: one-shot guard
+    let _fpTuiIdleCompleted = false;          // HB-L8: tui_idle completion guard
 
     const _fpTick = async () => {
       try {
@@ -1941,6 +1942,19 @@ async function _dispatchTool(name, args, sock) {
                 correlation_id: _fpCorrId,
               },
             });
+            // HB-L8: wire mission_complete → system.worker.completed (tui_idle) + cleanup
+            _fpTuiIdleCompleted = true;
+            clearInterval(_fpIntervalId);
+            _detachWatchers.delete(termId);
+            try {
+              await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
+                payload: { terminal_id: termId, status: 'completed', duration_ms: durMs, marker_line: null, booted: launchClaude, detach: true, correlation_id: _fpCorrId, completion_signal: 'tui_idle' } });
+            } catch (e) { log('hb-l8 tui_idle system.worker.completed publish failed: ' + (e && e.message || e)); }
+            try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'completed' }); } catch (e) { /* non-fatal */ }
+            if (_fpOpt.close_on_complete) {
+              try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {}
+              try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
+            }
           }
         } catch (e) {
           log('hb-l4 fast-path backstop publish failed: ' + (e && e.message || e));
@@ -1952,7 +1966,7 @@ async function _dispatchTool(name, args, sock) {
         const _fpStatus = _fpDet ? _fpDet.status : null;
         const _fpMarkerLine = _fpDet ? _fpDet.line : null;
         const _fpSignal = _fpDet ? _fpDet.signal : null;
-        if (_fpStatus !== null) {
+        if (!_fpTuiIdleCompleted && _fpStatus !== null) {
           clearInterval(_fpIntervalId);
           _detachWatchers.delete(termId);
           try {
