@@ -5,18 +5,22 @@
 // Behavior:
 // 1. Migrates legacy v0.1–v0.3 "## CLAWS — Terminal Orchestration Active"
 //    section if present.
-// 2. Inserts or replaces the fenced block `<!-- CLAWS:BEGIN --> ... <!-- CLAWS:END -->`.
-// 3. If CLAUDE.md doesn't exist, creates a minimal stub with a placeholder for
+// 2. Inserts or replaces the fenced block:
+//    <!-- CLAWS:BEGIN [v<X.Y.Z>] --> ... <!-- CLAWS:END [v<X.Y.Z>] -->
+//    Sentinel match is regex-based so any prior version is cleanly replaced.
+// 3. Tool list, lifecycle phase list, and version are derived from code at
+//    inject time — see readToolList(), readPhases(), readVersion(). This makes
+//    drift between the server and the user-facing CLAUDE.md structurally
+//    impossible.
+// 4. If CLAUDE.md doesn't exist, creates a minimal stub with a placeholder for
 //    project-specific context above the block.
-// 4. Preserves every non-Claws line of the file byte-for-byte.
+// 5. Preserves every non-Claws line of the file byte-for-byte.
 
 'use strict';
 const fs = require('fs');
 const path = require('path');
 
 // M-27: atomic write helper (tmp + renameSync) — mirrors atomic-file.mjs writeAtomic.
-// Prevents partial project CLAUDE.md if the process is killed mid-write.
-// F3: open+writeSync+fsyncSync+close before rename for durability on power-cut.
 function writeAtomic(filePath, content) {
   const tmp = filePath + '.claws-tmp.' + process.pid + '-' + (++writeAtomic._nonce);
   let _fd;
@@ -41,24 +45,60 @@ if (!TARGET) {
   process.exit(2);
 }
 
+const REPO_ROOT = path.join(__dirname, '..');
 const CLAUDE_MD = path.join(TARGET, 'CLAUDE.md');
 const CMD_DIR = path.join(TARGET, '.claude', 'commands');
 
-const TOOLS_V1 = [
-  'claws_list', 'claws_create', 'claws_send', 'claws_exec',
-  'claws_read_log', 'claws_poll', 'claws_close', 'claws_worker',
-];
-const TOOLS_V2 = [
-  'claws_hello', 'claws_subscribe', 'claws_publish', 'claws_broadcast',
-  'claws_ping', 'claws_peers', 'claws_task_assign', 'claws_task_update',
-  'claws_task_complete', 'claws_task_cancel', 'claws_task_list',
-  'claws_lifecycle_plan', 'claws_lifecycle_advance', 'claws_lifecycle_snapshot', 'claws_lifecycle_reflect',
-  'claws_wave_create', 'claws_wave_status', 'claws_wave_complete',
-  'claws_deliver_cmd', 'claws_cmd_ack',
-  'claws_schema_list', 'claws_schema_get', 'claws_rpc_call',
-];
-const BEGIN = '<!-- CLAWS:BEGIN -->';
-const END   = '<!-- CLAWS:END -->';
+// ── Source-of-truth readers ────────────────────────────────────────────────
+// Tool list: parse mcp_server.js dispatch handlers. Pattern: `name === 'claws_xxx'`.
+// One unique entry per tool. Sorted alphabetically for stable diffs.
+function readToolList() {
+  const mcpPath = path.join(REPO_ROOT, 'mcp_server.js');
+  try {
+    const src = fs.readFileSync(mcpPath, 'utf8');
+    const re = /name === '(claws_[a-z_]+)'/g;
+    const set = new Set();
+    let m;
+    while ((m = re.exec(src)) !== null) set.add(m[1]);
+    return Array.from(set).sort();
+  } catch (err) {
+    return [];
+  }
+}
+
+// Phase enum: parse extension/src/lifecycle-store.ts `export type Phase = ...`.
+// Returned in declaration order (which is also lifecycle order).
+function readPhases() {
+  const ltPath = path.join(REPO_ROOT, 'extension', 'src', 'lifecycle-store.ts');
+  try {
+    const src = fs.readFileSync(ltPath, 'utf8');
+    const m = src.match(/export type Phase\s*=([^;]+);/);
+    if (!m) return [];
+    return Array.from(m[1].matchAll(/'([A-Z][A-Z0-9-]+)'/g)).map((x) => x[1]);
+  } catch (err) {
+    return [];
+  }
+}
+
+function readVersion() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+    return pkg.version || 'unknown';
+  } catch (err) {
+    return 'unknown';
+  }
+}
+
+const TOOLS = readToolList();
+const PHASES = readPhases();
+const VERSION = readVersion();
+
+// Versioned sentinels — emitted with current version, matched with regex
+// so prior-version blocks are replaced cleanly on upgrade.
+const BEGIN_LITERAL = `<!-- CLAWS:BEGIN v${VERSION} -->`;
+const END_LITERAL   = `<!-- CLAWS:END v${VERSION} -->`;
+const BEGIN_RE = /<!-- CLAWS:BEGIN(?: v[\d.]+(?:-[\w.]+)?)? -->/;
+const END_RE   = /<!-- CLAWS:END(?: v[\d.]+(?:-[\w.]+)?)? -->/;
 
 let cmds = [];
 try {
@@ -69,29 +109,33 @@ try {
 } catch { /* ignore */ }
 
 function buildBlock(target, cmds) {
-  const tpl = path.join(__dirname, '..', 'templates', 'CLAUDE.project.md');
+  const tpl = path.join(REPO_ROOT, 'templates', 'CLAUDE.project.md');
   try {
     const raw = fs.readFileSync(tpl, 'utf8');
     const toList = (arr) => arr.map((t) => '`' + t + '`').join(', ');
+    const phaseChain = PHASES.length ? PHASES.join(' → ') : '(unavailable)';
     return raw
       .trimEnd()
+      // Replace literal BEGIN/END sentinels in template with versioned ones.
+      .replace(/<!-- CLAWS:BEGIN(?: v[\d.]+(?:-[\w.]+)?)? -->/g, BEGIN_LITERAL)
+      .replace(/<!-- CLAWS:END(?: v[\d.]+(?:-[\w.]+)?)? -->/g, END_LITERAL)
       .replace(/\{PROJECT_NAME\}/g, path.basename(target))
       .replace(/\{SOCKET_PATH\}/g, '.claws/claws.sock')
-      .replace(/\{TOOLS_V1_COUNT\}/g, String(TOOLS_V1.length))
-      .replace(/\{TOOLS_V1_LIST\}/g, toList(TOOLS_V1))
-      .replace(/\{TOOLS_V2_COUNT\}/g, String(TOOLS_V2.length))
-      .replace(/\{TOOLS_V2_LIST\}/g, toList(TOOLS_V2))
+      .replace(/\{VERSION\}/g, VERSION)
+      .replace(/\{TOOLS_COUNT\}/g, String(TOOLS.length))
+      .replace(/\{TOOLS_LIST\}/g, TOOLS.length ? toList(TOOLS) : '_(no tools detected — mcp_server.js missing?)_')
+      .replace(/\{LIFECYCLE_PHASES\}/g, phaseChain)
       .replace(/\{CMDS_COUNT\}/g, String(cmds.length))
       .replace(/\{CMDS_LIST\}/g, cmds.length ? toList(cmds) : '_(none installed)_');
   } catch (err) {
     return [
-      BEGIN,
+      BEGIN_LITERAL,
       '<!-- ERROR: templates/CLAUDE.project.md not found: ' + err.message + ' -->',
       '## Claws — Terminal Orchestration (MANDATORY)',
       '',
       'You are a Claws orchestrator. Use claws_create + claws_send for long-lived processes.',
       'Always close every terminal you create. Never touch terminals you did not create.',
-      END,
+      END_LITERAL,
     ].join('\n');
   }
 }
@@ -134,13 +178,13 @@ if (legacyStart !== -1) {
   migrated = true;
 }
 
-// ── Insert or replace fenced block ───────────────────────────────────────
-const beginIdx = md.indexOf(BEGIN);
-const endIdx   = md.indexOf(END);
+// ── Insert or replace fenced block (regex match — handles any prior version) ──
+const beginMatch = md.match(BEGIN_RE);
+const endMatch   = md.match(END_RE);
 
 let next;
-if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
-  next = md.slice(0, beginIdx) + block + md.slice(endIdx + END.length);
+if (beginMatch && endMatch && endMatch.index > beginMatch.index) {
+  next = md.slice(0, beginMatch.index) + block + md.slice(endMatch.index + endMatch[0].length);
 } else if (existed) {
   const sep = md.endsWith('\n\n') ? '' : md.endsWith('\n') ? '\n' : '\n\n';
   next = md + sep + block + '\n';
@@ -154,7 +198,8 @@ try { orig = fs.readFileSync(CLAUDE_MD, 'utf8'); } catch { /* ignore */ }
 if (next !== orig) {
   writeAtomic(CLAUDE_MD, next);
   const prefix = migrated ? 'legacy section migrated; ' : '';
-  console.log(`CLAUDE.md ${prefix}${existed ? (beginIdx !== -1 ? 'Claws block updated' : 'Claws block inserted') : 'created with Claws block'}`);
+  const action = beginMatch ? 'Claws block updated' : 'Claws block inserted';
+  console.log(`CLAUDE.md ${prefix}${existed ? action : 'created with Claws block'} (v${VERSION}, ${TOOLS.length} tools, ${PHASES.length} phases)`);
 } else {
-  console.log('CLAUDE.md already has the current Claws block');
+  console.log(`CLAUDE.md already has the current Claws block (v${VERSION})`);
 }

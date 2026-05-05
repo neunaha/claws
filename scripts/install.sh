@@ -583,7 +583,7 @@ fi
 # read from the clone at runtime. If the clone is behind EXPECTED_MIN_VERSION,
 # the working tree is stale and the installer aborts — that was the v0.5.1 bug
 # where users saw "v0.4.0 — installed" because their ~/.claws-src/ was stale.
-EXPECTED_MIN_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.7.10')}" 2>/dev/null || echo "0.7.10")
+EXPECTED_MIN_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.7.13')}" 2>/dev/null || echo "0.7.13")
 EXT_VERSION=$(node -e "try{console.log(require('$INSTALL_DIR/extension/package.json').version)}catch(e){console.log('0.0.0')}" 2>/dev/null || echo "0.0.0")
 
 # Flag stale clones loudly so users don't silently run on an old version.
@@ -1204,7 +1204,8 @@ CLAWSCMD
     && cp "$INSTALL_DIR/rules/claws-default-behavior.md" "$TARGET/.claude/rules/" || true
 
   # P3-2: glob all claws-* and dev-protocol-* skills so new skills are picked up
-  # without editing this script. prompt-templates is renamed to claws-prompt-templates.
+  # without editing this script. Current skills: claws-prompt-templates,
+  # claws-wave-lead, claws-wave-subworker.
   # SELF-COLLISION GUARD: when TARGET == INSTALL_DIR (e.g. ~/.claws-src is a symlink
   # to the project root on dev machines), src and dest resolve to the SAME inode.
   # Without the -ef guard, `rm -rf $dest` would wipe the source before `cp` could
@@ -1216,11 +1217,6 @@ CLAWSCMD
     rm -rf "$TARGET/.claude/skills/$_skill_name" 2>/dev/null || true
     cp -r "$_skill_src" "$TARGET/.claude/skills/$_skill_name"
   done
-  if [ -d "$INSTALL_DIR/.claude/skills/prompt-templates" ] \
-     && ! [ "$INSTALL_DIR/.claude/skills/prompt-templates" -ef "$TARGET/.claude/skills/claws-prompt-templates" ]; then
-    rm -rf "$TARGET/.claude/skills/claws-prompt-templates" 2>/dev/null || true
-    cp -r "$INSTALL_DIR/.claude/skills/prompt-templates" "$TARGET/.claude/skills/claws-prompt-templates"
-  fi
   unset _skill_src _skill_name
 
   # CLAUDE.md injection (project scope only — never inside $HOME)

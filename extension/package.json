@@ -2,7 +2,7 @@
   "name": "claws",
   "displayName": "Claws: Programmable Terminal Bridge",
   "description": "Turn every VS Code terminal into a programmable endpoint. List, create, send, execute, read, and close terminals from any external process via a local socket.",
-  "version": "0.7.12",
+  "version": "0.7.13",
   "publisher": "neunaha",
   "license": "MIT",
   "repository": {
@@ -18,12 +18,13 @@
     "vscode": "^1.93.0"
   },
   "galleryBanner": {
-    "color": "#0A0A0B",
+    "color": "#111318",
     "theme": "dark"
   },
   "categories": [
     "Other",
-    "Programming Languages"
+    "AI",
+    "Machine Learning"
   ],
   "keywords": [
     "terminal",
@@ -34,7 +35,10 @@
     "remote-control",
     "bridge",
     "socket",
-    "claude-code"
+    "claude-code",
+    "mcp",
+    "wave-army",
+    "workers"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [

@@ -150,7 +150,7 @@ export function planCleanup(root: string): CleanupAction[] {
   const rulesFile = path.join(root, '.claude', 'rules', 'claws-default-behavior.md');
   if (fs.existsSync(rulesFile)) push({ action: 'rm', path: rulesFile });
 
-  for (const skill of ['claws-orchestration-engine', 'claws-prompt-templates']) {
+  for (const skill of ['claws-orchestration-engine', 'claws-prompt-templates', 'claws-wave-lead', 'claws-wave-subworker']) {
     const p = path.join(root, '.claude', 'skills', skill);
     if (fs.existsSync(p)) push({ action: 'rmdir', path: p });
   }

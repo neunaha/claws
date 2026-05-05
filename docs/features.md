@@ -434,7 +434,7 @@ To hide: right-click the status bar and uncheck "Claws".
 - `.claws-bin/` — vendored MCP server + shell hook
 - `.claude/commands/claws-*.md` — the 19 slash command files
 - `.claude/rules/claws-default-behavior.md`
-- `.claude/skills/claws-orchestration-engine/` + `.claude/skills/claws-prompt-templates/`
+- `.claude/skills/claws-prompt-templates/`
 - `.vscode/extensions.json` — removes `neunaha.claws` from `recommendations` only
 - `CLAUDE.md` — removes just the fenced `<!-- CLAWS:BEGIN --> … <!-- CLAWS:END -->` block
 

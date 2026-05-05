@@ -90,7 +90,7 @@ Phase transitions, worker capacity, terminal-must-be-closed-before-REFLECT — a
 ```
 ┌─ Slash commands + skills (.claude/) ─────────────────────────────┐
 │   /claws-do, /claws-go, /claws-worker, /claws-fleet, …           │
-│   skills/claws-orchestration-engine/SKILL.md                     │
+│   skills/claws-prompt-templates/SKILL.md                         │
 └──────────────────────────────────────────────────────────────────┘
            ↓
 ┌─ Templates + injectors (templates/, scripts/inject-*) ───────────┐
@@ -221,8 +221,7 @@ Pure Node.js, zero deps. Exposes 38 MCP tools to Claude Code over stdio JSON-RPC
 **Slash commands** (`.claude/commands/claws-*.md`): 19 commands. The user-facing entry points (`/claws-do`, `/claws-go`, `/claws-worker`, `/claws-fleet`, `/claws-army`, `/claws-watch`, `/claws-cleanup`, etc.) and admin commands (`/claws-install`, `/claws-update`, `/claws-fix`, `/claws-status`, `/claws-introspect`, etc.).
 
 **Skills** (`.claude/skills/`):
-- `claws-orchestration-engine/SKILL.md`: 10-phase lifecycle reference for the orchestrator.
-- `claws-prompt-templates/`: production-grade prompts copy/paste-able.
+- `claws-prompt-templates/SKILL.md`: production-grade mission prompts and lifecycle patterns.
 - `claws-wave-lead/SKILL.md` + `claws-wave-subworker/SKILL.md`: wave army role contracts.
 
 ---

@@ -1,295 +1,137 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/social-preview.png" alt="Claws" width="720">
-</p>
+![Claws](../docs/images/social-preview.png)
 
-<h1 align="center">Claws</h1>
+# Claws — Programmable Terminal Bridge
 
-<p align="center">
-  <strong>Your AI just got terminal superpowers.</strong>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/VS%20Code-1.93+-007ACC.svg" alt="VS Code">
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Zero Deps">
-  <img src="https://img.shields.io/badge/Node.js-only-339933.svg" alt="Node.js">
-  <img src="https://img.shields.io/badge/Python-not%20required-lightgrey.svg" alt="No Python">
-  <img src="https://img.shields.io/github/stars/neunaha/claws?style=social" alt="Stars">
-</p>
+Turn every VS Code terminal into a programmable endpoint your AI agent can drive.
 
 ---
 
-## The Problem → The Solution
+## What it does
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/before-after.png" alt="Before and After Claws" width="720">
-</p>
+Claws is a VS Code extension that runs a local socket server inside your editor. Any external process — Claude Code, an orchestration script, a CI runner — connects over Unix socket and gets full programmatic control of every terminal: list, create, send text, execute commands with captured output, read pty logs, and close. No plugins in the terminal, no shell integration required.
 
-**Before Claws**: copy a command from Claude → paste in terminal → copy the output → paste it back → repeat 47 times. One terminal. No visibility. No parallelism.
-
-**After Claws**: your AI controls every terminal directly. Spawns workers. Runs tests, builds, deploys — all in parallel, all visible. You just watch.
+The key feature is **wrapped terminals**: Claws uses VS Code's native Pseudoterminal API (backed by `node-pty`) to capture every pty byte into an in-memory ring buffer. That buffer is readable via the `claws_read_log` MCP tool with ANSI escapes stripped — giving AI agents clean, structured visibility into Claude Code sessions, build logs, vim sessions, or any TUI. Combine this with 39 MCP tools across 6 categories (terminal control, pub/sub, tasks, lifecycle, waves, RPC/schemas) and you get a full AI orchestration substrate inside your editor.
 
 ---
 
-## Get Started in 3 Steps
+## Demo
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/install-flow.png" alt="Install Flow" width="720">
-</p>
-
-### Step 1 — Install into your project
-
-**From the project root**, paste this into any terminal:
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)
-```
-
-The installer is **project-local** — it writes `.mcp.json`, `.claws-bin/mcp_server.js`, and `.claude/{commands,rules,skills}/` into the project you're in. Each project gets its own configurable Claws setup. Re-run it in any other project to enable Claws there.
-
-**Zero runtime dependencies.** Just Node.js (ships with VS Code). The extension is built from TypeScript on install; `node-pty` is an optional native dep with a pure-Node fallback.
-
-### Step 2 — Reload VS Code
-
-`Cmd+Shift+P` → `Developer: Reload Window`
-
-### Step 3 — Restart Claude Code in this project
-
-Exit your current Claude Code session and re-open `claude` from the project root so it picks up the project-local `.mcp.json` and registers the 8 Claws tools. If the tools don't appear, run `/claws-fix`.
-
-### Step 4 — You're ready
-
-Type `/claws` to see the dashboard. Type `/claws-do run my tests` to see it work.
+![](../docs/images/before-after.png)
 
 ---
 
-## What You'll See
+## Quick Install
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/what-you-see.png" alt="What You See" width="720">
-</p>
-
-After install, your VS Code terminal panel transforms:
-- **CLAWS banner** appears in every new terminal with live bridge status
-- **"Claws Wrapped Terminal"** appears in the terminal dropdown — click it for full pty capture
-- **Multiple worker tabs** appear when AI spawns parallel terminals
-- **Shell commands** (`claws-ls`, `claws-new`, `claws-run`, `claws-log`) work in any terminal
+1. **Install the extension** from the VS Code Marketplace (search `Claws: Programmable Terminal Bridge`)
+2. **Run the project installer** from your project root:
+   ```bash
+   bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)
+   ```
+   This writes `.mcp.json`, `.claws-bin/mcp_server.js`, and `.claude/commands/` into your project. Re-run in each project you want Claws in.
+3. **Reload VS Code** (`Cmd+Shift+P` → `Developer: Reload Window`) then restart Claude Code from the project root so it picks up `.mcp.json` and loads the 39 Claws tools. If tools don't appear, run `/claws-fix`.
 
 ---
 
-## The Commands
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/slash-commands.png" alt="Slash Commands" width="720">
-</p>
-
-One command to remember: **`/claws`**
+## The 8 Commands
 
 | Command | What it does |
 |---|---|
-| `/claws` | Dashboard — status, terminals, version |
-| `/claws-do <task>` | Magic — describe anything, AI figures out the strategy |
-| `/claws-go <mission>` | Spawn a Claude Code worker instantly |
-| `/claws-watch` | Live control room of all terminals |
-| `/claws-learn` | Interactive prompt guide (5 levels) |
-| `/claws-cleanup` | Close all worker terminals |
-| `/claws-update` | Pull latest + full rebuild + what's new |
-
-### Talk naturally — examples:
-
-```
-/claws-do run my tests                              → single terminal, runs tests, reports
-/claws-do lint test and build in parallel            → 3 terminals, all running simultaneously
-/claws-go fix the bug in auth.ts                     → spawns a Claude worker to fix it
-/claws-go audit this codebase for security issues    → spawns a Claude worker to audit
-/claws-watch                                          → shows all terminals + their latest output
-/claws-cleanup                                        → closes all worker terminals
-```
+| `/claws` | Live dashboard — terminal count, socket state, version |
+| `/claws-do <task>` | Universal verb — classifies any task and runs the right tool |
+| `/claws-status` | Show all active terminals and their lifecycle state |
+| `/claws-cleanup` | Close all worker terminals; leave user-created ones untouched |
+| `/claws-help` | Full reference for every command and MCP tool |
+| `/claws-fix` | Diagnose and auto-repair a broken installation in one command |
+| `/claws-report` | Bundle logs and diagnostics into a shareable file for bug reports |
+| `/claws-update` | Pull latest version and rebuild in place |
 
 ---
 
-## How It Works
+## Key Capabilities
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/architecture.png" alt="Architecture" width="720">
-</p>
+### `claws_done()` — one-tool completion
 
-Claws runs a socket server inside VS Code. Any process connects and controls terminals via JSON commands.
+![](../docs/images/claws-done-completion.png)
 
-**Wrapped terminals** are the key feature — as of v0.4 they use VS Code's native `Pseudoterminal` API (backed by `node-pty`, with a `child_process` pipe-mode fallback). No `script(1)` wrapping means **zero rendering corruption** for TUI apps like Claude Code, vim, htop, k9s. Every byte the shell emits flows through the extension's own `onDidWrite` event and into an in-memory ring buffer — readable via `readLog` with ANSI escapes stripped, giving you clean text of everything that happened.
+Workers call `claws_done()` as their final act. The tool reads `CLAWS_TERMINAL_ID` from the worker's environment (injected at spawn), publishes `system.worker.completed` to the Claws event bus, and closes the terminal — all in one atomic call, zero arguments. No marker scanning, no manual polling.
 
-A **status bar item** (right side, `$(terminal) Claws (N)`) shows live socket + terminal count at a glance; click it to run Health Check. Color shifts to warning-yellow in pipe-mode and error-red when no server is running.
+### Worker fleet — parallel Claude workers with auto-monitoring
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/wrapped-terminal.png" alt="Wrapped Terminal Data Flow" width="720">
-</p>
+![](../docs/images/architecture.png)
 
----
+`claws_fleet(workers=[…])` spawns N wrapped terminals in parallel, boots Claude Code in each with full permissions, delivers missions via bracketed paste, and returns `terminal_ids` + `correlation_ids` immediately. The orchestrator polls completion with `claws_workers_wait` or arms per-worker Monitors via `stream-events.js --wait <uuid>`. `claws_dispatch_subworker` enables Wave Army patterns with LEAD + sub-worker coordination.
 
-## Capabilities
+### Wrapped pty capture — every byte logged, ANSI-stripped
 
-### Terminal Management
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-terminal-mgmt.png" alt="Terminal Management" width="720">
-</p>
+![](../docs/images/wrapped-terminal.png)
 
-List all terminals with PID, name, status. Create new ones with custom names. Focus, show, close programmatically. Every terminal gets a stable numeric ID.
+Wrapped terminals use VS Code's `Pseudoterminal` API with `node-pty` — no `script(1)`, no rendering corruption. Every byte flows through the extension's `onDidWrite` event into a ring buffer. `claws_read_log` returns clean text with ANSI escapes stripped, enabling AI agents to read back TUI sessions they can't otherwise see.
 
-### Full Pty Capture
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-pty-capture.png" alt="Pty Capture" width="720">
-</p>
+### Safety gate — warn before sending into TUIs
 
-Read back anything — Claude Code conversations, vim sessions, build logs, REPL outputs. The terminal looks and behaves normally. The capture layer is invisible.
+![](../docs/images/cap-safety.png)
 
-### Command Execution
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-exec.png" alt="Command Execution" width="720">
-</p>
+Before sending text, Claws checks whether the foreground process is a shell or a TUI (Claude Code, vim, htop). If it's a TUI, the send proceeds with a warning — the caller decides. Pass `strict: true` to hard-block. This is what makes it safe to automate terminals that also have human users.
 
-Run commands with captured stdout + stderr + exit code. File-based capture works in every terminal type without shell integration.
+### Self-diagnosis — `/claws-fix` repairs the install chain
 
-### Safety Gate
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-safety.png" alt="Safety Gate" width="720">
-</p>
+![](../docs/images/cap-mcp.png)
 
-Detects TUI vs shell. Warns before sending text into vim/claude instead of a shell prompt. Non-blocking by default.
-
-### Self-Diagnosis & Cleanup
-
-Every install ships with a first-class diagnostic surface — no external tools, no guesswork.
-
-- **Status bar item** — live `$(terminal) Claws (N)` with socket + node-pty state in the tooltip. Click to run Health Check. Warning-yellow in pipe-mode, error-red when no server is running.
-- **Health Check** (`cmd+alt+c h` / palette → `Claws: Health Check`) — one-shot introspection snapshot: extension version, Node + Electron ABI, platform, `node-pty` load path (or fallback reason), every active socket, MCP server version, uptime.
-- **Show Log** (`cmd+alt+c l`) — focuses the `Claws` Output channel with the full runtime trace.
-- **Show Status** (`cmd+alt+c s`) — markdown-formatted runtime block, copy-pasteable into a bug report.
-- **List Terminals** — QuickPick of every Claws-known terminal (`id · name · wrapped/unwrapped · pid`); selecting one focuses it.
-- **Rebuild Native PTY** — runs `@electron/rebuild` against the bundled `node-pty`. Use after a VS Code major upgrade if pipe-mode fallback kicks in.
-- **Uninstall Cleanup** — scans open workspace folders, inventories every Claws-installed file (`.mcp.json` entry, `.claws-bin/`, `.claude/commands/claws-*`, skill dirs, `.vscode/extensions.json` recommendation, fenced block in `CLAUDE.md`), shows a per-folder confirmation, removes only what was installed, and writes a summary to the Output channel.
-
-All seven commands are also reachable from the command palette under the `Claws:` category.
-
-### MCP Server — Native Claude Code Integration (project-local)
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-mcp.png" alt="MCP Server" width="720">
-</p>
-
-As of v0.4, every project you install into gets its own `.mcp.json` pointing at a vendored `mcp_server.js` under `.claws-bin/`. Each project's Claws setup is independent — customize per-project, commit with the repo, or gitignore it. The installer handles this automatically.
-
-```json
-// <project>/.mcp.json
-{
-  "mcpServers": {
-    "claws": {
-      "command": "node",
-      "args": ["./.claws-bin/mcp_server.js"],
-      "env": { "CLAWS_SOCKET": ".claws/claws.sock" }
-    }
-  }
-}
-```
-
-**Tools:** `claws_list` · `claws_create` · `claws_send` · `claws_exec` · `claws_read_log` · `claws_poll` · `claws_close` · `claws_worker`
-
-### AI Worker Orchestration (blocking lifecycle)
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/ai-orchestration.png" alt="AI Orchestration" width="720">
-</p>
-
-`claws_worker` is a **single blocking tool call that runs the full worker lifecycle**: spawn a wrapped terminal → launch Claude Code with full permissions → detect boot → send mission → poll the capture buffer for `MISSION_COMPLETE` (or a custom marker) → harvest the last N lines → auto-close the terminal → return a structured result.
-
-```json
-{
-  "name": "claws_worker",
-  "arguments": {
-    "name": "refactor-auth",
-    "mission": "Refactor auth.ts to use bcrypt. Write MISSION_COMPLETE when done.",
-    "timeout_ms": 900000,
-    "harvest_lines": 300
-  }
-}
-```
-
-Returns `{ status: "completed" | "failed" | "timeout", terminal_id, duration_ms, marker_line, harvest, cleaned_up }`. No manual polling, no manual cleanup. Pass `detach: true` to keep the old fire-and-forget behavior.
-
-### Cross-Device Control (planned)
-<p align="center">
-  <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/cap-crossdevice.png" alt="Cross-Device" width="720">
-</p>
-
-WebSocket transport with token auth + TLS. SSH tunnel works today:
-```bash
-ssh -L 9999:/remote/.claws/claws.sock user@remote
-```
+`/claws-fix` runs a structured diagnostic sequence: checks the socket, verifies MCP registration in `.mcp.json`, probes `node-pty` load path, validates the hook chain, and repairs any broken layer it finds. **Health Check** (`cmd+alt+c h`) gives an instant introspection snapshot. The status bar item shows live socket state at a glance.
 
 ---
 
-## What Gets Installed
+## Settings Reference
 
-The installer writes files in **two scopes**: the machine (once) and the project you ran it in (per-project, re-run for each project you want Claws in).
-
-### Machine-level (written once, shared by all projects)
-
-| What | Where | Purpose |
+| Setting | Default | Description |
 |---|---|---|
-| Cloned source | `~/.claws-src/` | Full repo clone — used by `/claws-update` |
-| VS Code extension | `~/.vscode/extensions/neunaha.claws-0.5.0` | Symlink → `~/.claws-src/extension` |
-| Extension bundle | `~/.claws-src/extension/dist/extension.js` | Built from TypeScript on install |
-| Bundled native PTY | `~/.claws-src/extension/native/node-pty/` | Self-contained `node-pty` — keeps wrapped terminals glitch-free without a global install |
-| Shell hook | `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.config/fish/conf.d/claws.fish` | CLAWS banner + `claws-*` shell commands |
-
-### Project-level (written into the project you installed from)
-
-| What | Where | Purpose |
-|---|---|---|
-| MCP registration | `<project>/.mcp.json` | Registers Claws MCP for this project |
-| Self-contained MCP | `<project>/.claws-bin/mcp_server.js` | Vendored copy — relative-path registration |
-| Slash commands | `<project>/.claude/commands/claws-*.md` | 19 commands: `/claws`, `/claws-do`, `/claws-go`, `/claws-worker`, `/claws-fleet`, `/claws-fix`, `/claws-update`, … |
-| Behavior rule | `<project>/.claude/rules/claws-default-behavior.md` | Claude prefers visible terminals in this project |
-| Orchestration skill | `<project>/.claude/skills/claws-orchestration-engine/` | 7 patterns + lifecycle protocol |
-| Prompt templates | `<project>/.claude/skills/claws-prompt-templates/` | 7 mission templates |
-| Dynamic CLAUDE.md block | `<project>/CLAUDE.md` (fenced `<!-- CLAWS:BEGIN -->` … `<!-- CLAWS:END -->`) | Tool list + operating principles (generated at install time) |
-| Workspace recommendation | `<project>/.vscode/extensions.json` | Adds `neunaha.claws` to `recommendations` so teammates are prompted to install on open |
-
-### Opt-in: global install
-
-Set `CLAWS_GLOBAL_CONFIG=1` to mirror the per-project config into `~/.claude/`. Set `CLAWS_GLOBAL_MCP=1` to also register the MCP globally in `~/.claude/settings.json`. Both default to off.
-
-### Uninstall
-
-Machine-wide: `rm -rf ~/.claws-src`, remove the extension symlink, remove the shell-hook line. Project-level: `rm -rf .claws-bin .claude/commands/claws-*.md .claude/rules/claws-default-behavior.md .claude/skills/claws-* .mcp.json` and delete the fenced block from `CLAUDE.md`.
+| `claws.socketPath` | `.claws/claws.sock` | Relative path from workspace root for the Unix socket |
+| `claws.logDirectory` | `.claws/terminals` | Relative path for wrapped terminal pty logs |
+| `claws.defaultWrapped` | `false` | Create all new terminals as wrapped by default |
+| `claws.maxOutputBytes` | `262144` | Max bytes buffered per command event (256 KB) |
+| `claws.maxHistory` | `500` | Max command events in the ring buffer |
+| `claws.maxCaptureBytes` | `1048576` | Max per-terminal output in the in-memory capture buffer (1 MB) |
+| `claws.execTimeoutMs` | `180000` | Default exec command timeout in milliseconds (180 s) |
+| `claws.pollLimit` | `100` | Max history events returned by a single `poll` request |
+| `claws.heartbeatIntervalMs` | `60000` | Interval between `system.heartbeat` events (0 = disable) |
+| `claws.strictEventValidation` | `false` | Reject publish requests that fail schema validation |
+| `claws.auth.enabled` | `false` | Require HMAC-SHA256 token on hello requests |
+| `claws.auth.tokenPath` | `.claws/auth.token` | Path to the shared secret file for token validation |
+| `claws.webSocket.enabled` | `false` | [Planned] Enable WebSocket server for cross-device access |
+| `claws.webSocket.port` | `5678` | [Planned] TCP port for the WebSocket server |
 
 ---
 
-## Documentation
+## Keyboard Shortcuts
 
-| Resource | Description |
+| Shortcut | Action |
 |---|---|
-| [Complete Guide](docs/guide.md) | 12-chapter course, install to fleet orchestration |
-| [Feature Reference](docs/features.md) | Every command, parameter, edge case |
-| [Protocol Spec](docs/protocol.md) | Full JSON socket protocol |
-| [Prompt Templates](.claude/skills/prompt-templates/SKILL.md) | 7 mission prompt patterns |
-| [Landing Page](https://neunaha.github.io/claws/) | Website with visuals + case studies |
-| [Contributing](CONTRIBUTING.md) | Dev setup + how to contribute |
+| `cmd+alt+c h` (Mac) / `ctrl+alt+c h` (Win/Linux) | Health Check — instant introspection snapshot |
+| `cmd+alt+c l` / `ctrl+alt+c l` | Show Log — open the Claws Output channel |
+| `cmd+alt+c s` / `ctrl+alt+c s` | Show Status — markdown runtime block |
 
 ---
 
-## Powered by Claude Opus
+## What's New in v0.7
 
-Claws was designed for and tested with Claude Opus — the model with the deepest reasoning for multi-terminal orchestration.
-
----
-
-## Roadmap
-
-- **v0.3** ✅ Zero dependencies — Node.js only
-- **v0.4** ✅ TypeScript rewrite, Pseudoterminal (no glitching), blocking `claws_worker`, project-local install, dynamic CLAUDE.md, automatic legacy migration
-- **v0.5** ✅ Hardening sweep — `introspect` command, status bar item, Health Check / Uninstall Cleanup, chord keybindings, UUID profile adoption, hot-reloadable config, bundled `node-pty`, 57 automated checks
-- **v0.6** — MCP server Layer 2 rewrite, WebSocket transport, cross-device control, team config, device discovery, web dashboard, VS Code Marketplace publish
+- **`claws_done()` is now the primary completion signal** — one zero-arg MCP call publishes `system.worker.completed`, closes the terminal, and frees the orchestrator. No more marker scanning.
+- **Wave Army** — `claws_fleet` and `claws_dispatch_subworker` enable parallel Claude worker fleets with LEAD orchestration, heartbeat protocol, and per-role phase events.
+- **Non-blocking workers by default** — mission-mode `claws_worker` returns immediately with `terminal_id` + `correlation_id`; blocking is opt-in. The MCP stdio transport no longer hangs on long missions.
+- **Behavioral injection enforcement** — a 5-layer chain (global `CLAUDE.md` → project `CLAUDE.md` block → SessionStart hook → PreToolUse hook → Stop hook) ensures workers follow the terminal hygiene contract even across cold boots.
+- **LH-9 TTL watchdog** — workers that exceed their TTL or violate the heartbeat contract are automatically terminated with a `wave_violation` event; the orchestrator is never left waiting on a dead worker.
+- **8-command set** — 27 commands consolidated to 8. `/claws-do` routes into exec, worker, fleet, and wave buckets automatically.
+- **`stream-events.js --wait <uuid>`** — native Node.js completion waiter replaces fragile awk/grep pipelines; per-worker Monitors self-exit on the first matching `system.worker.completed` event.
 
 ---
 
-## License
+## Windows / WSL
 
-[MIT](LICENSE) · [Anish Neunaha](https://github.com/neunaha) · [Website](https://neunaha.github.io/claws/)
+The core extension and MCP server work on Windows and WSL. Wrapped terminal pty capture uses VS Code's native `Pseudoterminal` API (backed by `node-pty`) rather than `script(1)`, so there are no BSD vs GNU compatibility differences. The `install.sh` project setup script requires a bash environment — run it from WSL or Git Bash on Windows. On WSL, the Unix socket path (`.claws/claws.sock`) resolves inside the WSL filesystem; cross-boundary socket access is not supported.
+
+---
+
+## Links
+
+- [GitHub](https://github.com/neunaha/claws) — source, issues, contributing
+- [Documentation](https://github.com/neunaha/claws/tree/main/docs) — protocol spec, guide, feature reference
+- [Issues](https://github.com/neunaha/claws/issues) — bug reports and feature requests

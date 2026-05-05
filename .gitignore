@@ -49,3 +49,6 @@ Thumbs.db
 __pycache__/
 *.pyc
 *.egg-info/
+
+# Marketing assets — internal only
+claws_marketing/

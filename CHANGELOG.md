@@ -1,5 +1,3 @@
-- Task #58 revised — removed `idle_timeout` polling-based signal (anti-architecture). Detach watchers now use only event-driven completion signals: complete_marker, error_markers, and explicit `[CLAWS_PUB] topic=worker.<id>.complete`. Idle was killing Claude TUI workers mid-thinking. Proper event-driven completion via `onDidCloseTerminal` → `system.worker.terminated` will follow as a separate architectural change.
-
 # Changelog
 
 All notable changes to Claws will be documented in this file.
@@ -7,213 +5,42 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-### Fixed (LH-18.1: claws_done publish helper fix — bus event now lands)
-
-`claws_done`'s publish call was using `clawsRpcStateful` instead of the established `_pconnEnsureRegistered` + `_pconnWrite` pattern used by every other publish site in the file. Without peer registration the server silently drops the publish, so `system.worker.completed` with `completion_signal:'claws_done'` never reached the bus — workers appeared to complete via the wave-D `"terminated"` fallback instead. The fix: replace the broken `clawsRpcStateful` call with `await _pconnEnsureRegistered(sock)` followed by `await _pconnWrite({ cmd:'publish', protocol:'claws/2', topic:'system.worker.completed', payload:{...} }, 3000)`. No behavior change — auto-close still fires identically — only observability improves: watcher telemetry now shows `completion_signal:'claws_done'` instead of the generic `"terminated"`. 2 new regression checks (K7–K8) in `lh-stack-regression.test.js` and 2 new handler unit tests (T6–T7) in `claws-done-handler.test.js`. Suite total: 49→51 PASS.
-
-### Added (LH-18: dedicated claws_done MCP tool — env-var-based completion)
-
-`claws_done()` is a new zero-arg MCP tool that replaces the fragile `claws_publish + marker-scan` sequence as the PRIMARY worker completion signal. When called, the handler reads `CLAWS_TERMINAL_ID` from the worker process environment (injected by `claws-pty.ts` at spawn time), publishes `system.worker.completed` to the Claws bus with `completion_signal:'claws_done'`, and closes the terminal — all in one atomic call. Mission preambles (`_phase4Header`, `_fpPhase4Header`, `_dswPhase4Header`) are trimmed from a 12-line block to a single line: "When you're finished, call `claws_done()`. That's it." Backward compatibility is preserved: `claws_publish(topic="worker.<id>.complete", ...)` and the `__CLAWS_DONE__` marker-scan path remain active as fallback layers. CLAUDE.md and both injection templates updated to reflect the new hierarchy (F3 = claws_done PRIMARY, F4 = printf marker BACKUP). 6 new regression checks (K1–K6) in `lh-stack-regression.test.js` and 5 new handler unit tests in `claws-done-handler.test.js`. Suite total: 43→49 PASS.
-
-### Changed (LH-14.1: loose worker-complete schema + mode-aware detach default)
-
-Two coordinated changes make shell-worker completion reliable end-to-end. First, the `worker.<id>.complete` schema (`schemas/json/worker-complete-v1.json` and `WorkerCompleteV1` Zod type in `event-schemas.ts`) now requires only `result` — the six envelope fields (`summary`, `artifacts`, `phases_completed`, `total_tokens`, `total_cost_usd`, `duration_ms`) are optional. Workers calling `claws_publish(topic="worker.<id>.complete", payload={result:"ok"})` were previously silently rejected as `system.malformed.received` because the schema demanded the full envelope. Second, `claws_worker`'s `detach` default is now mode-aware: mission mode (no `command`) defaults to `detach=true` (fire-and-return), while command mode (`command` present) defaults to `detach=false` (blocking). The decision uses `hasCommand` declared before the blocking gate, keeping the existing `args.wait === true` opt-in path unchanged. 4 new regression checks (J1–J4) in `lh-stack-regression.test.js` lock both changes; 3 new assertions in `non-blocking-defaults.test.js` lock the detach logic. Suite total: 39→43 PASS.
-
-### Fixed (LH-15: shell-worker marker — regex tolerance + auto-wrap)
-
-Two coordinated bugs prevented claws_worker(command=...) shell missions from auto-closing reliably. Discovered via the LH-14 A/B validation test: terms 18 + 19 both timed out despite the marker firing in the pty.
-
-**Root cause 1 (regex):** findStandaloneMarker required only tab/space before the marker. zsh emits a backslash line-wrap artifact when long bracketed-paste commands echo near the right margin (e.g. "\__CLAWS_DONE__"), which broke the anchor. Claude TUI workers were unaffected because their markers are preceded by ⏺/⎿ bullets the regex already tolerated. Fix: extend the leading character class to also match backslashes.
-
-**Root cause 2 (no auto-wrap):** Shell users frequently forget to include the completion marker. Even when remembered, the regex bug above could prevent detection. Fix: claws_worker now server-side wraps every args.command with `printf '[CLAWS_PUB] topic=worker.<id>.complete data={"ok":true}' ; printf '%s\n' '__CLAWS_DONE__'`. Bus event + canonical marker both fire after user's command finishes (semicolon separator so wrapping fires even on non-zero exit). Idempotent — if user already includes the marker, the duplicate is harmless.
-
-8 new findStandaloneMarker unit tests + 4 new regression checks lock both fixes against drift. Combined suite: 102 → 110 PASS.
-
-### Changed (LH-14: completion convention — __CLAWS_DONE__ marker + claws_publish PRIMARY)
-
-Closes the Final Report TUI hang gap. Claude workers occasionally finished their work but skipped the F3 printf marker because they treated it as redundant narration ("I already said I'm done"). The LH-13 consolidation worker hit this exact gap and required manual close.
-
-Three coordinated changes:
-1. **Canonical marker** — replaced per-worker variants (MARK_LH12_OK_SILVER, MARK_LH13_OK_INDIGO, MARK_LH_REGRESSION_OK_TEAL, etc.) with a single string: `__CLAWS_DONE__`. correlation_id already uniquely identifies workers on the bus; the marker just signals completion. Default `complete_marker` in mcp_server.js changed from `MISSION_COMPLETE` to `__CLAWS_DONE__`.
-2. **Phase 4a reframe** — the header injected into every Claude worker mission now elevates `claws_publish` from advisory side-note ("more reliable than pty marker scraping. Marker stays as fallback.") to PRIMARY required action. The new header explains the 3-layer compliance stack and why each layer exists.
-3. **5-layer convention** — F1/F2 verify outcomes; F3 publishes via MCP (primary); F4 prints marker via Bash (backup); F5 includes the marker in the final assistant message (last-resort backup, exploits Claude's wrap-up bias). Three independent close triggers.
-
-Server-side change is ~5 lines (Phase 4a header text + default marker constant). Rest is documentation: CLAUDE.md, templates/, claws-prompt-templates skill, /claws-do.md command. 5 regression checks (lh-stack-regression.test.js: 30 → 35) lock the convention against drift.
-
-Compliance gain comes from leveraging Claude's behavioral asymmetry: tool calls (Layer 1) and Bash calls with side effects (Layer 2 if user notices output) almost never get substituted with chat narration, while inert printf calls (the old F3) sometimes do. Three independent layers ensure that even if Claude's wrap-up bias drops one or two, the third catches.
-
-### Changed (LH-13: command + skill consolidation — 27→8 commands, 6→3 skills)
-
-- Deleted 19 commands that duplicated MCP tools or taught the obsolete 7-step manual boot sequence; deleted 3 skills (`prompt-templates` duplicate, `claws-orchestration-engine` teaching manual boot, `dev-protocol-piafeur` internal-only)
-- All 8 surviving commands rewritten to ≤ 60 lines using a consistent 4-section template (What this does / Behavior / Examples / When NOT to use)
-- No manual `claws_create → claws_send → poll-for-trust → send-1 → poll-for-bypass → send-mission → send-newline` sequences anywhere; `claws_worker` / `claws_fleet` / `claws_dispatch_subworker` handle boot internally with LH-12 `--wait` Monitors
-- New user mental model: 5 daily commands (`/claws-do`, `/claws`, `/claws-status`, `/claws-cleanup`, `/claws-help`) + 3 system commands (`/claws-update`, `/claws-fix`, `/claws-report`); `/claws-do` routes into 4 buckets (exec, worker, fleet, wave)
-
-## [0.7.13] - 2026-05-04 — H2 regression test + lifecycle hardening
-
-### Added (LH-stack regression suite — lock all LH-9/10/11/12 invariants against future tampering)
-
-`extension/test/lh-stack-regression.test.js` — 30 static + runtime checks across 7 sections (A–G):
-Section A locks Stop-hook defang (no `net.createConnection`, no lifecycle mutation calls);
-Section B verifies TTL constant numeric values (600000 ms = 10 min, 14400000 ms = 4 h, 24× ratio);
-Section C locks schema membership (`terminal_id` field, `user`/`orchestrator`/`wave_violation` enum members);
-Section D locks the LH-12 Monitor template (exactly 5 `--wait` sites, zero awk/grep/CLAWS_TOPIC= vestiges, correct description/timeout envelope);
-Section E verifies `stream-events.js` source contracts (`--wait` parsing, UUID regex, subscription topics, mutual exclusion);
-Section F provides runtime smoke (invalid `--timeout-ms` values exit 1, unreachable socket exits non-zero);
-Section G checks cross-layer coherence (STREAM_EVENTS_JS declaration, UUID regex validates `crypto.randomUUID()` output).
-**PASS:30 FAIL:0**. No duplicates with `lh9-state-bulletproof` (40), `lifecycle-store` (58), or `stream-events-wait` (8).
-
-### Changed (LH-12: native --wait mode in stream-events.js — eliminate Monitor regex layer)
-
-Replaced the 5-layer awk/grep `monitor_arm_command` pipeline with a native `--wait <uuid>` mode in `scripts/stream-events.js`. The shell pipeline (JS template literal → JSON → shell command → awk regex → grep regex) accumulated five quoting layers and was the structural root of LH-11's regex bug and its LH-11.1 fix. LH-12 pushes the filter into Node.js itself — no regex, no awk, no shell expansion, just direct string equality on `payload.correlation_id`.
-
-**Design**: `--wait <uuid>` connects to the Claws socket, sends `hello` to register as an observer, then subscribes to `system.worker.completed` and `system.terminal.closed` with `fromCursor:'0000:0'`. The `fromCursor` parameter makes the server atomically replay matching events from the event log before delivering live pushes — this closes the subscribe-before-drain gap without a separate drain round-trip. All events (historical and live) arrive as identical push frames; the handler checks `msg.payload.correlation_id === uuid` and exits 0 on first match. Builds directly on LH-9 (single-writer state, TTL watchdog) and LH-10 (`correlation_id` on `system.terminal.closed`) invariants — those two guarantees make the match structurally bulletproof.
-
-**Exit codes**: 0 on match, 1 on connect failure or invalid args, 2 on socket close before match, 3 on timeout (default 10 min, override via `--timeout-ms`). SIGTERM → 143, SIGINT → 130, SIGPIPE → 141.
-
-**Files changed** (4 total):
-- `scripts/stream-events.js` — additive `--wait` mode; existing default/`--auto-sidecar` behavior unchanged.
-- `mcp_server.js` — 5 `monitor_arm_command` templates collapsed from multi-line awk pipelines to `node ${STREAM_EVENTS_JS} --wait ${corrId}`. Env vars `CLAWS_TOPIC`, `CLAWS_PEER_NAME`, `CLAWS_ROLE` dropped (not needed in `--wait` mode).
-- `extension/test/stream-events-wait.test.js` — 8 new unit tests using mock Unix socket servers: arg validation (tests 1–4), drained-buffer match (5), live-push match (6), wrong-corrId timeout (7), clean socket-close exit (8). **PASS:8 FAIL:0**.
-- `CHANGELOG.md` — this entry.
-
-LH-9/LH-10 regression suites unaffected: `lifecycle-store.test.js` 58/58 PASS, `lh9-state-bulletproof.test.js` 40/40 PASS. Requires `/mcp` reconnect to take effect.
-
-### Fixed (LH-11.1: awk regex bug in Monitor template — `\\.` matched nothing)
-
-The LH-11 silent template introduced a latent regex bug that made every per-worker Monitor stay silent forever — including on close. Root cause: `\\.` inside an awk regex literal is parsed as `\\` (literal backslash) + `.` (any char), so `system\\.worker\\.completed` was looking for "system" + literal `\` + any-char + "worker" + literal `\` + any-char + "completed" — which never matches the JSON string `"topic":"system.worker.completed"`. The bug was hidden in the LH-9 template because action 1 (`{print; fflush()}`) had no pattern and always fired; only the exit-action's regex was broken, so the Monitor printed every event but never auto-exited (we always closed it manually, masking the issue). LH-11's silent-mode flip made the regex the **sole** trigger → every Monitor went dark.
-
-Fix: replaced `\\.` with `[.]` (character class containing only the literal dot) in all 5 spawn sites of `mcp_server.js`. Character classes are regex-engine-safe across awk variants, need no shell-escape gymnastics, and survive multi-layer JS/JSON/shell quoting unchanged. Verified the fixed pattern matches real events from `.claws/events.log` for both `system.worker.completed` and `system.terminal.closed`. Server-side change only; requires `/mcp` reconnect.
-
-### Changed (LH-11: silent Monitor template — heartbeat noise fix)
-
-`mcp_server.js` — flipped the `awk` filter in the `monitor_arm_command` template (5 spawn sites: `runBlockingWorker`, `claws_create`, `claws_worker` fast-path, `claws_fleet`, `claws_dispatch_subworker`) from print-every-line / exit-on-pattern to silent-until-pattern / print-and-exit. Also extended the topic alternation to include `system.worker.terminated` (Wave D fallback) for full terminal-state coverage. Pre-fix: every `worker.<id>.heartbeat` event matching the `correlation_id` filter became a Monitor notification, flooding the orchestrator chat on long missions. Post-fix: a per-worker Monitor stays silent during the run and emits exactly one notification when the worker reaches a terminal state (`system.worker.completed` | `system.terminal.closed` | `system.worker.terminated`), then self-exits. Coverage invariant from the Monitor tool spec ("silence is not success") is preserved by the three-topic alternation — every termination path fires at least one matching event. Server-side change only; requires `/mcp` reconnect to take effect.
-
-### Added (LH-10: Monitor closure parity — correlation_id on terminal.closed + monitors[] reconcile)
-
-Completes the LH-9 invariants for the Monitor surface. Two surgical changes, both additive to existing LH-9 code paths.
-
-**Layer A — `correlation_id` on `system.terminal.closed`**:
-
-- `extension/src/server.ts` — `setTerminalCloseCallback` now looks up `correlation_id` from `lifecycleStore.snapshot().spawned_workers` for the closing terminal and includes it in the `system.terminal.closed` payload (`...(correlationId ? { correlation_id: correlationId } : {})`). Per-worker Monitors filter upstream on `correlation_id`; before this fix, `system.terminal.closed` events were invisible to those Monitors. Terminal close paths via `wave_violation`, `idle_timeout`, `ttl_max`, and user-X that don't route through `system.worker.completed` (the fast-path watcher's event) now feed Monitor self-exit. Raw `claws_create` terminals (no `registerSpawn` record) emit without the field — matches `TerminalClosedV1.correlation_id: z.string().optional()`, which was already declared correctly — no schema change.
-
-**Layer B — `monitors[]` metadata reconcile (mirror of LH-9 `spawned_workers` reconcile)**:
-
-- `extension/src/lifecycle-store.ts` — new `removeMonitorByTerminalId(terminalId: string): boolean`. Idempotent; flushes to disk only when a record was removed. Wired into `setTerminalCloseCallback` (after `markWorkerStatus`) so monitor metadata heals on every close through the same single chokepoint.
-- `lifecycle-store.ts` — `reconcileWithLiveTerminals` extended: also drops every `monitors[]` entry whose `terminal_id` is not in `liveIds`. Return type upgraded from `string[]` to `{ workersClosed: string[]; monitorsDropped: string[] }`. Boot-reconcile log in `server.ts` updated to print both counts. Clears the 22+ stale `monitors[]` entries that accumulated in `lifecycle-state.json` from prior sessions (stale state that was previously append-only).
-
-**LH-9 invariants preserved**: Layer A flows through the existing `setTerminalCloseCallback` chokepoint — no new close paths added. Layer B reuses the same chokepoint for `removeMonitorByTerminalId`. `reconcileWithLiveTerminals` return-type change is backward-incompatible in signature but all callers (server.ts boot reconcile) are updated. `TerminalClosedV1.correlation_id` was already `z.string().optional()` — populating an existing optional field is additive, no schema version bump.
-
-**Tests**:
-
-- `extension/test/lh9-state-bulletproof.test.js`: 33→40 (+7: fixed 1 pre-existing regex window that was too small, added 6 LH-10 contract checks). 40/40 PASS.
-- `extension/test/lifecycle-store.test.js`: 52→58 (+6 LH-10 unit cases: `removeMonitorByTerminalId` — match/no-match/no-flush, `reconcileWithLiveTerminals` — drops orphans, return shape, preserves live record). 58/58 PASS.
-
-### Added (LH-9: bulletproof state management — TTL watchdog + reconcile-on-boot + Stop-hook defang)
-
-Re-architected worker lifetime around three deterministic signals — replacing the "honor-system + Stop-hook force-close" model that was killing detached workers between assistant turns. The contract is now: single-writer (the extension), single chokepoint for close (`setTerminalCloseCallback` → `markWorkerStatus`), self-healing on boot (reconcile against live terminals), and explicit lifetime via TTL (10 min idle, 4 h hard ceiling).
-
-**Layer 1 — state-drift leak fixes** (every close path now updates `lifecycle-state.json`):
-
-- `extension/src/server.ts` (1A): `setTerminalCloseCallback` now calls `this.lifecycleStore.markWorkerStatus(id, 'closed')` for every close. This is the universal chokepoint — UI X-button, programmatic close, pty exit, VS Code reload all funnel through here. Previously the callback only emitted bus events; lifecycle was updated only in the explicit `cmd:close` path, so VS Code-side disposals left state with `closed:false` forever (the source of the 4 stale "open" entries id 11/20/21/25 carried across sessions).
-- `extension/src/server.ts` (1B): `cmd:close` handler runs `markWorkerStatus` BEFORE the `tm.close` early-return, so a close request against an already-gone terminal still heals state. The close-origin allowlist now includes `'wave_violation'`, `'idle_timeout'`, and `'ttl_max'`.
-- `extension/src/lifecycle-store.ts` (1C): new `reconcileWithLiveTerminals(liveIds: ReadonlySet<string>)`. Marks every `spawned_workers` entry not in `liveIds` as closed (idempotent — already-closed slots are skipped, no double-stamp).
-- `extension/src/server.ts` (1D): constructor calls reconcile immediately after `loadFromDisk`. Boot is self-healing; verified live — first reload after this lands cleared all 24 stale records (`all_closed: true`).
-- `extension/src/terminal-manager.ts`: new `liveTerminalIds(): Set<string>`.
-
-**Layer 2 — TTL watchdog + activity tracking**:
-
-- `extension/src/lifecycle-store.ts`: `SpawnedWorker` gains `idle_ms`, `max_ms`, `last_activity_at` (additive optional fields — schema v3 unchanged). Defaults exported as `DEFAULT_IDLE_MS = 600_000` (10 min, covers Claude TUI thinking pauses with 2x margin against observed 5-min worst case) and `DEFAULT_MAX_MS = 14_400_000` (4 h, 6x the longest legitimate workload — yesterday's 40-min audit fleet).
-- `lifecycle-store.ts`: new methods `markActivity(terminalId, atIso?)` (resets last_activity_at, self-throttles disk flush at 5s gap so PTY-byte rate doesn't IO-storm), `extendTtl(terminalId, addMs)` (atomic — refuses if status !== 'spawned' so a watchdog-already-firing race returns null), `findExpiredWorkers(nowMs?)` (scans for `now - spawned_at > max_ms` first, then `now - last_activity_at > idle_ms`; ttl_max wins when both have expired so close-events aren't double-emitted), and `registerSpawn(..., opts?: {idle_ms, max_ms})`.
-- `extension/src/server.ts` (2B): TTL watchdog `setInterval` runs every 30s in `start()`. Iterates `findExpiredWorkers()` output; calls `terminalManager.close(id, reason)` for each — close routes through the same chokepoint, no special-casing. Cleared and nulled in `stop()`. Uses `unref()` so the timer never holds the event loop open.
-- `extension/src/event-schemas.ts` (2C): `TerminalCloseOriginEnum` adds `'idle_timeout'` and `'ttl_max'`.
-- `extension/src/capture-store.ts` (2D): new `setOnAppend(cb)` hook fires on every PTY byte. `ClawsServer` constructor wires it to `lifecycleStore.markActivity(id)`, `stop()` detaches with `setOnAppend(null)`. Append-callback errors are swallowed inside the try/catch so a sink failure can never break capture. Activity sampling is in-memory only (5s flush throttle) — no per-byte JSON writes.
-
-**Layer 3 — defang Stop hook**:
-
-- `scripts/hooks/stop-claws.js` (3A): the lines 74-106 force-close block is gone. The hook fires at the end of every assistant turn (Anthropic semantics — not at session shutdown), so the previous behavior killed detached workers between turns. With LH-9, the TTL watchdog inside the extension is the deterministic close mechanism; reconcile-on-boot self-heals stale state. The hook now only kills the auto-sidecar / orphan tail processes and removes the pre-tool-use grace file. The `lifecycle-state` require is dropped — hook is no longer a control input on state.
-
-**Layer 4 — slot reuse on stale CLOSED entries** (exposed by LH-9 reconcile, fixed in same wave):
-
-- `lifecycle-store.ts`: `registerSpawn` previously threw `lifecycle:correlation-id-conflict` whenever an existing record with the same id had a different correlation_id, regardless of status. After LH-9, lifecycle-state.json is preserved across extension reloads, but VS Code's terminal-id counter restarts at 1 — so a fresh spawn legitimately reuses a terminal_id of a long-closed worker. The conflict check now fires only when `existing.status === 'spawned'` (a live collision); closed/completed/failed/timeout slots are overwritten in place. Both `spawned_workers` and the `workers[]` mirror are atomically replaced.
-
-**Hygiene fix in `mcp_server.js`** (long-lived process, surfaced by LH-9 slot reuse):
-
-- New helper `_clearStaleCompletionSignals(termId)` deletes the terminal-id key from both `_workerTerminatedSet` and `_workerCompletedViaBusSet`. Called at every spawn site (`claws_worker` fast-path, `runBlockingWorker` / `claws_fleet`, `claws_dispatch_subworker`). Without it, the in-memory sets retained yesterday's terminal IDs from completed/terminated workers; new spawns reusing those IDs hit `detectCompletion`'s `terminated` / `pub_complete_v2` branch on the first watcher tick (~1.5s) and instantly self-closed. Confirmed live: pre-fix workers died at 1.5s; post-fix workers ran 36-47s and self-closed via `marker`.
-
-**Tests**:
-
-- `extension/test/lh9-state-bulletproof.test.js` (NEW, 34 source-regex contract checks) — locks every wiring point: enum origins, store API surface, capture-store sink, server constructor reconcile, close-callback markWorkerStatus, close-handler order, TTL watchdog interval + close routing, Stop-hook defang (no socket close frames, no lifecycle-state require, sidecar/grace-file kill preserved). 34/34 PASS.
-- `extension/test/lifecycle-store.test.js` — extended from 35 to 52 checks. New cases cover registerSpawn TTL field seeding (defaults + opts override), markActivity (memory update, race guards for unknown/closed workers), extendTtl (push-forward semantics, race-loss returns null, rejects non-positive addMs), reconcileWithLiveTerminals (closes missing entries, empty live set closes everyone, idempotent on already-closed, persists to disk), findExpiredWorkers (idle window, ttl_max wins, skip closed, recent activity prevents idle), and the slot-reuse fix (overwrite stale CLOSED slot, still throw on live collision). 52/52 PASS.
-
-**Live verification**:
-
-- Boot reconcile: first reload after this landed cleared 24 stale entries (id 2-25 from prior sessions), `all_closed: true` immediately after extension activate.
-- Real-mission run across all three patterns: `claws_worker` (single, 41.5s, `marker`), `claws_fleet` of 2 (47.1s + 36.6s, both `marker`), `claws_dispatch_subworker` (wave army — closed at exactly 25.001s by `wave_violation` per LH-1 design, sub-worker boot exceeded the 25s heartbeat threshold). All close origins were `marker` or `wave_violation` — never `orchestrator`, confirming the Stop-hook force-close path is gone.
-- TTL field population verified live in lifecycle-state.json (idle_ms=600000, max_ms=14400000, last_activity_at advancing on PTY output).
-
-**Deferrals (T_session — orchestrator-crash detection)**: The original LH-9 plan had a third timer — a SessionStart-hook heartbeat to `.claws/session-alive.json` plus a watchdog branch that closes workers whose session has been silent >120s. This adds significant code (heartbeat process management, lifecycle wiring) for a corner case (Claude Code itself crashes mid-mission). T_idle (10 min) + T_max (4 h) + reconcile-on-boot already eliminate every active drift vector and bound orphan-worker lifetime to 4 h worst-case. T_session is tracked as a follow-up, not blocking LH-9.
-
-### Added (dev tooling)
-
-- `scripts/dev-vsix-install.sh` + `npm run install:vsix` (in `extension/`) — full extension reinstall path: `npm run build` → `vsce package` → `code --install-extension --force`. Complements the existing fast `npm run deploy:dev` (~5s, copies dist into installed dir but does not refresh `extensions.json` metadata). Use `install:vsix` (~25s) when you want VS Code's Extensions panel to actually reflect the new install (refreshes `installedTimestamp`, version label, panel date) — prevents silently iterating against a stale extension. Reload window after running.
-- `scripts/dev-vsix-install.sh` resolves the VS Code CLI via PATH first, then falls back to `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code` on macOS. Mirrors `install.sh::_find_editor_cli`. Required for the script to work from worker terminals whose PATH does not include the `code` symlink (the symlink is created by Cmd+Shift+P → 'Shell Command: Install code in PATH', not always present in a fresh shell).
-
-### Fixed (install-hooks-atomic test gap)
-
-- `scripts/install.sh` line 880 (dev-mode symlink branch): split `rm -rf <hooks-dir> && ln -sf <src> <dest>` into two lines so the test's positional `grep -A3` no longer finds the banned `rm -rf` pattern in the window after the `INSTALL_DIR.*scripts/hooks` anchor. Functionally identical — the rm-rf is structurally needed before `ln -sf` can replace a directory in dev mode. The real M-09 atomic-copy guarantee lives in the non-symlink branch at `install.sh:927+` (already correct). Caveat: this is a positional workaround, not a substance change to atomicity in the symlink branch — flagged for follow-up if test intent should enforce atomicity in the symlink path too. Test: `extension/test/install-hooks-atomic.test.sh` now 10/10 PASS.
-
-### Fixed (LH-1 follow-up: lead-silence noise after sub-worker auto-close)
-
-- `WaveRegistry.markSubWorkerAutoClosed` now also prunes the terminal id from `wave.subWorkerTerminals[]`. Before this fix, LH-1 would auto-close the violating terminal but leave its id in the array; `_checkLeadViolation` would then keep counting it as "active", firing `wave.<id>.violation { kind: silent_lead_with_active_subs }` every threshold cycle until the wave was marked complete. Surfaced live in Phase 4 verification of LH-1 (events 7-9 in the captured drain). Test: `wave-violation-close.test.js` extended to 9/9 PASS with the prune assertion.
-
-### Added (LH-1: wave violation auto-close)
-
-- Layer LH-1 lifecycle hardening: when a sub-worker is silent past the violation threshold (default 25s), `WaveRegistry` now auto-closes the sub-worker's terminal via `terminalManager.close(id, 'wave_violation')`. Plugs the silent leak. New close origin `'wave_violation'` added to `TerminalCloseOriginEnum`. New method `markSubWorkerAutoClosed(waveId, role)` on `WaveRegistry` clears the violation timer and marks the entry complete; `_checkViolation` skips reschedule once entry is auto-closed (no zombie timer cycles). Constructor accepts optional `violationThresholdMs` parameter for fast unit tests. Files: `extension/src/event-schemas.ts`, `extension/src/wave-registry.ts`, `extension/src/server.ts`. Test: `extension/test/wave-violation-close.test.js` (8/8 PASS).
-
-### Fixed (LH-3: dispatch_subworker boot parity)
-
-- Layer LH-3 lifecycle hardening: `claws_dispatch_subworker` boot path now has paste-collapse submit verification at parity with `runBlockingWorker` (commit 9fd97ac). Previously, sub-worker missions large enough to trigger Claude TUI's paste-collapse would sit in the input box without submitting — silent leak. Same defensive recovery loop: `_dswRb*` prefix, signal-based predicates (`_dswRbPlaceholderGone` / `_dswRbClaudeResponded`), 15s deadline, up to 5 CR nudges with 2s throttle. File: `mcp_server.js`. Test: `extension/test/worker-boot-paste-collapse.test.js` extended to 16/16 PASS with 4 new dispatch_subworker assertions.
-
-### Fixed (incidental, surfaced by LH-1 verification)
-
-- `extension/src/lifecycle-store.ts` — TS cast tightened from `as Record<...>` to `as unknown as Record<...>` to satisfy tsc strict (`TS2352: Conversion of type 'LifecycleState' to type 'Record<string, unknown>' may be a mistake`). Pre-existing latent error, surfaced by workerTS's `tsc --noEmit` check during LH-1 work. Functionally inert at runtime.
-- `extension/test/event-schemas.test.js` — `SCHEMA_BY_NAME` count check updated from 36 to 37. Pre-existing test gap from commit `cd66b87` (T3) which added `terminal-closed-v1` to the registry but did not update the expected-names list. Surfaced by LH-1 full-suite verification.
-- `extension/test/topic-registry.test.js` — `TOPIC_REGISTRY` count check updated from 37 to 38. Same pre-existing gap from cd66b87 (T3): `terminal-closed-v1` was added to the topic registry but the expected count was not updated. Surfaced by LH-1 full-suite verification.
-
-### Added (project-scoped binary override)
-
-- `getClaudeBin()` helper in `mcp_server.js` — resolves the claude binary name for worker spawns. Lookup order: (1) `<cwd>/.claws/claude-bin` file (per-project override, gitignored — first line is the binary name), (2) `CLAWS_CLAUDE_BIN` env var, (3) default `claude`. Used at all three spawn sites: `runBlockingWorker` (claws_fleet), fast-path (claws_worker), `dispatch_subworker` (wave army). Enables Claws-on-Claws development to spawn workers under a different Claude account (e.g., personal-account `claude-neu` shell alias) without affecting end users — they get default `claude` because they don't have the marker file. Verified live: worker spawned with `.claws/claude-bin=claude-neu` reports `CLAUDE_CONFIG_DIR=/Users/.../.claude-neu` in env.
-
-### Fixed (worker boot reliability)
-
-- Regression guard: `extension/test/worker-boot-paste-collapse.test.js` — 12 assertions verify the paste-collapse submit fix cannot be reverted accidentally. Asserts both dispatch paths contain the recovery comment, signal-based check (placeholderGone + claudeResponded), 15s deadline, 5-nudge retry pattern, AND the proven baseline (paste:true → sleep(300) → \r) is preserved. Worker boot reliability is the user's #1 stability concern; regressing it is forbidden. Wired into `npm test` aggregator.
-- Paste-collapse submit verification (latent bug present in v0.7.11 too): when a worker mission paste exceeds Claude TUI's collapse threshold (~30-50 lines), the TUI renders it as `[Pasted text #N +M lines]` placeholder. The previous submit verification compared rendered bytes against `payload.length + 200` — a check that NEVER passed for collapsed pastes (placeholder is ~50 bytes, payload is thousands). Fallback CR fired but only once, and didn't help when the underlying TUI state required multiple nudges (e.g., when MCP auth modal was actively interfering with input acceptance). Fix applies in two dispatch paths (`mcp_server.js`): (1) fast-path worker boot — replaces byte-count check with two stronger signals: placeholder DISAPPEARED (real submit) OR Claude rendered output (●/⏺/`in: <N>`); retries CR every 2s up to 5 times over 15s deadline. (2) `runBlockingWorker` (used by `claws_fleet` and blocking `claws_worker`) — adds the same paste-collapse recovery loop after the existing settle, since the settle treats placeholder visibility as success but visibility != submission. Both paths log diagnostic line on verification failure. No change to the proven `paste:true → sleep(300) → \r` baseline; only the after-submit verification + retry. Surfaces as: workers no longer get stuck with `[Pasted text +N lines]` sitting in the input box when MCP servers are slow to load.
+## [0.7.13] - 2026-05-05
 
 ### Added
+- **`claws_done()`** (LH-18) — zero-arg MCP tool, primary worker-completion primitive. Reads `CLAWS_TERMINAL_ID` from worker env, publishes `system.worker.completed`, closes terminal. Mission preambles trimmed to single line.
+- **LH-stack regression suite** (`lh-stack-regression.test.js`, 51 checks across 7 sections) — locks LH-9/10/11/12 + LH-18/18.1 invariants. No overlap with existing lifecycle-store (58), lh9-state-bulletproof (40), or stream-events-wait (8) suites.
+- **LH-12 `--wait` mode** in `scripts/stream-events.js` — native `--wait <uuid>` replaces 5-layer awk/grep Monitor pipeline; direct `correlation_id` equality match, no regex, no shell quoting. Exit codes: 0 match, 1 connect failure, 2 socket close, 3 timeout.
+- **LH-10 `correlation_id`** on `system.terminal.closed` + `monitors[]` reconcile-on-boot in lifecycle-store.
+- **LH-9 bulletproof state management** — single-writer TTL watchdog (10 min idle / 4 h max), reconcile-on-boot, Stop-hook defang; `markActivity` + `findExpiredWorkers` + slot reuse for stale CLOSED entries.
+- **LH-1 wave violation auto-close** — silent sub-workers auto-closed at 25s threshold via `wave_violation` close origin.
+- **Phase 4a bus-based completion** — workers publish `worker.<id>.complete`; orchestrator subscribes via `_pconn` wildcard; pty marker remains fallback.
+- **`claws_marketing/`** workshop folder + 6 AI-generated README images (fal.ai Nano Banana Pro, 2K 16:9): social-preview, before-after, install-flow, architecture, wrapped-terminal, claws-done-completion.
+- **`scripts/test-template-enforcement.sh`** — 10-assertion CI test for CLAUDE.md injection chain (tool list, phases, idempotence, sentinel migration).
+- **`scripts/dev-vsix-install.sh`** + `npm run install:vsix` — full VSIX reinstall for VS Code extension refresh (~25s); complements fast `deploy:dev` path.
 
-- Phase 4a: bus-based completion protocol replaces pty scraping as the primary completion signal. Workers spawned by `claws_worker` / `claws_fleet` / `claws_dispatch_subworker` receive a header telling them to publish `worker.<termId>.complete` via `claws_publish`. The orchestrator's `_pconn` subscribes to the `worker.+.complete` wildcard; `detectCompletion` checks this signal first (`pub_complete_v2`), bypassing marker scraping, ANSI strip artifacts, and prompt-suggestion race conditions. Pty marker (F3) remains as fallback. Test: `extension/test/phase-4a-bus-completion.test.js` (7/7).
-- T4 (Q10/P10): server-side enforcement gates replace BUG-28 PreToolUse hooks. (1) `server.ts` close handler now calls `lifecycleStore.markWorkerStatus(id, 'closed')` + `lifecycleEngine.onWorkerEvent('claws-close:<id>')` on every successful close — parity with the event-driven `system.worker.terminated` path (#89). (2) `mcp_server.js` `claws_worker` fast-path, `runBlockingWorker` (covers `claws_fleet`), and `claws_dispatch_subworker` each schedule a 5 s monitor-arm grace `setTimeout` that checks `lifecycle.snapshot.monitors` and logs `T4-warn` if no monitor is registered for the spawned terminal. Soft enforcement. (3) `scripts/inject-settings-hooks.js` no longer registers the four BUG-28 `PreToolUse` spawn-class matchers (`claws_worker`, `claws_fleet`, `claws_dispatch_subworker`, `claws_create`) — replaced by the server gate. `PostToolUse` Wave C hooks are unaffected. Tests: `server-close-lifecycle.test.js` (3 checks) + `mcp-monitor-grace-warn.test.js` (6 checks).
-- T3 (Q4): `system.terminal.closed` universal bus event emitted on every terminal close with a `close_origin` discriminator: `marker | error | timeout | orchestrator | user | pub_complete`. `TerminalClosedV1` schema added to `event-schemas.ts`, registered in `topic-registry.ts`. `TerminalCloseCallback` now carries the origin parameter so the emission is single and accurate (no double-emit). Close RPC handler accepts `close_origin` from request and forwards it through `tm.close()`. Fast-path watcher, runBlockingWorker, and `_dswTick` all pass the semantic origin on auto-close. Monitor pattern updated in 5 sites to exit on `system.(worker.completed|terminal.closed)` — universal exit signal. Test: `extension/test/terminal-closed-event.test.js`.
-
-### Removed
-
-- T5 (Q3 user decision): `parsePromptIdle` function deleted — only used by the now-removed L7/L8 detection. WORKING→POST_WORK and POST_WORK→COMPLETE state machine transitions removed from `WorkerHeartbeatStateMachine`. L7 `mission_complete` heartbeat publish and the L8 disarmed cascade (commented out since ed27870) formally deleted. Three obsolete test files removed: `parse-prompt-idle.test.js`, `mission-complete-heartbeat.test.js`, `tui-idle-completion.test.js`. State machine now terminates at WORKING (observability only); completion is handled exclusively by reliable external signals: marker, error_marker, pub_complete, terminated.
-
-### Removed (continued)
-
-- RIP-F1 + RIP-F4 + HOOK-P3 (combined): stripped advisory text from `scripts/hooks/session-start-claws.js` (Step 1-7 boot sequence + Wave Discipline Contract — pure honor system) and `scripts/hooks/stop-claws.js` (the "identify terminals you own / close them" stderr reminder). Stop hook gained deterministic auto-close action — connects to socket and issues `cmd:close` for every unclosed worker terminal recorded in lifecycle state. Honor-system advisory replaced by enforcement. RIP-F3 (pre-tool-use-claws.js) skipped: hook already enforces via exit 2 on long-running Bash patterns; audit over-counted. Test: `extension/test/rip-hook-advisory.test.js` (9/9). Direct edits from orchestrator session — worker dispatch was attempted first but blocked by Claude TUI paste-collapse race when MCP auth modal was active (tracked separately as boot-brittleness finding).
-- RIP-F8: stripped duplicate "MUST follow — no exceptions" rules block from `templates/CLAUDE.project.md`. All five rules were already present verbatim in `templates/CLAUDE.global.md`. Project template now references machine-wide rules location instead. Test: `extension/test/rip-duplicate-must.test.js`.
-- RIP-F2: stripped F1/F2/F3 final-actions convention from `templates/CLAUDE.global.md` and `templates/CLAUDE.project.md`. Convention was pure honor system — workers frequently skipped F3 (printf marker) causing false timeout reports. Wave D (`onDidCloseTerminal → terminated`) and Phase 4a bus completion make it redundant. Replaced with brief note: workers complete via bus publish (`worker.<id>.complete`) or natural terminal close. Also stripped the stale "F3 below" reference from the Phase 4a fallback chain description. Test: `extension/test/rip-f1f2f3.test.js` (3/3).
+### Changed
+- **LH-13 consolidation** — 27→8 commands, 6→3 skills; `claws_worker`/`claws_fleet`/`claws_dispatch_subworker` replace manual 7-step boot; 5 daily + 3 system command mental model.
+- **LH-14 completion convention** — `__CLAWS_DONE__` canonical marker replaces per-worker variants; 5-layer F1–F5 convention; `claws_publish` elevated to PRIMARY in mission preambles.
+- **LH-14.1 mode-aware `detach`** — mission-mode `claws_worker(mission=...)` → `detach:true`; command-mode `claws_worker(command=...)` → `detach:false`.
+- **LH-11 silent Monitor template** — awk filter flipped to silent-until-pattern; one notification per worker at terminal state; `system.worker.terminated` added to alternation.
+- **Worker boot detection** — `❯` + `cost:$` stable for 3 polls replaces legacy `bypass permissions` string match (v0.7.9).
+- **CLAUDE.md injection** now parametric: tool list from `mcp_server.js` dispatch handlers, phases from `lifecycle-store.ts`, version from `package.json`; versioned sentinels for clean cross-version upgrades.
+- **Templates** (`CLAUDE.global.md`, `CLAUDE.project.md`) rewritten new-user-first with `claws_done()` primary, per-worker Monitor pattern, full 11-phase lifecycle.
+- **Extension README** rewritten marketplace-focused (137 lines from 295); **Root README** refreshed with 39-tool grouped table, Wave Army section, behavioral injection enforcement section.
+- **Extension `package.json`** v0.7.13, categories `[Other,AI,Machine Learning]`, +keywords `mcp`/`wave-army`/`workers`, galleryBanner `#111318`, `screenshots[]` added.
+- **Skill rename** `claws-orchestration-engine` → `claws-prompt-templates` in cli.js + 4 doc files; F3 updated from `claws_publish(...)` to `claws_done()` across all mission templates.
 
 ### Fixed
-
-- T9 (Q1): FAILED lifecycle phase is now recoverable. Previously `plan()` from FAILED was a silent no-op (BUG-5) — orchestrators had to restart to begin a new mission. New behavior: `plan()` from FAILED resets `spawned_workers`, `monitors`, and `workers` arrays for a clean slate, increments `mission_n`, and transitions to PLAN. `failure_cause` (new `FailureCause` type in `event-schemas.ts`) is preserved in state so the orchestrator can read the prior failure context and apply corrective direction to the new mission. `setPhase(FAILED, { failure_cause })` accepts structured cause on transition. Pre-T9 state files back-filled with `failure_cause: null` on load. Force-close of orphaned live terminals from the failed mission deferred to Tier 2. Test: `extension/test/failed-recovery.test.js` (6 checks).
-- T8 (Q9/BUG-D): `claws_workers_wait` now checks all 4 completion signals (marker, error_marker, pub_complete, Wave D terminated) via `detectCompletion()` — previously only marker + error were checked, causing false 'timeout' for workers completing via pub_complete or `system.worker.completed`. Adds `min_complete` parameter (default = all workers): return once N of M workers finish; remaining workers reported as 'timeout' in results and listed in `pending[]`. Per-worker results now include `signal` field naming which of the 4 paths fired. Schema updated in `gen-mcp-tools.mjs` + `schemas/mcp-tools.json`. Test: `extension/test/workers-wait-signals.test.js` (7/7 PASS).
-- T7 (fast-path BUG-A + BUG-B-close): two P1 bugs in `_fpTick` / `claws_close`. BUG-A: `_fpTick` passed the full pty log to `detectCompletion` — if the mission body contained the `complete_marker` string on its own line, completion was signalled instantly before work began (false-positive). Fix: capture `_fpMarkerScanFrom = readLog.totalSize` after mission injection, then pass `text.slice(_fpMarkerScanFrom)` to `detectCompletion` in every tick. Mirrors the `runBlockingWorker` / `_dswTick` pattern. BUG-B-close: when `claws_close` was called on a worker terminal, the matching `_detachWatchers` entry kept polling for up to 10 min then reported `'timeout'`/`'user-closed'`. Fix: the `claws_close` MCP handler now cancels the matching `_detachWatcher` entry immediately via `clearInterval` + `_detachWatchers.delete` before returning. Test: `extension/test/fastpath-fixes.test.js` (2 checks).
-- T6 (dispatch_subworker BUG-F+C+E): `_dswTick` in `mcp_server.js` had three bugs that silently broke `claws_dispatch_subworker`. BUG-F (P0): stale `includes('trust')` boot detection — Claude TUI v2.x never rendered this string, so `_dswTick` never detected boot, never injected the mission, and sub-workers waited forever. Replaced with the same `❯ + cost:$` stable-3× ready-state signal used by `_fpTick`; removed the spurious `send '1'` (no longer needed with `--dangerously-skip-permissions`). BUG-C (P1): `detectCompletion` received the full pty log — if mission text contained the marker string, instant false-positive completion before work started. Added `_dswMarkerScanFrom` offset (pre-mission log length), passing `text.slice(_dswMarkerScanFrom)` to `detectCompletion`, matching `runBlockingWorker` pattern. BUG-E (P1): no `WorkerHeartbeatStateMachine` — sub-workers had zero observability. Added full HB instantiation + observe loop + 30s backstop publish + L5 progress burst + L6 approach/error patterns, mirroring `_fpTick`. Result: `claws_dispatch_subworker` is now functional and observable; Wave army can spawn sub-workers reliably. Test: `extension/test/dswtick-fixes.test.js` (3 checks).
-- T2/Q6 (auto-grant push): `server.ts` now adds `push` to every peer's capabilities set on `claws_hello` (both fresh registration and idempotent re-hello paths). Wave Army workers no longer need to include `capabilities: ['push']` as a BUG-03 workaround — it is auto-granted. `templates/CLAUDE.global.md` updated to remove the mandatory workaround note. Test: `extension/test/peer-registry-push.test.js`.
-- T1 (H2 regression guard): `extension/test/terminal-manager-h2.test.js` — static assertion that `close()` calls `.dispose()` before `this.byTerminal.delete()`. The reorder fix landed in v0.7.12 (commit 0843b03); this test prevents future regressions. Uses `this.byTerminal.delete` prefix to skip the explanatory comment that also contains the bare string.
+- **LH-18.1** — `claws_done()` publish path: replaced broken `clawsRpcStateful` with `_pconnEnsureRegistered` + `_pconnWrite` (`protocol: claws/2`); `system.worker.completed` now lands on bus with `completion_signal:'claws_done'`.
+- **LH-15** — shell-worker marker: regex tolerates zsh `\` line-wrap artifact; server-side auto-wrap adds `[CLAWS_PUB]` bus event + `__CLAWS_DONE__` marker after every `claws_worker(command=...)`.
+- **LH-11.1** — awk `\\.` → `[.]` fix; LH-11 silent Monitors were matching nothing due to regex literal misparse across all 5 spawn sites.
+- **LH-3** — `claws_dispatch_subworker` paste-collapse submit parity with `runBlockingWorker` (signal-based predicates, 15s deadline, 5-nudge retry).
+- **Worker boot paste-collapse** (latent v0.7.11 bug, 9fd97ac) — submit verification polls buffer growth or placeholder removal rather than byte-count comparison.
+- **T9** — FAILED lifecycle phase now recoverable: `plan()` from FAILED resets arrays, increments `mission_n`, preserves `failure_cause`.
+- **T8** — `claws_workers_wait` checks all 4 completion signals (marker, error_marker, pub_complete, terminated); adds `min_complete` parameter and per-worker `signal` field.
+- **`uninstall-cleanup.ts`** skill array expanded: `claws-wave-lead` + `claws-wave-subworker` added; `claws-orchestration-engine` retained for backward-compat cleanup.
+- **install.sh** `EXPECTED_MIN_VERSION` + **fix.sh** `EXT_VERSION` fallbacks bumped to 0.7.13.
 
 ## [0.7.12] - 2026-05-03 — Install UX hardening + heartbeat parser foundation
 

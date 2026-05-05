@@ -1,128 +1,118 @@
-<!-- CLAWS-GLOBAL:BEGIN v1 -->
-## Claws — Machine-Wide Terminal Policy
+<!-- CLAWS-GLOBAL:BEGIN -->
+## Claws — Machine-Wide Terminal Policy (v{VERSION})
 
-Claws may be installed in the current project. Before running any long-lived process, check whether `.claws/claws.sock` exists in the project root.
+Claws may be installed in the current project. The trigger is the file `.claws/claws.sock` in the project root — if it exists, the rest of this section applies. If it does not, this section is inert.
 
-### If `.claws/claws.sock` exists — you are in a Claws project
+### What is already running for you
 
-You MUST follow these rules:
+When you start a session in a Claws project, several things happen automatically before your first message. You do not need to spawn or arm any of them yourself:
 
-1. **NEVER use Bash for long-lived processes** (servers, test watchers, builds, REPLs). Use `claws_create` + `claws_send`.
-2. **ALWAYS create wrapped terminals** (`wrapped=true`) to enable log reading.
-3. **ALWAYS close every terminal you create** when the task is done.
-4. **NEVER touch terminals you did not create.**
-5. **NEVER run Claude Code in headless/non-interactive mode.**
+- **MCP server** (`mcp__claws__*` tools) is registered via `.mcp.json` and exposes the full Claws API.
+- **Sidecar** (`stream-events.js --auto-sidecar`) is spawned by the SessionStart hook, streaming every bus event into `.claws/events.log`.
+- **Hooks** in `~/.claude/settings.json` watch your tool calls: a Monitor gate on spawn-class MCP calls, an orphan-cleanup PostToolUse hook, a `--no-verify` block on Bash, and a Stop hook that kills the sidecar at session end.
 
-### Worker boot sequence (exact — do not skip steps)
+You should treat these as part of the runtime — do not respawn them, do not kill them.
 
-```
-Step 1  claws_create name="worker-<slug>" wrapped=true
-Step 2  claws_send id=<N> text="claude --model claude-sonnet-4-6 --dangerously-skip-permissions"
-Step 3  Poll claws_read_log every 5s until output contains "trust" (~20s)
-Step 4  claws_send id=<N> text="1" newline=false
-Step 5  Poll claws_read_log every 5s until output contains "bypass" (~10s)
-Step 6  claws_send id=<N> text="<mission>" newline=false
-Step 7  claws_send id=<N> text="
-" newline=false
-```
+### The simple path: `/claws-do`
 
-### Lifecycle (8 phases — apply to every multi-terminal orchestration)
+For most work, run `/claws-do "<task>"`. It classifies the task into one of four buckets and runs the right tool:
 
-PLAN → SPAWN → DEPLOY → OBSERVE → RECOVER → HARVEST → CLEANUP → REFLECT
+1. **One-shot shell** — `claws_exec(command, …)` for quick captures.
+2. **Single Claude task** — `claws_worker(name, mission)` for anything that needs a TUI Claude session.
+3. **Parallel fleet** — `claws_fleet(workers=[…])` for independent jobs that can run in parallel.
+4. **Wave with LEAD** — multi-role wave army for coordinated multi-worker missions.
 
-### Wave Discipline Contract (mandatory for Wave Army sub-workers)
+`/claws-status` shows live terminal + lifecycle state. `/claws-help` lists every command and tool.
 
-When you receive a Wave Army mission you are a sub-worker. You MUST:
+### Terminal hygiene (non-negotiable)
 
-1. **Register** — call `claws_hello` with `waveId` and `subWorkerRole` within 60 s of boot.
-   - As of v0.7.13: push capability is auto-granted on `claws_hello` — no need to specify `capabilities` explicitly.
-     Existing workers that still pass `capabilities: ['push']` continue to work (Set.add is idempotent).
-2. **Publish boot event** — publish `wave.<waveId>.<role>.boot` immediately after hello.
-3. **Heartbeat every 20 s** — publish `worker.<peerId>.heartbeat` continuously while active.
-   - Use the `peerId` returned by `claws_hello` — NOT the role name — in the heartbeat topic.
-     The server violation timer (25 s) is only reset by heartbeats on `worker.<peerId>.*` topics.
-     (BUG-06 note: role-name topics do not reset the timer in the current server build.)
-4. **Phase events** — publish `worker.<peerId>.phase` on every lifecycle transition.
-5. **Error events** — publish `worker.<peerId>.event` with `kind=ERROR` for any blocking failure; never swallow errors silently.
-6. **No --no-verify** — every commit MUST pass pre-commit hooks. `--no-verify` is forbidden.
-7. **Full suite before every commit** — run `npm test` (or equivalent); assert zero failures.
-8. **Type check per .ts file** — run `npx tsc --noEmit` after editing any TypeScript; fix all errors before proceeding.
-9. **Complete event** — publish `wave.<waveId>.<role>.complete` as **absolute final act** before printing the role sentinel.
-   - Print the role sentinel ONLY AFTER the complete event is published. The LEAD waits on this
-     event via `claws_drain_events`; if the sentinel appears before the event, the LEAD may time out.
+- **NEVER use Bash for long-lived processes** — servers, watchers, REPLs, builds. Use `claws_create` + `claws_send`, or let `claws_worker` / `claws_fleet` do it for you.
+- **ALWAYS create wrapped terminals** (`wrapped: true` is the default — leave it on). Wrapped terminals capture every pty byte to a log; unwrapped terminals are invisible to `claws_read_log`.
+- **ALWAYS close terminals you create.** Either via `claws_done()` from inside the worker (preferred), or `claws_close(id)` from the orchestrator at cleanup.
+- **NEVER touch terminals you did not create.**
+- **NEVER run Claude headless** (`claude -p "…"`). Workers must be visible TUI sessions launched via `claws_worker` or by sending `claude --dangerously-skip-permissions` into a wrapped terminal.
 
-### Worker completion signaling (5-layer convention)
+### Workers boot themselves — do not run the send sequence manually
 
-Every Claude worker mission MUST end with these layers, in order. F3 is the primary close trigger — one zero-arg call handles everything. F4 and F5 are independent backups.
+`claws_worker(mission=…)` and `claws_fleet(workers=[…])` run the full boot sequence internally: create wrapped terminal → launch `claude --model … --dangerously-skip-permissions` → wait for the prompt to settle (detected by `❯` + `cost:$` stable for 3 polls) → bracketed-paste the mission → submit. Boot waits default to 25 s.
 
-F1 (Bash tool call): git status --short                  — verify state
-F2 (Bash tool call): git log --oneline -5                 — verify commits
+You do **not** call `claws_create` + `claws_send` to boot workers manually. That sequence is automated.
 
-F3 (MCP tool call — PRIMARY completion signal, REQUIRED):
-```
-claws_done()
-```
-(reads CLAWS_TERMINAL_ID from env, publishes system.worker.completed, closes terminal)
+`claws_worker` and `claws_fleet` use a **mode-aware** detach default:
+- Mission-mode (you pass `mission=…`) → `detach: true` by default. The call returns immediately with `terminal_id` + `correlation_id` and a copy-pasteable `monitor_arm_command`. Poll completion with `claws_workers_wait(terminal_ids=[…])`.
+- Command-mode (you pass `command=…` instead) → `detach: false` by default. The call blocks until the command exits.
+- Override with `detach: true|false` if needed.
 
-F4 (Bash tool call — BACKUP, REQUIRED):
-```
-printf '%s\n' '__CLAWS_DONE__'
-```
+`claws_fleet` always defaults to detach unless you pass `detach: false` explicitly.
 
-F5 (chat narration — last-resort BACKUP):
-End your final assistant message with the literal string `__CLAWS_DONE__` on its own line.
+### Worker completion — five layers, `claws_done()` is primary
 
-Why five layers: F1/F2 verify outcomes. F3 is the structural completion (MCP call → bus event → server picks up via `system.worker.completed`). F4 is the pty-byte backup that fires even if Claude skips the MCP call. F5 catches the case where Claude bypasses both tool calls and just narrates.
-
-Deprecated (kept as fallback): `claws_publish(topic="worker.<id>.complete", payload={...})` still works via the existing pub/sub path.
-
-Standard marker: `__CLAWS_DONE__` — same string for every worker. `correlation_id` distinguishes workers on the bus; the marker just signals "done".
-
-### Sidecar is mandatory
-
-When `.claws/claws.sock` exists, the orchestrator MUST have an active `stream-events.js` sidecar Monitor running. The `SessionStart` hook auto-spawns one with `--auto-sidecar` flag and `detached:true` so it outlives the hook. If the sidecar dies during a session, re-spawn it before making any worker call:
+Every worker mission must end with these final actions, in order:
 
 ```
-node .claws-bin/stream-events.js --auto-sidecar .claws/claws.sock &
-disown
+F1 (Bash):    git status --short                       — verify state
+F2 (Bash):    git log --oneline -5                     — verify commits
+F3 (MCP):     claws_done()                             — PRIMARY, REQUIRED
+F4 (Bash):    printf '%s\n' '__CLAWS_DONE__'           — pty-byte backup
+F5 (chat):    end final message with __CLAWS_DONE__    — last-resort backup
 ```
 
-The `Stop` hook kills the sidecar cleanly via `pgrep -f 'stream-events.js.*--auto-sidecar'` + `kill -TERM`. Never skip the Stop hook — it is the sidecar's shutdown gate.
+`claws_done()` reads `CLAWS_TERMINAL_ID` from the worker's environment (set by the extension at spawn), publishes `system.worker.completed` with `marker:'__CLAWS_DONE__'`, and closes the terminal. Zero arguments. That is the entire signal — you do not need `claws_publish` for completion.
 
-### Monitor is mandatory
+The marker the server recognizes is **`__CLAWS_DONE__`** and only that string. No other marker variant is recognized.
 
-The orchestrator MUST arm a Monitor on `.claws/events.log` as the FIRST ACTION of every Claude Code session, BEFORE any `claws_create` / `claws_worker` / `claws_fleet` / `claws_dispatch_subworker` call.
+If a worker exits without firing F3 or F4, VS Code's `onDidCloseTerminal` triggers the Wave D fallback: the extension publishes `system.worker.terminated`, which the MCP server upgrades to `system.worker.completed` with `completion_signal:'terminated'`. So a worker that just dies still gets accounted for — but `claws_done()` is the canonical path and what `/claws-do` and the prompt templates teach.
 
-Exact command (use lifecycle-bound description so stale Monitors are distinguishable):
+### Monitor — sidecar streams, per-worker filters
 
-```
-Bash(command="tail -F .claws/events.log", run_in_background=true,
-     description="claws bus | plan=<slug> | sess=<ISO-hour>")
-```
+The sidecar is already running and writing every bus event to `.claws/events.log`. The PreToolUse hook gates spawn-class MCP calls (`claws_create`, `claws_worker`, `claws_fleet`, `claws_dispatch_subworker`) and refuses if no Monitor process is detected — there is a 5 s grace from the first call.
 
-Example: `description="claws bus | plan=v0710-fix | sess=2026-05-02T04"`
+The hook accepts either of these patterns:
+- `pgrep -f 'stream-events\.js'` — the canonical bus subscription (preferred)
+- `pgrep -f 'tail.*\.claws/events\.log'` — legacy `tail -F` fallback (still works)
 
-Without this, the orchestrator is blind to worker completion events and must rely on polling. The PreToolUse hook will refuse spawn-class MCP calls if Monitor is not armed.
-
-**Per-worker Monitor pattern (v0.7.10+ — PREFERRED):**
-After each `claws_fleet` / `claws_worker` call, arm **one Monitor per returned `terminal_id`** using
-the `monitor_arm_command` field in the response. Run all N Bash calls in parallel:
+Per-worker observation: every spawn response includes a `monitor_arm_command` string. Copy-paste it into a `Monitor(...)` call:
 
 ```
-Bash(command="tail -F .claws/events.log | grep -m1 'MISSION_COMPLETE.*<tid>'",
-     run_in_background=true, description="watch worker-<tid>")
+Monitor(command="node <claws-bin>/stream-events.js --wait <correlation_id>",
+        description="claws monitor | term=<id>", timeout_ms=600000, persistent=false)
 ```
 
-`grep -m1` self-exits on first match. Per-worker isolation prevents one dead Monitor from
-blinding the orchestrator to all remaining workers (the `exit-144` fragility of the single
-shared Monitor). See the claws-orchestration-engine SKILL.md for the full pattern.
+`stream-events.js --wait <correlation_id>` filters the bus stream to one worker and self-exits on `system.worker.completed`. SIGPIPE-safe, no SIGURG kill — unlike `tail -F | grep`, which the supervisor will kill within ~30 s of inactivity.
 
-**Troubleshooting:**
-- Verify Monitor is alive: `pgrep -f "tail.*events.log"` (exit 0 = running, non-zero = dead)
-- Re-arm if dead: run the Bash command above again
-- If `.claws/events.log` does not exist: the SessionStart hook creates it on sidecar spawn; `tail -F` waits gracefully for file creation
+### Lifecycle (full session phase machine)
+
+```
+{LIFECYCLE_PHASES}
+```
+
+`SESSION-BOOT` and `SESSION-END` are session-boundary phases (server-internal). Workers report a 9-phase subset: `PLAN → SPAWN → DEPLOY → OBSERVE → RECOVER → HARVEST → CLEANUP → REFLECT`, plus `FAILED` as an off-path terminal state. `FAILED` exits to `CLEANUP` or `SESSION-END`; `failure_cause` (with optional `recovery_hint`) is preserved across recovery.
+
+### Wave Discipline (Wave Army sub-workers only)
+
+If you receive a Wave Army mission, you are a sub-worker. You MUST:
+
+1. **Register** — call `claws_hello` with `waveId` and `subWorkerRole` within 60 s of boot. (`capabilities: ['push']` is auto-granted as of v0.7.13 — passing it is now optional but harmless.)
+2. **Boot event** — publish `wave.<waveId>.<role>.boot` immediately after hello.
+3. **Heartbeat every 20 s** — publish `worker.<peerId>.heartbeat` (use the `peerId` returned by `claws_hello`, NOT the role name — only `worker.<peerId>.*` topics reset the server's 25 s violation timer).
+4. **Phase events** — publish `worker.<peerId>.phase` on every transition.
+5. **Error events** — publish `worker.<peerId>.event` with `kind=ERROR` for any blocking failure; never silently swallow.
+6. **No `--no-verify`** — every commit must pass pre-commit hooks. The Bash hook hard-blocks `--no-verify` and `--no-gpg-sign`.
+7. **Full suite before commit** — `npm test` (or equivalent) must be green.
+8. **Type-check after `.ts` edits** — `npx tsc --noEmit` must report zero errors.
+9. **Complete event** — publish `wave.<waveId>.<role>.complete` as the absolute final act before printing the role sentinel (the LEAD waits on this).
+
+### What's automatic now (don't do these manually)
+
+- ❌ Manual sidecar spawn — the SessionStart hook does it.
+- ❌ Manual peer registration before publishing — `claws_done` and other helpers do it for you when needed.
+- ❌ Passing `capabilities: ['push']` to `claws_hello` — auto-granted.
+- ❌ Running `claws_create` + `claws_send` to boot Claude in a worker — `claws_worker` / `claws_fleet` do the full sequence.
+- ❌ Choosing a marker string per worker — always `__CLAWS_DONE__`.
+- ❌ Polling `tail -F` for completion — use the per-worker `monitor_arm_command` from the spawn response.
+- ❌ Closing your own terminal at the end — `claws_done()` does it.
 
 ### If `.claws/claws.sock` does not exist
 
-No Claws server running. Use standard tools. If the user explicitly installs Claws for this project, re-read `.claws-bin/README.md` for project-specific tool list.
-<!-- CLAWS-GLOBAL:END v1 -->
+No Claws server is running for this project. Use standard tools (Bash, Edit, Write). Nothing in this section applies.
+<!-- CLAWS-GLOBAL:END -->

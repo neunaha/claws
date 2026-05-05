@@ -55,7 +55,7 @@ The installer is **project-local** — it writes `.mcp.json`, `.claws-bin/mcp_se
 
 ### Step 3 — Restart Claude Code in this project
 
-Exit your current Claude Code session and re-open `claude` from the project root so it picks up the project-local `.mcp.json` and registers the 38 Claws tools. If the tools don't appear, run `/claws-fix`.
+Exit your current Claude Code session and re-open `claude` from the project root so it picks up the project-local `.mcp.json` and registers the 39 Claws tools. If the tools don't appear, run `/claws-fix`.
 
 ### Step 4 — You're ready
 
@@ -87,22 +87,23 @@ One command to remember: **`/claws`**
 
 | Command | What it does |
 |---|---|
-| `/claws` | Dashboard — status, terminals, version |
-| `/claws-do <task>` | Magic — describe anything, AI figures out the strategy |
-| `/claws-go <mission>` | Spawn a Claude Code worker instantly |
-| `/claws-watch` | Live control room of all terminals |
-| `/claws-learn` | Interactive prompt guide (5 levels) |
+| `/claws` | Status — live dashboard; forwards to `/claws-do` |
+| `/claws-do <task>` | Universal verb — classifies into shell / worker / fleet / wave |
+| `/claws-status` | Live terminal + lifecycle dashboard |
+| `/claws-help` | Full command and tool reference |
 | `/claws-cleanup` | Close all worker terminals |
-| `/claws-update` | Pull latest + full rebuild + what's new |
+| `/claws-fix` | Diagnose and auto-repair a broken Claws install |
+| `/claws-report` | Bundle logs and diagnostics for a bug report |
+| `/claws-update` | Pull latest version |
 
 ### Talk naturally — examples:
 
 ```
 /claws-do run my tests                              → single terminal, runs tests, reports
 /claws-do lint test and build in parallel            → 3 terminals, all running simultaneously
-/claws-go fix the bug in auth.ts                     → spawns a Claude worker to fix it
-/claws-go audit this codebase for security issues    → spawns a Claude worker to audit
-/claws-watch                                          → shows all terminals + their latest output
+/claws-do fix the bug in auth.ts                     → spawns a Claude worker to fix it
+/claws-do audit this codebase for security issues    → spawns a Claude worker to audit
+/claws-status                                         → shows all terminals + lifecycle state
 /claws-cleanup                                        → closes all worker terminals
 ```
 
@@ -193,9 +194,18 @@ As of v0.4, every project you install into gets its own `.mcp.json` pointing at 
 
 The installer pins absolute paths at install time so the server resolves correctly regardless of which directory Claude Code is launched from.
 
-**Tools (claws/1 — terminal control):** `claws_list` · `claws_create` · `claws_send` · `claws_exec` · `claws_read_log` · `claws_poll` · `claws_close` · `claws_worker`
+**39 tools across 8 groups:**
 
-**Tools (claws/2 — multi-agent):** `claws_hello` · `claws_subscribe` · `claws_publish` · `claws_broadcast` · `claws_ping` · `claws_peers`
+| Group | Tools |
+|---|---|
+| Terminal control (8) | `claws_list` · `claws_create` · `claws_send` · `claws_exec` · `claws_read_log` · `claws_poll` · `claws_close` · `claws_done` |
+| Worker spawn (4) | `claws_worker` · `claws_fleet` · `claws_dispatch_subworker` · `claws_workers_wait` |
+| Pub/sub (7) | `claws_hello` · `claws_subscribe` · `claws_publish` · `claws_broadcast` · `claws_ping` · `claws_peers` · `claws_drain_events` |
+| Tasks (5) | `claws_task_assign` · `claws_task_update` · `claws_task_complete` · `claws_task_cancel` · `claws_task_list` |
+| Lifecycle (4) | `claws_lifecycle_plan` · `claws_lifecycle_advance` · `claws_lifecycle_snapshot` · `claws_lifecycle_reflect` |
+| Waves (3) | `claws_wave_create` · `claws_wave_status` · `claws_wave_complete` |
+| Pipelines (3) | `claws_pipeline_create` · `claws_pipeline_list` · `claws_pipeline_close` |
+| RPC / schemas (5) | `claws_schema_list` · `claws_schema_get` · `claws_rpc_call` · `claws_deliver_cmd` · `claws_cmd_ack` |
 
 ### Claws/2 — Multi-Agent Orchestration Protocol
 
@@ -208,26 +218,60 @@ As of v0.6, Claws includes a built-in coordination layer so an **orchestrator Cl
 
 Quick start: type `/claws-v2-orchestrate` in an orchestrator Claude session to see the step-by-step bootstrap guide.
 
-### AI Worker Orchestration (blocking lifecycle)
+### AI Worker Orchestration
 <p align="center">
   <img src="https://raw.githubusercontent.com/neunaha/claws/main/docs/images/ai-orchestration.png" alt="AI Orchestration" width="720">
 </p>
 
-`claws_worker` is **non-blocking by default; returns `terminal_id` immediately, poll completion via `claws_workers_wait`**: spawn a wrapped terminal → launch Claude Code with full permissions → detect boot → send mission → poll the capture buffer for `MISSION_COMPLETE` (or a custom marker) → harvest the last N lines → auto-close the terminal → return a structured result.
+`claws_worker` uses a **mode-aware detach default**: in mission-mode (pass `mission=…`) it returns immediately with `terminal_id` + `correlation_id` — non-blocking by default. In command-mode (pass `command=…`) it blocks until the command exits. Override either direction with `detach: true|false`.
 
 ```json
 {
   "name": "claws_worker",
   "arguments": {
     "name": "refactor-auth",
-    "mission": "Refactor auth.ts to use bcrypt. Write MISSION_COMPLETE when done.",
+    "mission": "Refactor auth.ts to use bcrypt. Call claws_done() when done.",
     "timeout_ms": 900000,
     "harvest_lines": 300
   }
 }
 ```
 
-Returns `{ status: "completed" | "failed" | "timeout", terminal_id, duration_ms, marker_line, harvest, cleaned_up }`. No manual polling, no manual cleanup. Pass `detach: true` to keep the old fire-and-forget behavior.
+Returns `{ status: "completed" | "failed" | "timeout", terminal_id, correlation_id, duration_ms, harvest, cleaned_up }`. Poll completion with `claws_workers_wait(terminal_ids=[…])`, or arm the per-worker `monitor_arm_command` from the spawn response for event-driven notification.
+
+### claws_done() — the completion primitive
+
+Zero-arg MCP tool. Reads `CLAWS_TERMINAL_ID` from the worker's environment (set by the extension at spawn time), publishes `system.worker.completed` with marker `__CLAWS_DONE__`, and closes the terminal. This is **F3** — the primary close trigger in the 5-layer worker-completion convention.
+
+```json
+{ "name": "claws_done", "arguments": {} }
+```
+
+No arguments. No peerId needed. No prior `claws_hello` required. The extension injects `CLAWS_TERMINAL_ID` into every worker terminal at boot, so `claws_done()` always knows which terminal to close and which correlation to signal.
+
+Wave D fallback: if a worker exits without calling `claws_done()`, VS Code's `onDidCloseTerminal` fires → the extension publishes `system.worker.terminated` → the server upgrades it to `system.worker.completed` with `completion_signal: 'terminated'`. Workers that die still get accounted for.
+
+### Wave Army — coordinated multi-worker missions
+
+Spawn a fleet of parallel Claude workers for independent or coordinated tasks.
+
+- **`claws_fleet(workers=[…])`** — launch N independent jobs in parallel (lint / test / build). Each gets its own terminal and mission; returns `terminal_ids` immediately.
+- **`claws_dispatch_subworker(waveId, role, mission)`** — wave-discipline sub-worker with heartbeat protocol (publish `worker.<peerId>.heartbeat` every 20 s, phase events on each transition, complete event as final act).
+- **`claws_workers_wait(terminal_ids=[…])`** — poll completion across a fleet. Blocks until all workers signal done or timeout.
+
+Use cases: parallel test/build/lint pipelines; multi-role audits with a LEAD orchestrator managing specialist sub-workers; any task that benefits from visible progress in multiple terminal tabs.
+
+### Behavioral injection enforcement
+
+Five-layer chain that auto-loads Claws lifecycle context into every Claude session — no manual configuration required:
+
+1. **`~/.claude/CLAUDE.md` global block** — written by `inject-global-claude-md.js` from `templates/CLAUDE.global.md`; always loaded by Claude Code.
+2. **`<project>/CLAUDE.md` CLAWS:BEGIN block** — written by `inject-claude-md.js` from `templates/CLAUDE.project.md`; loaded whenever Claude opens this project.
+3. **SessionStart hook** — fires when `.claws/claws.sock` is detected; auto-spawns the sidecar (`stream-events.js --auto-sidecar`) and emits a lifecycle reminder.
+4. **PreToolUse hook** — gates spawn-class MCP calls (`claws_create`, `claws_worker`, `claws_fleet`, `claws_dispatch_subworker`); refuses if no Monitor process is detected (5 s grace).
+5. **Stop hook** — kills the sidecar cleanly at session end via `pgrep` + `kill -TERM`.
+
+All injectors are versioned, regex-matched, and atomic-write safe. All hooks are tagged `_source: "claws"` for clean removal. The chain ensures that even a fresh Claude session in this project has the full operating contract loaded before the first tool call.
 
 ### Cross-Device Control (planned)
 <p align="center">
@@ -250,7 +294,7 @@ The installer writes files in **two scopes**: the machine (once) and the project
 | What | Where | Purpose |
 |---|---|---|
 | Cloned source | `~/.claws-src/` | Full repo clone — used by `/claws-update` |
-| VS Code extension | `~/.vscode/extensions/neunaha.claws-0.6.0` | Symlink → `~/.claws-src/extension` |
+| VS Code extension | `~/.vscode/extensions/neunaha.claws-0.7.13` | Symlink → `~/.claws-src/extension` |
 | Extension bundle | `~/.claws-src/extension/dist/extension.js` | Built from TypeScript on install |
 | Bundled native PTY | `~/.claws-src/extension/native/node-pty/` | Self-contained `node-pty` — keeps wrapped terminals glitch-free without a global install |
 | Shell hook | `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.config/fish/conf.d/claws.fish` | CLAWS banner + `claws-*` shell commands |
@@ -261,10 +305,9 @@ The installer writes files in **two scopes**: the machine (once) and the project
 |---|---|---|
 | MCP registration | `<project>/.mcp.json` | Registers Claws MCP for this project |
 | Self-contained MCP | `<project>/.claws-bin/mcp_server.js` | Vendored copy — relative-path registration |
-| Slash commands | `<project>/.claude/commands/claws-*.md` | 22 commands: `/claws`, `/claws-do`, `/claws-go`, `/claws-worker`, `/claws-fleet`, `/claws-fix`, `/claws-update`, … |
+| Slash commands | `<project>/.claude/commands/claws-*.md` | 8 commands: `/claws`, `/claws-do`, `/claws-status`, `/claws-help`, `/claws-cleanup`, `/claws-fix`, `/claws-report`, `/claws-update` |
 | Behavior rule | `<project>/.claude/rules/claws-default-behavior.md` | Claude prefers visible terminals in this project |
-| Orchestration skill | `<project>/.claude/skills/claws-orchestration-engine/` | 7 patterns + lifecycle protocol |
-| Prompt templates | `<project>/.claude/skills/claws-prompt-templates/` | 7 mission templates |
+| Prompt templates skill | `<project>/.claude/skills/claws-prompt-templates/` | 7 mission templates |
 | Dynamic CLAUDE.md block | `<project>/CLAUDE.md` (fenced `<!-- CLAWS:BEGIN -->` … `<!-- CLAWS:END -->`) | Tool list + operating principles (generated at install time) |
 | Workspace recommendation | `<project>/.vscode/extensions.json` | Adds `neunaha.claws` to `recommendations` so teammates are prompted to install on open |
 
@@ -307,19 +350,28 @@ The uninstall script removes: lifecycle hooks from `~/.claude/settings.json`, th
 
 ---
 
-## Powered by Claude Opus
+## Powered by Claude
 
-Claws was designed for and tested with Claude Opus — the model with the deepest reasoning for multi-terminal orchestration.
+Claws worker terminals boot with `claude-sonnet-4-6` by default — the best coding model for orchestration missions. Pass `model=` to `claws_worker` or `claws_fleet` to override per-worker.
 
 ---
 
 ## Roadmap
 
 - **v0.3** ✅ Zero dependencies — Node.js only
-- **v0.4** ✅ TypeScript rewrite, Pseudoterminal (no glitching), blocking `claws_worker`, project-local install, dynamic CLAUDE.md, automatic legacy migration
-- **v0.5** ✅ Hardening sweep — `introspect` command, status bar item, Health Check / Uninstall Cleanup, chord keybindings, UUID profile adoption, hot-reloadable config, bundled `node-pty`, 57 automated checks
-- **v0.6** ✅ Agentic SDLC Protocol — claws/2 peer registry, pub/sub message bus, task assignment engine (orchestrator→worker), 6 new MCP tools, 33 new automated checks
-- **v0.7** — WebSocket transport, cross-device control, team config, device discovery, web dashboard, VS Code Marketplace publish
+- **v0.4** ✅ TypeScript rewrite, Pseudoterminal (no glitching), project-local install, dynamic CLAUDE.md, automatic legacy migration
+- **v0.5** ✅ Hardening sweep — status bar item, Health Check / Uninstall Cleanup, chord keybindings, hot-reloadable config, bundled `node-pty`, 57 automated checks
+- **v0.6** ✅ Agentic SDLC Protocol — claws/2 peer registry, pub/sub message bus, task assignment engine, 6 new MCP tools, 33 new automated checks
+- **v0.7.x** ✅ Fleet & completion overhaul:
+  - `claws_done()` — zero-arg completion primitive (F3 of the 5-layer convention)
+  - Wave Army — `claws_fleet` / `claws_dispatch_subworker` / `claws_workers_wait`
+  - `/claws-do` — universal verb, classifies any task into shell / worker / fleet / wave (8-command consolidation)
+  - Non-blocking workers by default in mission-mode (`detach: true`), mode-aware detach
+  - Behavioral injection enforcement — 5-layer chain auto-loads on every session
+  - LH-9 TTL watchdog — idle/max timeouts on every worker
+  - Lifecycle engine — 10-phase state machine with auto-advance and FAILED recovery
+  - 39 MCP tools total
+- **v0.8** — WebSocket transport, VS Code Marketplace publish, cross-device control, web dashboard
 
 ---
 

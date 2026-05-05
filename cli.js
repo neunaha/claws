@@ -144,10 +144,10 @@ function install() {
   }
 
   // Skills
-  const skills = ['claws-orchestration-engine', 'prompt-templates'];
+  const skills = ['claws-prompt-templates'];
   skills.forEach(skill => {
     const src = path.join(INSTALL_DIR, '.claude', 'skills', skill);
-    const dest = path.join(claudeDir, 'skills', skill === 'prompt-templates' ? 'claws-prompt-templates' : skill);
+    const dest = path.join(claudeDir, 'skills', skill);
     if (fs.existsSync(src)) {
       fs.mkdirSync(dest, { recursive: true });
       fs.readdirSync(src).forEach(f => {
@@ -185,7 +185,7 @@ function install() {
   if (fs.existsSync(extLink)) { checks++; console.log('  ✓ Extension'); }
   if (fs.existsSync(mcpPath)) { checks++; console.log('  ✓ MCP server'); }
   if (fs.existsSync(path.join(claudeDir, 'rules', 'claws-default-behavior.md'))) { checks++; console.log('  ✓ Behavior rule'); }
-  if (fs.existsSync(path.join(claudeDir, 'skills', 'claws-orchestration-engine'))) { checks++; console.log('  ✓ Orchestration engine'); }
+  if (fs.existsSync(path.join(claudeDir, 'skills', 'claws-prompt-templates'))) { checks++; console.log('  ✓ Prompt templates skill'); }
 
   console.log('');
   console.log(`  \x1b[32m✓ Claws installed — ${checks}/4 checks passed\x1b[0m`);
@@ -207,7 +207,7 @@ function status() {
   checks.push(['Extension', fs.existsSync(extLink)]);
   checks.push(['MCP server', fs.existsSync(path.join(INSTALL_DIR, 'mcp_server.js'))]);
   checks.push(['Behavior rule', fs.existsSync(path.join(HOME, '.claude', 'rules', 'claws-default-behavior.md'))]);
-  checks.push(['Orchestration skill', fs.existsSync(path.join(HOME, '.claude', 'skills', 'claws-orchestration-engine'))]);
+  checks.push(['Prompt templates skill', fs.existsSync(path.join(HOME, '.claude', 'skills', 'claws-prompt-templates'))]);
   checks.push(['Node.js', spawnSync('node', ['--version'], { stdio: 'pipe' }).status === 0]);
   checks.forEach(([name, ok]) => console.log(`  ${ok ? '✓' : '✗'} ${name}`));
   console.log('');

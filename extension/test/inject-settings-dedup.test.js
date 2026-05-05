@@ -96,11 +96,13 @@ function runInject(home) {
 
   // 2. Claws hook is idempotent: running twice produces the expected number of
   //    Claws entries per event (no duplicates, no missing).
-  //    Counts reflect the multi-matcher design (belt-and-suspenders per spawn tool):
-  //      SessionStart: 1  (* matcher)
-  //      PreToolUse:   5  (* + 4 per-tool matchers)
+  //    Counts reflect the current hook layout (v0.7.13+):
+  //      SessionStart: 1  (* matcher — session-start-claws.js)
+  //      PreToolUse:   2  (* for general guard + Bash for --no-verify block)
+  //                       Note: per-tool spawn-class matchers were removed in v0.7.13 (T4)
+  //                       and enforcement moved server-side. PostToolUse handles spawn-class.
   //      PostToolUse:  4  (4 per-tool matchers — Wave C monitor gate)
-  //      Stop:         1  (* matcher)
+  //      Stop:         1  (* matcher — stop-claws.js)
   await check('Claws hook idempotent: two runs → correct entry count per event', () => {
     const tmp = makeTmpDir();
     try {
@@ -117,7 +119,7 @@ function runInject(home) {
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
       const expectedCounts = {
         SessionStart: 1,
-        PreToolUse:   5, // '*' matcher + claws_create/worker/fleet/dispatch_subworker
+        PreToolUse:   2, // '*' for general guard + 'Bash' for --no-verify block (v0.7.13+)
         PostToolUse:  4, // claws_create/worker/fleet/dispatch_subworker (Wave C monitor gate)
         Stop:         1,
       };

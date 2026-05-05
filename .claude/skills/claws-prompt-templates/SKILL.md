@@ -14,7 +14,7 @@ Patterns for crafting mission text sent to Claws workers. The boot mechanics are
 2. **Include F1–F5 final actions** for missions that commit code:
    - F1: `git status --short` — verify clean working tree
    - F2: `git log --oneline -5` — verify commits landed
-   - F3 (PRIMARY): `claws_publish(topic="worker.<termId>.complete", payload={"status":"completed","marker":"__CLAWS_DONE__"})` — MCP bus signal
+   - F3 (PRIMARY): `claws_done()` — zero-arg MCP completion (publishes system.worker.completed and closes terminal)
    - F4 (BACKUP): `printf '%s\n' '__CLAWS_DONE__'` — pty-visible completion signal
    - F5 (BACKUP): end final assistant message with `__CLAWS_DONE__` on its own line
 3. **Set hard gates**: "all tests must pass before commit", "zero tsc errors", "no --no-verify"
@@ -40,7 +40,7 @@ steps:
 final actions:
 F1: git status --short
 F2: git log --oneline -5
-F3: claws_publish(topic="worker.<termId>.complete", payload={"status":"completed","marker":"__CLAWS_DONE__"})
+F3: claws_done()
 F4: printf '%s\n' '__CLAWS_DONE__'
 F5: end final message with __CLAWS_DONE__ on its own line
 
@@ -81,7 +81,7 @@ constraints:
 
 F1: git status --short
 F2: git log --oneline -3
-F3: claws_publish(topic="worker.<termId>.complete", payload={"status":"completed","marker":"__CLAWS_DONE__"})
+F3: claws_done()
 F4: printf '%s\n' '__CLAWS_DONE__'
 F5: end final message with __CLAWS_DONE__ on its own line
 
@@ -111,7 +111,7 @@ if a commit fails verification after 3 retries, write [slug]-FAILED.status and s
 
 F1: git status --short
 F2: git log --oneline -5
-F3: claws_publish(topic="worker.<termId>.complete", payload={"status":"completed","marker":"__CLAWS_DONE__"})
+F3: claws_done()
 F4: printf '%s\n' '__CLAWS_DONE__'
 F5: end final message with __CLAWS_DONE__ on its own line
 
@@ -144,7 +144,7 @@ constraints:
 
 F1: git status --short
 F2: git log --oneline -3
-F3: claws_publish(topic="worker.<termId>.complete", payload={"status":"completed","marker":"__CLAWS_DONE__"})
+F3: claws_done()
 F4: printf '%s\n' '__CLAWS_DONE__'
 F5: end final message with __CLAWS_DONE__ on its own line
 

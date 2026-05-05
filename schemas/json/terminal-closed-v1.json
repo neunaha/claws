@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "terminal-closed-v1",
+  "$ref": "#/definitions/terminal-closed-v1",
+  "definitions": {
+    "terminal-closed-v1": {
+      "type": "object",
+      "properties": {
+        "terminal_id": {
+          "type": "string"
+        },
+        "close_origin": {
+          "type": "string",
+          "enum": [
+            "marker",
+            "error",
+            "timeout",
+            "orchestrator",
+            "user",
+            "pub_complete",
+            "wave_violation",
+            "idle_timeout",
+            "ttl_max"
+          ]
+        },
+        "closed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "correlation_id": {
+          "type": "string"
+        },
+        "marker_line": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duration_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "failed",
+            "timeout",
+            "closed"
+          ]
+        }
+      },
+      "required": [
+        "terminal_id",
+        "close_origin",
+        "closed_at"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
