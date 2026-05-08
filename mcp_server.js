@@ -1966,45 +1966,56 @@ async function _dispatchTool(name, args, sock) {
       await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: false, paste: true });
       await sleep(300);
       await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
-      // Event-driven submit verification — robust against paste-collapse.
-      // Claude TUI collapses pastes >~30 lines into "[Pasted text #N +M lines]"
-      // placeholder. Old byte-count check (payload.length + 200) NEVER passed
-      // for collapsed pastes because rendered placeholder is ~50 bytes. We now
-      // check two stronger signals: (a) placeholder DISAPPEARED, OR (b) Claude
-      // rendered output (●, ⏺, "in: <N>"). Retries CR every 2s up to 5 times,
-      // 15s total deadline. Latent bug — exists in v0.7.11 too.
-      const _submitDeadline = Date.now() + 15000;
-      let _submitVerified = false;
-      let _lastNudgeAt = Date.now();
-      let _nudges = 0;
-      while (Date.now() < _submitDeadline) {
-        await sleep(200);
-        const _vs = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
-        const _txt = (_vs.ok && typeof _vs.bytes === 'string') ? _vs.bytes : '';
-        const _grewBig = _txt.length > _missionPreLen + payload.length + 200;
-        const _placeholderGone = !/\[Pasted text #\d+/.test(_txt);
-        const _claudeResponded = /●|⏺|in:\s*\d+/.test(_txt);
-        if (_grewBig || (_placeholderGone && _claudeResponded)) {
-          _submitVerified = true; break;
+      if (launchClaude) {
+        // Event-driven submit verification — robust against paste-collapse.
+        // Claude TUI collapses pastes >~30 lines into "[Pasted text #N +M lines]"
+        // placeholder. Old byte-count check (payload.length + 200) NEVER passed
+        // for collapsed pastes because rendered placeholder is ~50 bytes. We now
+        // check two stronger signals: (a) placeholder DISAPPEARED, OR (b) Claude
+        // rendered output (●, ⏺, "in: <N>"). Retries CR every 2s up to 5 times,
+        // 15s total deadline. Latent bug — exists in v0.7.11 too.
+        const _submitDeadline = Date.now() + 15000;
+        let _submitVerified = false;
+        let _lastNudgeAt = Date.now();
+        let _nudges = 0;
+        while (Date.now() < _submitDeadline) {
+          await sleep(200);
+          const _vs = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+          const _txt = (_vs.ok && typeof _vs.bytes === 'string') ? _vs.bytes : '';
+          const _grewBig = _txt.length > _missionPreLen + payload.length + 200;
+          const _placeholderGone = !/\[Pasted text #\d+/.test(_txt);
+          const _claudeResponded = /●|⏺|in:\s*\d+/.test(_txt);
+          if (_grewBig || (_placeholderGone && _claudeResponded)) {
+            _submitVerified = true; break;
+          }
+          if (Date.now() - _lastNudgeAt >= 2000 && _nudges < 5) {
+            await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+            _nudges++;
+            _lastNudgeAt = Date.now();
+          }
         }
-        if (Date.now() - _lastNudgeAt >= 2000 && _nudges < 5) {
-          await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
-          _nudges++;
-          _lastNudgeAt = Date.now();
+        if (!_submitVerified) {
+          log(`mission submit verification FAILED after 15s: nudges=${_nudges}, payload_len=${payload.length}`);
         }
+        // BUG-A: snapshot post-mission log size so _fpTick scans only what comes
+        // after the mission text — prevents false-positive completion when the
+        // mission body itself contains the marker string.
+        try {
+          const _postMissionSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 1024 });
+          _fpMarkerScanFrom = (_postMissionSnap.ok && typeof _postMissionSnap.totalSize === 'number')
+            ? _postMissionSnap.totalSize
+            : (_postMissionSnap.ok && typeof _postMissionSnap.bytes === 'string' ? _postMissionSnap.bytes.length : 0);
+        } catch (e) { /* non-fatal — defaults to 0, degraded but safe */ }
       }
-      if (!_submitVerified) {
-        log(`mission submit verification FAILED after 15s: nudges=${_nudges}, payload_len=${payload.length}`);
-      }
-      // BUG-A: snapshot post-mission log size so _fpTick scans only what comes
-      // after the mission text — prevents false-positive completion when the
-      // mission body itself contains the marker string.
-      try {
-        const _postMissionSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 1024 });
-        _fpMarkerScanFrom = (_postMissionSnap.ok && typeof _postMissionSnap.totalSize === 'number')
-          ? _postMissionSnap.totalSize
-          : (_postMissionSnap.ok && typeof _postMissionSnap.bytes === 'string' ? _postMissionSnap.bytes.length : 0);
-      } catch (e) { /* non-fatal — defaults to 0, degraded but safe */ }
+      // BUG-26 analog (Bug 8 fix): shell workers (launch_claude=false) skip
+      // both blocks above. wrapShellCommand appends `; printf '%s\n' '__CLAWS_DONE__'`
+      // at the end of the command — the marker fires synchronously after the
+      // user's command exits. Setting _fpMarkerScanFrom past it would cause the
+      // watcher to never find it. Keeping _fpMarkerScanFrom=0 lets the watcher
+      // scan the full log; findStandaloneMarker's strict regex rejects the
+      // marker as it appears in the typed command echo (because the wrapped
+      // command isn't on its own line). This mirrors runBlockingWorker's
+      // BUG-26 fix at line 1099-1104.
     }
 
     // BUG-24+25: register detach watcher so system.worker.completed is published
