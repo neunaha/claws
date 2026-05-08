@@ -5,6 +5,16 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - v0.7.14
+
+### Fixed
+- **Bug 1** — `install.sh` now sweeps stale `claws-*.md` / `claws.md` command files from `$TARGET/.claude/commands` before copying. Prior installs accumulated every renamed/deleted command (PEDI had 27; installer ships 8). User-added commands (no `claws-` prefix) are untouched.
+- **Bug 2** — `install.sh` now sweeps stale `claws-*` skill directories from `$TARGET/.claude/skills` before copying. Retired skill `claws-orchestration-engine` (renamed to `claws-prompt-templates` in v0.7.13) no longer lingers after upgrade.
+- **Rules idempotence** — `claws-default-behavior.md` is now removed before re-copy so a stale version can never survive an upgrade.
+
+### Added
+- **`extension/test/install-sweep.test.sh`** (8 checks) — verifies command sweep, skill sweep, user-content preservation, and source markers; registered in `npm test` chain.
+
 ## [0.7.13] - 2026-05-05
 
 ### Added

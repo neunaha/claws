@@ -1168,6 +1168,16 @@ install_capabilities_into() {
 
   local cmd_count=0
   if [ -d "$INSTALL_DIR/.claude/commands" ]; then
+    # v0.7.14 — Bug 1 fix: sweep prior-version Claws commands before copying.
+    # The Claws prefix is owned by the installer; user-added commands (anything
+    # without the claws- prefix) are untouched.
+    # Known gap: dev-protocol-* commands are not swept (no such commands ship currently).
+    local _swept_cmds=0
+    for stale in "$CMD_DIR"/claws-*.md "$CMD_DIR"/claws.md; do
+      [ -f "$stale" ] || continue
+      rm -f "$stale" && _swept_cmds=$((_swept_cmds+1))
+    done
+    [ "$_swept_cmds" -gt 0 ] && warn "swept $_swept_cmds stale Claws commands from $CMD_DIR"
     for cmd in "$INSTALL_DIR/.claude/commands"/claws*.md; do
       [ -f "$cmd" ] || continue
       cp "$cmd" "$CMD_DIR/" && cmd_count=$((cmd_count+1))
@@ -1200,6 +1210,7 @@ If MCP tools don't appear after restart, run `/claws-fix` or `/claws-report`.
 CLAWSCMD
   cmd_count=$((cmd_count+1))
 
+  rm -f "$TARGET/.claude/rules/claws-default-behavior.md" 2>/dev/null || true
   [ -f "$INSTALL_DIR/rules/claws-default-behavior.md" ] \
     && cp "$INSTALL_DIR/rules/claws-default-behavior.md" "$TARGET/.claude/rules/" || true
 
@@ -1210,6 +1221,16 @@ CLAWSCMD
   # to the project root on dev machines), src and dest resolve to the SAME inode.
   # Without the -ef guard, `rm -rf $dest` would wipe the source before `cp` could
   # read it, aborting install.sh at this step. -ef is a bash test for same-inode.
+  # v0.7.14 — Bug 2 fix: sweep prior-version Claws skill directories.
+  # Only directories starting with "claws-" — preserves user-added skills and
+  # dev-protocol-* skills (none currently ship with Claws, but any present are
+  # treated as user-added and left untouched).
+  local _swept_skills=0
+  for stale_skill in "$TARGET/.claude/skills"/claws-*; do
+    [ -d "$stale_skill" ] || continue
+    rm -rf "$stale_skill" && _swept_skills=$((_swept_skills+1))
+  done
+  [ "$_swept_skills" -gt 0 ] && warn "swept $_swept_skills stale Claws skills from $TARGET/.claude/skills"
   for _skill_src in "$INSTALL_DIR/.claude/skills"/claws-* "$INSTALL_DIR/.claude/skills"/dev-protocol-*; do
     [ -d "$_skill_src" ] || continue
     _skill_name="$(basename "$_skill_src")"
