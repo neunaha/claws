@@ -5,7 +5,7 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - v0.7.14
+## [0.7.14] - 2026-05-08
 
 ### Fixed
 - **Bug 1** — `install.sh` now sweeps stale `claws-*.md` / `claws.md` command files from `$TARGET/.claude/commands` before copying. Prior installs accumulated every renamed/deleted command (PEDI had 27; installer ships 8). User-added commands (no `claws-` prefix) are untouched.
@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`extension/test/install-sweep.test.sh`** (8 checks) — verifies command sweep, skill sweep, user-content preservation, and source markers; registered in `npm test` chain.
+- **Bug 3 — cold-start preamble in entry-point slash commands** — models deliberated over plan mode / TodoWrite / pre-verification on first `/claws-do` invocation, stalling or falling back to Bash. MANDATORY ordered preamble added to all entry-point commands (`claws.md`, `claws-do.md`, `claws-fix.md`, `claws-help.md`, `claws-status.md`): acknowledge → skip plan mode → skip TodoWrite → trust sidecar → classify → spawn immediately → arm Monitor verbatim from `monitor_arm_command` → wait. Also covers Bug 6 Layer 0: Monitor arming imperative explicitly says "MUST be the very next tool call after spawn."
 - **Bug 8 — fast-path BUG-26 analog for shell workers** — `_dispatchTool` (claws_worker, detach=true) was running the 15s TUI-specific submit-verification loop for shell workers (`launch_claude=false`), causing `_fpMarkerScanFrom` to land past the already-printed `__CLAWS_DONE__` marker; detach watcher scanned an empty slice forever and auto-close never fired. Applied the BUG-26 guard (present in `runBlockingWorker` since LH-15) to the fast-path: verification loop and post-mission offset snapshot are now wrapped in `if (launchClaude)`; shell workers keep `_fpMarkerScanFrom=0` so the watcher scans the full log.
 - **Bug 4 — worker binary alias UX** — two new MCP tools (`claws_set_bin`, `claws_get_bin`) surface the existing `.claws/claude-bin` / `CLAWS_CLAUDE_BIN` plumbing. New `/claws-bin` slash command (set/reset/get). Natural-language imperative added to `CLAUDE.global.md` so "use claude-neu for workers" resolves automatically. Schema regenerated (39 → 41 tools). `install.sh` post-install banner now lists the three override mechanisms.
 - **Bug 5 — Monitor in-process rearm** — `stream-events.js --wait` now supports `--keep-alive-on <termId>`. When the inner timer fires, a 3-check decision runs: (1) `system.worker.completed` in events.log → exit 0; (2) `system.terminal.closed` / `system.worker.terminated` in events.log → exit 0; (3) `eventsSeen(termId, staleMs)` — terminal active on bus within threshold → rearm in place. Otherwise exit 2 (truly stuck). New flags: `--stale-threshold <ms>` (default 120 s) and `--rearm-cycle <ms>` (default = `--timeout-ms`). All 5 `monitor_arm_command` emission sites in `mcp_server.js` updated: `--keep-alive-on` appended, `timeout_ms` raised from 600 000 → 7 200 000 (2 h). `extension/test/monitor-rearm.test.js` (6 unit branches) registered in `npm test` chain.
