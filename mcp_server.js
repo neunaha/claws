@@ -997,14 +997,18 @@ async function runBlockingWorker(sock, args) {
       if (armResp.ok && !armResp.armed) {
         log(`L2-warn: runBlockingWorker term=${_bTermIdStr} corr=${_bCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
         try {
+          await _pconnEnsureRegistered(sock);
           await _pconnWrite({
             cmd: 'publish', protocol: 'claws/2',
             topic: 'system.monitor.unarmed',
-            payload: { terminal_id: _bTermIdStr, correlation_id: _bCorrId, layer: 2, grace_ms: 30000 },
+            payload: { terminal_id: _bTermIdStr, correlation_id: _bCorrId, layer: 2,
+              detected_at: new Date().toISOString(), grace_ms: 30000 },
           });
-        } catch (_pe) { /* non-fatal */ }
+        } catch (_pe) {
+          log('L2 unarmed publish failed (runBlockingWorker): ' + (_pe && _pe.message || _pe));
+        }
       }
-    } catch (_e) { /* non-fatal */ }
+    } catch (_e) { log('L2 check failed (runBlockingWorker): ' + (_e && _e.message || _e)); }
   }, 30000);
 
   // 2. Give shell a moment to emit prompt
@@ -1626,14 +1630,18 @@ async function _dispatchTool(name, args, sock) {
         if (armResp.ok && !armResp.armed) {
           log(`L2-warn: claws_create term=${_createTermIdStr} corr=${_createCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
           try {
+            await _pconnEnsureRegistered(sock);
             await _pconnWrite({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.monitor.unarmed',
-              payload: { terminal_id: _createTermIdStr, correlation_id: _createCorrId, layer: 2, grace_ms: 30000 },
+              payload: { terminal_id: _createTermIdStr, correlation_id: _createCorrId, layer: 2,
+                detected_at: new Date().toISOString(), grace_ms: 30000 },
             });
-          } catch (_pe) { /* non-fatal */ }
+          } catch (_pe) {
+            log('L2 unarmed publish failed (claws_create): ' + (_pe && _pe.message || _pe));
+          }
         }
-      } catch (_e) { /* non-fatal */ }
+      } catch (_e) { log('L2 check failed (claws_create): ' + (_e && _e.message || _e)); }
     }, 30000);
     const createResult = {
       ok: true, terminal_id: _createTermId,
@@ -1956,14 +1964,18 @@ async function _dispatchTool(name, args, sock) {
         if (armResp.ok && !armResp.armed) {
           log(`L2-warn: claws_worker term=${_fpTermIdStr} corr=${_fpCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
           try {
+            await _pconnEnsureRegistered(sock);
             await _pconnWrite({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.monitor.unarmed',
-              payload: { terminal_id: _fpTermIdStr, correlation_id: _fpCorrId, layer: 2, grace_ms: 30000 },
+              payload: { terminal_id: _fpTermIdStr, correlation_id: _fpCorrId, layer: 2,
+                detected_at: new Date().toISOString(), grace_ms: 30000 },
             });
-          } catch (_pe) { /* non-fatal */ }
+          } catch (_pe) {
+            log('L2 unarmed publish failed (claws_worker fast-path): ' + (_pe && _pe.message || _pe));
+          }
         }
-      } catch (_e) { /* non-fatal */ }
+      } catch (_e) { log('L2 check failed (claws_worker fast-path): ' + (_e && _e.message || _e)); }
     }, 30000);
 
     await sleep(400);
@@ -2629,14 +2641,18 @@ async function _dispatchTool(name, args, sock) {
         if (armResp.ok && !armResp.armed) {
           log(`L2-warn: claws_dispatch_subworker term=${_dswTermIdStr} corr=${_dswCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
           try {
+            await _pconnEnsureRegistered(sock);
             await _pconnWrite({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.monitor.unarmed',
-              payload: { terminal_id: _dswTermIdStr, correlation_id: _dswCorrId, layer: 2, grace_ms: 30000 },
+              payload: { terminal_id: _dswTermIdStr, correlation_id: _dswCorrId, layer: 2,
+                detected_at: new Date().toISOString(), grace_ms: 30000 },
             });
-          } catch (_pe) { /* non-fatal */ }
+          } catch (_pe) {
+            log('L2 unarmed publish failed (claws_dispatch_subworker): ' + (_pe && _pe.message || _pe));
+          }
         }
-      } catch (_e) { /* non-fatal */ }
+      } catch (_e) { log('L2 check failed (claws_dispatch_subworker): ' + (_e && _e.message || _e)); }
     }, 30000);
 
     // BUG-08: fire-and-forget — return after create so parallel dispatch_subworker calls don't serialize.

@@ -44,6 +44,19 @@ try {
   process.exit(0);
 }
 
+// BUG6-RUNTIME-1 (v0714 sim pass 2, .local/audits/v0714-validation-report-pass2.md Sim 4):
+// Claude Code passes MCP tool responses as { content: [{ type: 'text', text: '<JSON>' }] }.
+// The hook previously checked resp.ok directly on this wrapper — undefined, so the hook
+// short-circuited before spawning monitor-arm-watch.js. Unwrap before any checks.
+function unwrapMcpResponse(resp) {
+  if (!resp || typeof resp !== 'object') return resp;
+  if (resp.ok !== undefined) return resp;  // already plain
+  if (Array.isArray(resp.content) && resp.content[0] && typeof resp.content[0].text === 'string') {
+    try { return JSON.parse(resp.content[0].text); } catch { return resp; }
+  }
+  return resp;
+}
+
 async function run(raw) {
   try {
     const fs   = require('fs');
@@ -55,7 +68,7 @@ async function run(raw) {
     const toolName = data.tool_name || '';
     if (!SPAWN_CLASS.has(toolName)) { process.exit(0); return; }
 
-    const resp = data.tool_response || {};
+    const resp = unwrapMcpResponse(data.tool_response || {});
     if (!resp.ok) { process.exit(0); return; }
 
     const terminalIds = extractTerminalIds(resp);
