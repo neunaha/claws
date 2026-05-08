@@ -165,6 +165,14 @@ export interface HelloRequest extends BaseRequest {
    * rejects tokens older than AUTH_MAX_TOKEN_AGE_MS (5 minutes).
    */
   timestamp?: number;
+  /**
+   * Bug-6 Layer 2 — declares "I am the Monitor process armed for this
+   * correlation_id". When present, the server records an armedCorrelations
+   * claim linking this corrId to the registering peer. Spawn handlers verify
+   * this claim after a 30s grace window via the monitors.is-corr-armed RPC.
+   * Any role (observer/orchestrator/worker) may declare a claim.
+   */
+  monitorCorrelationId?: string;
 }
 
 /** Create a new wave, registering expected sub-worker roles and heartbeat manifest. */

@@ -13,7 +13,7 @@ import {
   ServerConfigProvider,
   defaultServerConfig,
 } from './server-config';
-import { PeerConnection, DisconnectedPeer, ClawsRole, allocPeerId, fingerprintPeer, matchTopic } from './peer-registry';
+import { PeerConnection, DisconnectedPeer, ClawsRole, allocPeerId, fingerprintPeer, matchTopic, PeerRegistry } from './peer-registry';
 import { TaskRecord, allocTaskId } from './task-registry';
 import { LifecycleStore } from './lifecycle-store';
 import { canTransition, explainIllegalTransition, canReflect } from './lifecycle-rules';
@@ -186,6 +186,8 @@ export class ClawsServer {
   private readonly usedNonces = new Set<string>();
   /** L19 TRANSPORT-X — optional WebSocket transport alongside the Unix socket. */
   private readonly wsTransport = new WebSocketTransport();
+  /** Bug-6 Layer 2 — tracks Monitor peers that declared monitorCorrelationId at hello time. */
+  private readonly peerRegistry = new PeerRegistry();
 
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
@@ -717,6 +719,8 @@ export class ClawsServer {
         }
       }
     }
+    // Bug-6 Layer 2: remove any armedCorrelations claim held by this peer.
+    this.peerRegistry.removeMonitorClaim(peerId);
     // Notify wave registry so it can cancel violation timers for this peer.
     if (peerId) this.waveRegistry.handlePeerDisconnect(peerId);
     // Clean up backpressure state for the disconnected peer.
@@ -1315,6 +1319,11 @@ export class ClawsServer {
         this.waveRegistry.recordHeartbeat(r.waveId, r.subWorkerRole as SubWorkerRole, peerId);
       }
 
+      // Bug-6 Layer 2: if the peer declares a monitorCorrelationId, record the claim.
+      if (r.monitorCorrelationId) {
+        this.peerRegistry.recordMonitorClaim(peerId, r.monitorCorrelationId);
+      }
+
       return {
         ok: true,
         peerId,
@@ -1794,6 +1803,16 @@ export class ClawsServer {
       const updated = this.lifecycleStore.markWorkerStatus(r.terminalId, r.status as import('./lifecycle-store').WorkerStatus);
       this.lifecycleEngine.onWorkerEvent('mark-worker-status:' + r.status);
       return { ok: true, worker: updated };
+    }
+
+    if (cmd === 'monitors.is-corr-armed') {
+      const r = req as import('./protocol').BaseRequest & { correlation_id?: string };
+      if (typeof r.correlation_id !== 'string' || !r.correlation_id) {
+        return { ok: false, error: 'monitors.is-corr-armed:missing-correlation_id' };
+      }
+      const armed = this.peerRegistry.isCorrIdArmed(r.correlation_id);
+      const peerId = this.peerRegistry.getArmedPeerForCorrId(r.correlation_id) ?? null;
+      return { ok: true, armed, peerId };
     }
 
     // ── Wave army commands ──────────────────────────────────────────────────

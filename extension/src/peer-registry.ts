@@ -91,3 +91,42 @@ export function fingerprintPeer(peerName: string, role: string, nonce: string): 
     .digest('hex')
     .slice(0, 12);
 }
+
+/**
+ * Bug-6 Layer 2 — tracks which Monitor peers have declared a monitorCorrelationId
+ * at hello time. armedCorrelations links corrId → peerId; peerToCorr is the
+ * reverse index used to clean up claims on peer disconnect.
+ *
+ * All four methods are O(1). The registry is never cleared between sessions
+ * because it lives for the duration of the server instance.
+ */
+export class PeerRegistry {
+  private readonly armedCorrelations = new Map<string, string>(); // corrId → peerId
+  private readonly peerToCorr = new Map<string, string>();        // peerId → corrId
+
+  /** Record that peerId is the Monitor process for correlationId. One peer → one claim. */
+  recordMonitorClaim(peerId: string, correlationId: string): void {
+    this.removeMonitorClaim(peerId);
+    this.armedCorrelations.set(correlationId, peerId);
+    this.peerToCorr.set(peerId, correlationId);
+  }
+
+  /** Returns true if any live peer has declared a claim for this correlationId. */
+  isCorrIdArmed(correlationId: string): boolean {
+    return this.armedCorrelations.has(correlationId);
+  }
+
+  /** Remove any claim held by peerId (called on peer disconnect). */
+  removeMonitorClaim(peerId: string): void {
+    const corrId = this.peerToCorr.get(peerId);
+    if (corrId !== undefined) {
+      this.armedCorrelations.delete(corrId);
+      this.peerToCorr.delete(peerId);
+    }
+  }
+
+  /** Return the peerId that claimed corrId, or undefined if unclaimed. */
+  getArmedPeerForCorrId(correlationId: string): string | undefined {
+    return this.armedCorrelations.get(correlationId);
+  }
+}

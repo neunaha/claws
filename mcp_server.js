@@ -990,6 +990,22 @@ async function runBlockingWorker(sock, args) {
       }
     } catch (_e) { /* non-fatal */ }
   }, _bMonitorGraceMs);
+  // Layer 2 (Bug-6): 30s grace — verify corrId was declared by an armed stream-events.js process.
+  setTimeout(async () => {
+    try {
+      const armResp = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _bCorrId });
+      if (armResp.ok && !armResp.armed) {
+        log(`L2-warn: runBlockingWorker term=${_bTermIdStr} corr=${_bCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
+        try {
+          await _pconnWrite({
+            cmd: 'publish', protocol: 'claws/2',
+            topic: 'system.monitor.unarmed',
+            payload: { terminal_id: _bTermIdStr, correlation_id: _bCorrId, layer: 2, grace_ms: 30000 },
+          });
+        } catch (_pe) { /* non-fatal */ }
+      }
+    } catch (_e) { /* non-fatal */ }
+  }, 30000);
 
   // 2. Give shell a moment to emit prompt
   await sleep(400);
@@ -1602,6 +1618,23 @@ async function _dispatchTool(name, args, sock) {
     // D+F: register spawn + monitor atomically before returning. Best-effort (lifecycle may not be in active mission).
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(_createTermId), correlationId: _createCorrId, name: args.name || 'claws' }); } catch (e) { /* lifecycle not initialized — non-fatal for claws_create */ }
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(_createTermId), correlationId: _createCorrId, command: _createMonitorCmd }); } catch (e) { /* non-fatal */ }
+    // Layer 2 (Bug-6): 30s grace — verify corrId was declared by an armed stream-events.js process.
+    const _createTermIdStr = String(_createTermId);
+    setTimeout(async () => {
+      try {
+        const armResp = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _createCorrId });
+        if (armResp.ok && !armResp.armed) {
+          log(`L2-warn: claws_create term=${_createTermIdStr} corr=${_createCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
+          try {
+            await _pconnWrite({
+              cmd: 'publish', protocol: 'claws/2',
+              topic: 'system.monitor.unarmed',
+              payload: { terminal_id: _createTermIdStr, correlation_id: _createCorrId, layer: 2, grace_ms: 30000 },
+            });
+          } catch (_pe) { /* non-fatal */ }
+        }
+      } catch (_e) { /* non-fatal */ }
+    }, 30000);
     const createResult = {
       ok: true, terminal_id: _createTermId,
       correlation_id: _createCorrId,
@@ -1916,6 +1949,22 @@ async function _dispatchTool(name, args, sock) {
         }
       } catch (_e) { /* non-fatal */ }
     }, _fpMonitorGraceMs);
+    // Layer 2 (Bug-6): 30s grace — verify corrId was declared by an armed stream-events.js process.
+    setTimeout(async () => {
+      try {
+        const armResp = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _fpCorrId });
+        if (armResp.ok && !armResp.armed) {
+          log(`L2-warn: claws_worker term=${_fpTermIdStr} corr=${_fpCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
+          try {
+            await _pconnWrite({
+              cmd: 'publish', protocol: 'claws/2',
+              topic: 'system.monitor.unarmed',
+              payload: { terminal_id: _fpTermIdStr, correlation_id: _fpCorrId, layer: 2, grace_ms: 30000 },
+            });
+          } catch (_pe) { /* non-fatal */ }
+        }
+      } catch (_e) { /* non-fatal */ }
+    }, 30000);
 
     await sleep(400);
 
@@ -2573,6 +2622,22 @@ async function _dispatchTool(name, args, sock) {
         }
       } catch (_e) { /* non-fatal */ }
     }, _dswMonitorGraceMs);
+    // Layer 2 (Bug-6): 30s grace — verify corrId was declared by an armed stream-events.js process.
+    setTimeout(async () => {
+      try {
+        const armResp = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _dswCorrId });
+        if (armResp.ok && !armResp.armed) {
+          log(`L2-warn: claws_dispatch_subworker term=${_dswTermIdStr} corr=${_dswCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
+          try {
+            await _pconnWrite({
+              cmd: 'publish', protocol: 'claws/2',
+              topic: 'system.monitor.unarmed',
+              payload: { terminal_id: _dswTermIdStr, correlation_id: _dswCorrId, layer: 2, grace_ms: 30000 },
+            });
+          } catch (_pe) { /* non-fatal */ }
+        }
+      } catch (_e) { /* non-fatal */ }
+    }, 30000);
 
     // BUG-08: fire-and-forget — return after create so parallel dispatch_subworker calls don't serialize.
     const _dswSock = sock;

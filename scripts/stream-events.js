@@ -249,7 +249,7 @@ if (_waitFlagSeen) {
   });
 
   _wSock.on('connect', () => {
-    _wSock.write(JSON.stringify({ id: 1, cmd: 'hello', protocol: 'claws/2', role: 'observer', peerName: 'wait-mode' }) + '\n');
+    _wSock.write(JSON.stringify({ id: 1, cmd: 'hello', protocol: 'claws/2', role: 'observer', peerName: 'wait-mode', monitorCorrelationId: _wCorrId }) + '\n');
   });
 
   _wSock.on('data', (d) => {
