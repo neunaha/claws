@@ -11,6 +11,15 @@
 //       exits 0 when a push frame with matching correlation_id arrives, 2 on socket close
 //       before match, 3 on timeout. No awk/grep — server-side topic filter only.
 //
+//   --wait flags:
+//     --keep-alive-on <termId>   activates in-process rearm. When the inner timer fires,
+//                                run a 3-check decision: (1) system.worker.completed in
+//                                events.log? → exit 0. (2) terminal closed/terminated in
+//                                events.log? → exit 0. (3) eventsSeen(termId, staleMs)?
+//                                → rearm. Otherwise → exit 2 (truly stuck).
+//     --stale-threshold <ms>     liveness window for eventsSeen check (default 120000).
+//     --rearm-cycle <ms>         interval between rearm checks (default = --timeout-ms).
+//
 // Env:
 //   CLAWS_SOCKET     override socket path (both modes; used by tests)
 //   CLAWS_TOPIC      subscribe pattern (default '**')  [default mode only]
@@ -54,6 +63,9 @@ let _waitCorrId    = null;
 let _waitFlagSeen  = false;
 let _waitTimeoutMs = 600000;
 let _hasAutoSidecar = false;
+let _keepAliveTermId   = null;
+let _staleThresholdMs  = 120000;
+let _rearmCycleMs      = null;
 
 for (let i = 0; i < _argv.length; i++) {
   if (_argv[i] === '--auto-sidecar') {
@@ -65,8 +77,19 @@ for (let i = 0; i < _argv.length; i++) {
   } else if (_argv[i] === '--timeout-ms') {
     i++;
     _waitTimeoutMs = (_argv[i] !== undefined) ? Number(_argv[i]) : NaN;
+  } else if (_argv[i] === '--keep-alive-on') {
+    i++;
+    _keepAliveTermId = (_argv[i] !== undefined) ? String(_argv[i]) : null;
+  } else if (_argv[i] === '--stale-threshold') {
+    i++;
+    _staleThresholdMs = (_argv[i] !== undefined) ? Number(_argv[i]) : NaN;
+  } else if (_argv[i] === '--rearm-cycle') {
+    i++;
+    _rearmCycleMs = (_argv[i] !== undefined) ? Number(_argv[i]) : NaN;
   }
 }
+
+if (_rearmCycleMs === null) _rearmCycleMs = _waitTimeoutMs;
 
 if (_hasAutoSidecar && _waitFlagSeen) {
   process.stderr.write('stream-events.js: --wait and --auto-sidecar are mutually exclusive\n');
@@ -94,10 +117,103 @@ if (_waitFlagSeen) {
   let _wMatched = false;
   const _wCorrId = _waitCorrId;
 
-  const _wTimer = setTimeout(() => {
+  // ── Helper: scan events.log for a matching completed/terminated event ──────────
+  // Returns true if events.log contains a line matching topic + (corrId or terminal_id).
+  function eventsLogContains({ topic, corrId, terminal_id }) {
+    try {
+      const sockDir = path.dirname(_wSockPath);
+      const evLog   = path.join(sockDir, 'events.log');
+      if (!fs.existsSync(evLog)) return false;
+      const stat    = fs.statSync(evLog);
+      const readSz  = Math.min(stat.size, 512 * 1024);
+      const fd      = fs.openSync(evLog, 'r');
+      const buf     = Buffer.alloc(readSz);
+      fs.readSync(fd, buf, 0, readSz, Math.max(0, stat.size - readSz));
+      fs.closeSync(fd);
+      const topicStr = `"topic":"${topic}"`;
+      const corrStr  = corrId      ? `"correlation_id":"${corrId}"` : null;
+      const termStr  = terminal_id ? `"terminal_id":"${terminal_id}"` : null;
+      for (const line of buf.toString('utf8').split('\n').reverse()) {
+        if (!line.includes(topicStr)) continue;
+        if (corrStr  && line.includes(corrStr))  return true;
+        if (termStr  && line.includes(termStr))  return true;
+      }
+    } catch { /* swallow */ }
+    return false;
+  }
+
+  // ── Helper: scan events.log for any recent event belonging to termId ──────────
+  // Checks both snake_case ("terminal_id") and camelCase ("terminalId") fields
+  // so it catches system.worker.* (snake_case) and vehicle.* (camelCase) events.
+  // Returns true if any matching line has sentAt (Unix ms) within withinMs of now.
+  function eventsSeen(termId, withinMs) {
+    try {
+      const sockDir   = path.dirname(_wSockPath);
+      const evLog     = path.join(sockDir, 'events.log');
+      if (!fs.existsSync(evLog)) return false;
+      const stat      = fs.statSync(evLog);
+      const readSz    = Math.min(stat.size, 512 * 1024);
+      const fd        = fs.openSync(evLog, 'r');
+      const buf       = Buffer.alloc(readSz);
+      fs.readSync(fd, buf, 0, readSz, Math.max(0, stat.size - readSz));
+      fs.closeSync(fd);
+      const now       = Date.now();
+      const matchA    = `"terminal_id":"${termId}"`;
+      const matchB    = `"terminalId":"${termId}"`;
+      for (const line of buf.toString('utf8').split('\n').reverse()) {
+        if (!line.includes(matchA) && !line.includes(matchB)) continue;
+        try {
+          const ev = JSON.parse(line);
+          if (typeof ev.sentAt === 'number' && (now - ev.sentAt) < withinMs) return true;
+        } catch { /* malformed line — skip */ }
+      }
+    } catch { /* swallow */ }
+    return false;
+  }
+
+  // ── Rearm decision loop (fires when inner timer expires) ──────────────────────
+  function rearmDecisionLoop() {
+    // Check 1: completion event already persisted in events.log? (race: Monitor armed after done)
+    if (eventsLogContains({ topic: 'system.worker.completed', corrId: _wCorrId })) {
+      process.stderr.write(`stream-events.js --wait: matched (raced) — system.worker.completed in events.log\n`);
+      clearTimeout(_wTimer);
+      try { _wSock.destroy(); } catch {}
+      process.exit(0);
+    }
+
+    // Check 2: termination — try correlation_id path first (system.terminal.closed),
+    //          fall back to terminal_id on system.worker.terminated.
+    if (_keepAliveTermId) {
+      const closedByCorrId = eventsLogContains({ topic: 'system.terminal.closed',  corrId: _wCorrId });
+      const terminatedById = eventsLogContains({ topic: 'system.worker.terminated', terminal_id: _keepAliveTermId });
+      if (closedByCorrId || terminatedById) {
+        const which = closedByCorrId ? 'system.terminal.closed(corrId)' : 'system.worker.terminated(termId)';
+        process.stderr.write(`stream-events.js --wait: matched (raced) — ${which} in events.log\n`);
+        clearTimeout(_wTimer);
+        try { _wSock.destroy(); } catch {}
+        process.exit(0);
+      }
+    }
+
+    // Check 3: events.log recency scan — is the terminal still producing bus events?
+    if (_keepAliveTermId) {
+      const alive = eventsSeen(_keepAliveTermId, _staleThresholdMs);
+      if (alive) {
+        process.stderr.write(`stream-events.js --wait: rearming — terminal ${_keepAliveTermId} active in events.log within ${_staleThresholdMs}ms\n`);
+        _wTimer = setTimeout(rearmDecisionLoop, _rearmCycleMs);
+        return;
+      }
+      process.stderr.write(`stream-events.js --wait: exit stuck — no events for terminal ${_keepAliveTermId} within ${_staleThresholdMs}ms\n`);
+      try { _wSock.destroy(); } catch {}
+      process.exit(2);
+    }
+
+    // No --keep-alive-on provided: original timeout behavior (backwards compat)
     process.stderr.write(`stream-events.js --wait: timeout waiting for close event (correlation_id=${_wCorrId})\n`);
     process.exit(3);
-  }, _waitTimeoutMs);
+  }
+
+  let _wTimer = setTimeout(rearmDecisionLoop, _keepAliveTermId ? _rearmCycleMs : _waitTimeoutMs);
 
   const _wSock = net.createConnection(_wSockPath);
 

@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`extension/test/install-sweep.test.sh`** (8 checks) — verifies command sweep, skill sweep, user-content preservation, and source markers; registered in `npm test` chain.
 - **Bug 4 — worker binary alias UX** — two new MCP tools (`claws_set_bin`, `claws_get_bin`) surface the existing `.claws/claude-bin` / `CLAWS_CLAUDE_BIN` plumbing. New `/claws-bin` slash command (set/reset/get). Natural-language imperative added to `CLAUDE.global.md` so "use claude-neu for workers" resolves automatically. Schema regenerated (39 → 41 tools). `install.sh` post-install banner now lists the three override mechanisms.
+- **Bug 5 — Monitor in-process rearm** — `stream-events.js --wait` now supports `--keep-alive-on <termId>`. When the inner timer fires, a 3-check decision runs: (1) `system.worker.completed` in events.log → exit 0; (2) `system.terminal.closed` / `system.worker.terminated` in events.log → exit 0; (3) `eventsSeen(termId, staleMs)` — terminal active on bus within threshold → rearm in place. Otherwise exit 2 (truly stuck). New flags: `--stale-threshold <ms>` (default 120 s) and `--rearm-cycle <ms>` (default = `--timeout-ms`). All 5 `monitor_arm_command` emission sites in `mcp_server.js` updated: `--keep-alive-on` appended, `timeout_ms` raised from 600 000 → 7 200 000 (2 h). `extension/test/monitor-rearm.test.js` (6 unit branches) registered in `npm test` chain.
 
 ## [0.7.13] - 2026-05-05
 

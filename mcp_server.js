@@ -974,7 +974,7 @@ async function runBlockingWorker(sock, args) {
 
   // D+F: register spawn + monitor atomically before proceeding. Best-effort (lifecycle may not be in active mission).
   try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _bCorrId, name: args.name || 'claws-worker' }); } catch (e) { /* non-fatal */ }
-  const _bMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_bCorrId}", description="claws monitor | term=${termId} | corr=${_bCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
+  const _bMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_bCorrId} --keep-alive-on ${termId}", description="claws monitor | term=${termId} | corr=${_bCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=7200000, persistent=false)`;
   try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _bCorrId, command: _bMonitorCmd }); } catch (e) { /* non-fatal */ }
   // T4: monitor-arm grace warning — 5s after spawn, warn if no monitor registered in lifecycle.
   const _bMonitorGraceMs = 5000;
@@ -1598,7 +1598,7 @@ async function _dispatchTool(name, args, sock) {
     if (!resp.ok) return toolError(`ERROR: ${_lifecycleErrMsg(resp.error)}`);
     const eventsLogPath = path.join(path.dirname(path.resolve(sock)), 'events.log');
     const _createTermId = resp.id;
-    const _createMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_createCorrId}", description="claws monitor | term=${_createTermId} | corr=${_createCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
+    const _createMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_createCorrId} --keep-alive-on ${_createTermId}", description="claws monitor | term=${_createTermId} | corr=${_createCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=7200000, persistent=false)`;
     // D+F: register spawn + monitor atomically before returning. Best-effort (lifecycle may not be in active mission).
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(_createTermId), correlationId: _createCorrId, name: args.name || 'claws' }); } catch (e) { /* lifecycle not initialized — non-fatal for claws_create */ }
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(_createTermId), correlationId: _createCorrId, command: _createMonitorCmd }); } catch (e) { /* non-fatal */ }
@@ -1900,7 +1900,7 @@ async function _dispatchTool(name, args, sock) {
 
     // D+F: register spawn + monitor atomically. Best-effort (lifecycle may not be in active mission).
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _fpCorrId, name: args.name || 'claws-worker' }); } catch (e) { /* non-fatal */ }
-    const _fpMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_fpCorrId}", description="claws monitor | term=${termId} | corr=${_fpCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
+    const _fpMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_fpCorrId} --keep-alive-on ${termId}", description="claws monitor | term=${termId} | corr=${_fpCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=7200000, persistent=false)`;
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _fpCorrId, command: _fpMonitorCmd }); } catch (e) { /* non-fatal */ }
     // T4: monitor-arm grace warning — 5s after spawn, warn if no monitor registered in lifecycle.
     const _fpMonitorGraceMs = 5000;
@@ -2239,7 +2239,7 @@ async function _dispatchTool(name, args, sock) {
             duration_ms: r.duration_ms,
             marker_line: r.marker_line,
             monitor_arm_command: (_fTermId && _fCorrId)
-              ? `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_fCorrId}", description="claws monitor | term=${_fTermId} | corr=${_fCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`
+              ? `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_fCorrId} --keep-alive-on ${_fTermId}", description="claws monitor | term=${_fTermId} | corr=${_fCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=7200000, persistent=false)`
               : null,
           };
         }),
@@ -2546,7 +2546,7 @@ async function _dispatchTool(name, args, sock) {
 
     // D+F: register spawn + monitor atomically. Best-effort (lifecycle may not be in active mission).
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _dswCorrId, name: workerName }); } catch (e) { /* non-fatal */ }
-    const _dswMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_dswCorrId}", description="claws monitor | term=${termId} | corr=${_dswCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=600000, persistent=false)`;
+    const _dswMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_dswCorrId} --keep-alive-on ${termId}", description="claws monitor | term=${termId} | corr=${_dswCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=7200000, persistent=false)`;
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _dswCorrId, command: _dswMonitorCmd }); } catch (e) { /* non-fatal */ }
     // T4: monitor-arm grace warning — 5s after spawn, warn if no monitor registered in lifecycle.
     const _dswMonitorGraceMs = 5000;
