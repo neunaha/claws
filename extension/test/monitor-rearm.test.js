@@ -1,7 +1,7 @@
 'use strict';
 // Unit tests for stream-events.js --wait rearm decision loop.
 // Branch coverage: (a) completed corrId, (b) terminal.closed corrId,
-// (c) terminated termId, (d) alive terminal → rearm, (e) stale → exit 2,
+// (c) terminated corrId, (d) alive terminal → rearm, (e) stale → exit 2,
 // (f) live socket event → exit 0 [skipped, requires real socket — e2e],
 // (g) no --keep-alive-on → exit 3 (backward compat).
 
@@ -140,13 +140,13 @@ async function runTest(name, fn) {
     assert.equal(code, 0, `expected exit 0, got ${code}`);
   });
 
-  // (c) events.log has system.worker.terminated with terminal_id → exit 0
-  await runTest('(c) worker.terminated termId → exit 0', async () => {
+  // (c) events.log has system.worker.terminated with corrId (Bug 7 corrId-only path) → exit 0
+  await runTest('(c) worker.terminated corrId → exit 0', async () => {
     const { clawsDir, sock } = makeTmp();
     const corrId = crypto.randomUUID();
     const termId = 'term-44';
     writeEventsLog(clawsDir, [
-      eventLine('system.worker.terminated', { terminal_id: termId })
+      eventLine('system.worker.terminated', { terminal_id: termId, terminated_at: new Date().toISOString(), correlation_id: corrId })
     ]);
     const { cleanup } = startFakeServer(sock);
     const proc = runWait(corrId, termId, sock);

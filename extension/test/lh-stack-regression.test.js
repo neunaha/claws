@@ -181,11 +181,12 @@ check(
   `found ${d7Count} description sites — expected 5`,
 );
 
-const d8Count = MCP.split('timeout_ms=600000, persistent=false').length - 1;
+const d8Count = MCP.split('timeout_ms=7200000, persistent=false').length - 1;
+const d8KeepAliveCount = d6Sites.filter(s => s.includes('--keep-alive-on')).length;
 check(
-  'D8: all 5 monitor_arm_command sites use timeout_ms=600000, persistent=false',
-  d8Count === 5,
-  `found ${d8Count} — expected 5`,
+  'D8: all 5 monitor_arm_command sites use timeout_ms=7200000, persistent=false and --keep-alive-on',
+  d8Count === 5 && d8KeepAliveCount === 5,
+  `timeout_ms=7200000 found ${d8Count}/5; --keep-alive-on found ${d8KeepAliveCount}/5 (Bug 5 cascade)`,
 );
 
 // ─── SECTION E — stream-events.js --wait contract (LH-12) ────────────────────
@@ -211,9 +212,12 @@ check(
 );
 
 check(
-  "E4: stream-events.js does NOT subscribe to 'system.worker.terminated' (payload lacks correlation_id)",
-  !STREAM_EVENTS.includes("'system.worker.terminated'"),
-  "system.worker.terminated was intentionally dropped — payload lacks correlation_id",
+  "E4: stream-events.js references 'system.worker.terminated' AND 'system.terminal.closed', both matched by corrId (Bug 7 Option A)",
+  STREAM_EVENTS.includes("'system.worker.terminated'") &&
+  STREAM_EVENTS.includes("'system.terminal.closed'") &&
+  STREAM_EVENTS.includes('corrId: _wCorrId') &&
+  STREAM_EVENTS.includes('msg.payload.correlation_id === _wCorrId'),
+  "Option A (Bug 7): stream-events.js keeps system.worker.terminated (in eventsLogContains) and system.terminal.closed, both matched by corrId not terminal_id. Push-frame handler uses msg.payload.correlation_id === _wCorrId as the gate.",
 );
 
 check(
