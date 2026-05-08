@@ -3,6 +3,23 @@ name: claws-do
 description: Universal verb — classifies any task into the right execution shape and runs it.
 ---
 
+## MANDATORY cold-start sequence — execute in order, no deliberation
+
+1. **Acknowledge in 1 line.** "Got it — <one-sentence task summary>." No more.
+2. **Do NOT enter plan mode.** This is an ACTION command. If the task is complex
+   enough to need a plan, redirect to `/claws-plan` and stop.
+3. **Do NOT call TodoWrite for the task itself.** This command makes ONE MCP call.
+4. **Do NOT pre-verify the sidecar, Monitor, or hooks.** Guaranteed by
+   SessionStart in v0.7.13+. Trust the system.
+5. **Monitor arming is time-critical.** `monitor_arm_command` from the spawn
+   response MUST be your very next tool call after spawn returns. Any tool call
+   between spawn and Monitor arm is a sequencing bug — abort what you were
+   doing and arm the Monitor first.
+
+Classify and act. The routing tree below handles the rest.
+
+---
+
 # /claws-do <task>
 
 ## What this does
@@ -48,7 +65,8 @@ Action: spawn a LEAD via `claws_worker` whose mission uses `claws_wave_create` +
 
 - NEVER use the Bash tool to run the user's task — use `claws_exec` or `claws_worker`
 - NEVER manually sequence `claws_create` + `claws_send` to boot a Claude worker — `claws_worker` handles it
-- NEVER skip arming the Monitor after spawn — use `monitor_arm_command` from the spawn response
+- NEVER skip arming the Monitor after spawn — `monitor_arm_command` MUST be the very next
+  tool call after spawn; any intervening call is a sequencing bug
 - NEVER leave terminals open — auto-close on marker is the default
 - NEVER use raw socket node -e fallbacks — if MCP tools are absent, tell the user to reload VS Code
 

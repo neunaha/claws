@@ -24,6 +24,9 @@ For most work, run `/claws-do "<task>"`. It classifies the task into one of four
 
 `/claws-status` shows live terminal + lifecycle state. `/claws-help` lists every command and tool.
 
+Each entry-point command (`/claws-do`, `/claws`, `/claws-fix`) includes a MANDATORY
+cold-start sequence at its top — read it before deliberating.
+
 ### Terminal hygiene (non-negotiable)
 
 - **NEVER use Bash for long-lived processes** — servers, watchers, REPLs, builds. Use `claws_create` + `claws_send`, or let `claws_worker` / `claws_fleet` do it for you.

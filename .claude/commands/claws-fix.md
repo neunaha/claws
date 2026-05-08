@@ -3,6 +3,14 @@ name: claws-fix
 description: Diagnose and auto-repair a broken Claws installation in one command.
 ---
 
+## MANDATORY — read before running
+
+1. **Acknowledge in 1 line.** "Running Claws repair script." No more.
+2. **Do NOT enter plan mode.** This is a single Bash call.
+3. **Run the repair script via Bash — one call, no sub-steps. No worker spawn.**
+
+---
+
 # /claws-fix
 
 ## What this does

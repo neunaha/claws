@@ -3,6 +3,14 @@ name: claws-help
 description: Complete reference for Claws slash commands and MCP tools.
 ---
 
+## MANDATORY — read before running
+
+1. **Acknowledge in 1 line.** No more.
+2. **Do NOT enter plan mode.** This command prints reference content, not spawns workers.
+3. **Do NOT pre-verify the sidecar, Monitor, or hooks.** Not needed here.
+
+---
+
 # /claws-help
 
 ## What this does
