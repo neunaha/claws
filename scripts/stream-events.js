@@ -181,13 +181,17 @@ if (_waitFlagSeen) {
       process.exit(0);
     }
 
-    // Check 2: termination — try correlation_id path first (system.terminal.closed),
-    //          fall back to terminal_id on system.worker.terminated.
+    // Check 2: termination — corrId-only matching for both system.terminal.closed and
+    //          system.worker.terminated. terminal_id is session-local: VS Code resets the
+    //          counter on extension reload and recycles integers as terminals open/close.
+    //          events.log is globally append-only, so any prior-session terminated event
+    //          with the same numeric terminal_id would false-positive here. correlation_id
+    //          is a UUID — globally unique, collision-free across sessions and reloads.
     if (_keepAliveTermId) {
-      const closedByCorrId = eventsLogContains({ topic: 'system.terminal.closed',  corrId: _wCorrId });
-      const terminatedById = eventsLogContains({ topic: 'system.worker.terminated', terminal_id: _keepAliveTermId });
-      if (closedByCorrId || terminatedById) {
-        const which = closedByCorrId ? 'system.terminal.closed(corrId)' : 'system.worker.terminated(termId)';
+      const closedByCorrId     = eventsLogContains({ topic: 'system.terminal.closed',   corrId: _wCorrId });
+      const terminatedByCorrId = eventsLogContains({ topic: 'system.worker.terminated', corrId: _wCorrId });
+      if (closedByCorrId || terminatedByCorrId) {
+        const which = closedByCorrId ? 'system.terminal.closed(corrId)' : 'system.worker.terminated(corrId)';
         process.stderr.write(`stream-events.js --wait: matched (raced) — ${which} in events.log\n`);
         clearTimeout(_wTimer);
         try { _wSock.destroy(); } catch {}

@@ -11,14 +11,21 @@ You are the **LEAD** of a Claws Wave Army. You own the diff, the commits, the PI
 ## Boot sequence
 
 ```
-0. Arm Monitor on .claws/events.log via Bash run_in_background BEFORE any other action
-1. claws_hello({ role:'orchestrator', peerName:'<waveId>-lead', waveId, subWorkerRole:'lead', capabilities:['push'] })
-   // capabilities:['push'] required — without it claws_publish is silently rejected (BUG-03)
+0. (Sidecar is already running — started by the SessionStart hook. No action needed.)
+1. claws_hello({ role:'orchestrator', peerName:'<waveId>-lead', waveId, subWorkerRole:'lead' })
+   // capabilities:['push'] is auto-granted as of v0.7.13 — passing it is optional, harmless
 2. claws_wave_create({ waveId, layers:[...], manifest:['tester','reviewer','auditor','doc'] })
 3. Publish wave.<waveId>.lead.boot
 4. Dispatch sub-workers via claws_dispatch_subworker (handles boot internally)
 5. Begin PIAFEUR loop
 ```
+
+> **Critical:** the global `.claws/events.log` sidecar is already running — do NOT spawn a
+> second sidecar via Bash, do NOT `tail -F .claws/events.log` in any background process.
+> The only acceptable per-worker watcher is the `Monitor()` tool armed with the
+> `monitor_arm_command` returned in each `claws_dispatch_subworker` response. Any
+> `Bash(run_in_background=true)` invocation for event observation is a wave-discipline
+> violation and will be detected by the per-worker arming enforcement layer.
 
 ## Sub-worker dispatch
 
@@ -29,7 +36,16 @@ claws_dispatch_subworker({ waveId, role:'tester', mission:'...print MARK_TESTER_
 claws_dispatch_subworker({ waveId, role:'reviewer', mission:'...' })
 ```
 
-Arm one Monitor per returned `terminal_id` using the `monitor_arm_command` field.
+For each returned `terminal_id`, arm one `Monitor()` per worker using the `monitor_arm_command`
+string from the spawn response. This is the **only** observation mechanism — never use Bash
+backgrounding, never tail a log file. Example:
+
+```
+const r = claws_dispatch_subworker({ waveId, role:'tester', mission:'...' })
+Monitor(command=r.monitor_arm_command,
+        description="claws monitor | term=" + r.terminal_id,
+        timeout_ms=7200000, persistent=false)
+```
 
 ## PIAFEUR loop
 

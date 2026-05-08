@@ -264,9 +264,14 @@ export class ClawsServer {
         ...(correlationId ? { correlation_id: correlationId } : {}),
       });
       if (wrapped) {
+        // BUG-7 Option A: terminal_id is session-local (VS Code resets and recycles the
+        // counter on extension reload). events.log is globally append-only. Consumers
+        // matching only by terminal_id will false-positive against prior-session entries.
+        // correlation_id is a UUID — globally unique, collision-free across sessions.
         void this.emitSystemEvent('system.worker.terminated', {
           terminal_id: id,
           terminated_at: new Date().toISOString(),
+          ...(correlationId ? { correlation_id: correlationId } : {}),
         });
       }
       // LH-9 1A: every close path — UI X-button, programmatic close, pty
