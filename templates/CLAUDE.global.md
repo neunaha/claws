@@ -105,6 +105,20 @@ If you receive a Wave Army mission, you are a sub-worker. You MUST:
 8. **Type-check after `.ts` edits** — `npx tsc --noEmit` must report zero errors.
 9. **Complete event** — publish `wave.<waveId>.<role>.complete` as the absolute final act before printing the role sentinel (the LEAD waits on this).
 
+### Worker binary
+
+By default, workers spawn `claude`. If the user wants a different binary
+(common for teams using multiple Claude accounts via shell aliases like
+`claude-neu`, `claude-anish`), recognize the natural-language pattern:
+
+- "use claude-neu for workers" / "switch to claude-neu" → call `claws_set_bin(name: "claude-neu")`
+- "reset the worker binary" / "go back to claude" → call `claws_set_bin()` (no args)
+- "what binary are workers using?" → call `claws_get_bin()`
+
+The setting is per-project, persisted in `.claws/claude-bin` (gitignored), and
+takes effect immediately — next worker spawn uses the new binary. No MCP
+restart, no terminal reopen.
+
 ### What's automatic now (don't do these manually)
 
 - ❌ Manual sidecar spawn — the SessionStart hook does it.

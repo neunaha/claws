@@ -1617,6 +1617,10 @@ cat <<NEXT
     Update later:              /claws-update
 
   ${C_DIM}Optional: export CLAWS_STRICT=1 to hard-block long-running Bash via PreToolUse hook${C_RESET}
+  ${C_DIM}Worker binary: defaults to 'claude'. Override via:${C_RESET}
+    /claws-bin <name>          (slash command — recommended)
+    echo name > .claws/claude-bin   (file override, gitignored)
+    export CLAWS_CLAUDE_BIN=<name>  (shell env var)
 
   Docs:    https://github.com/neunaha/claws
   Website: https://neunaha.github.io/claws/

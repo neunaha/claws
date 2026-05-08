@@ -31,6 +31,7 @@ The Claws MCP server is running at `{SOCKET_PATH}`. Machine-wide invariants (boo
 - Completion is `claws_done()` (zero-arg, F3 of the five-layer convention).
 - Marker recognized by the server: `__CLAWS_DONE__` only.
 - `claws_fleet` and `claws_worker` are non-blocking by default in mission mode (LH-14.1) — poll via `claws_workers_wait`.
+- Worker binary: defaults to `claude`. Override with `/claws-bin <name>` or write to `.claws/claude-bin`.
 
 See `~/.claude/CLAUDE.md` for the complete invariant policy.
 <!-- CLAWS:END -->

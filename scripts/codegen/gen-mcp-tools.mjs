@@ -89,6 +89,8 @@ const DESC = {
     'Spawn a fleet of workers in parallel (single tool call). Internally fans out via Promise.allSettled so all workers boot and run concurrently. Each entry in workers mirrors claws_worker args; shared top-level fields (cwd, model, timeout_ms, etc.) act as defaults overridden per-worker. Set detach=true for non-blocking spawn (pair with claws_workers_wait). Returns a fleet summary with wall-clock time, per-worker status, and marker lines.',
   claws_workers_wait:
     'Poll a set of already-spawned terminal ids (from claws_fleet detach=true or claws_create) for completion. Checks all 4 signals: marker, error_marker, pub_complete ([CLAWS_PUB] topic=worker.<id>.complete), and Wave D terminated (system.worker.completed bus event). Supports min_complete to return when N of M workers finish rather than waiting for all. Returns per-worker results with status, signal, and duration.',
+  claws_set_bin: 'Set the worker binary for spawns. Writes <project>/.claws/claude-bin. Pass {name: "<binary>"} to set, or {} to clear (revert to default "claude").',
+  claws_get_bin: 'Returns the currently-resolved worker binary and where it came from (file / env:CLAWS_CLAUDE_BIN / default).',
 };
 
 export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
@@ -334,6 +336,12 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
       mission: z.string().describe('Mission prompt sent to Claude Code after boot. Include your completion marker.'),
       cwd:     z.string().describe('Working directory for the spawned terminal (absolute path).').optional(),
     })),
+
+    tool('claws_set_bin', z.object({
+      name: z.string().describe('Binary name to use (e.g. "claude-neu", "claude-anish"). Omit or pass empty string to clear.').optional(),
+    })),
+
+    tool('claws_get_bin', z.object({})),
   ];
 
   const outPath = join(repoRoot, 'schemas', 'mcp-tools.json');

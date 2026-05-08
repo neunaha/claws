@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`extension/test/install-sweep.test.sh`** (8 checks) — verifies command sweep, skill sweep, user-content preservation, and source markers; registered in `npm test` chain.
+- **Bug 4 — worker binary alias UX** — two new MCP tools (`claws_set_bin`, `claws_get_bin`) surface the existing `.claws/claude-bin` / `CLAWS_CLAUDE_BIN` plumbing. New `/claws-bin` slash command (set/reset/get). Natural-language imperative added to `CLAUDE.global.md` so "use claude-neu for workers" resolves automatically. Schema regenerated (39 → 41 tools). `install.sh` post-install banner now lists the three override mechanisms.
 
 ## [0.7.13] - 2026-05-05
 

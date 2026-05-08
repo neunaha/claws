@@ -1053,5 +1053,28 @@
       ],
       "additionalProperties": false
     }
+  },
+  {
+    "name": "claws_set_bin",
+    "description": "Set the worker binary for spawns. Writes <project>/.claws/claude-bin. Pass {name: \"<binary>\"} to set, or {} to clear (revert to default \"claude\").",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Binary name to use (e.g. \"claude-neu\", \"claude-anish\"). Omit or pass empty string to clear."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "claws_get_bin",
+    "description": "Returns the currently-resolved worker binary and where it came from (file / env:CLAWS_CLAUDE_BIN / default).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
   }
 ]

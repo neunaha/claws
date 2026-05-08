@@ -2901,6 +2901,41 @@ async function _dispatchTool(name, args, sock) {
     return { content: [{ type: 'text', text: JSON.stringify({ tasks: resp.tasks || [] }, null, 2) }] };
   }
 
+  if (name === 'claws_set_bin') {
+    try {
+      const clawsDir = path.dirname(path.resolve(sock));
+      const file = path.join(clawsDir, 'claude-bin');
+      if (args && typeof args.name === 'string' && args.name.trim()) {
+        fs.mkdirSync(clawsDir, { recursive: true });
+        fs.writeFileSync(file, args.name.trim() + '\n', 'utf8');
+        return { content: [{ type: 'text', text: `Worker binary set to: ${args.name.trim()}\n  → wrote ${file}\n  → next claws_worker / claws_fleet spawn will use this binary.` }] };
+      }
+      try { fs.unlinkSync(file); } catch (_e) { /* file didn't exist */ }
+      return { content: [{ type: 'text', text: 'Worker binary cleared. Spawns will use the default ("claude") or CLAWS_CLAUDE_BIN env var if set.' }] };
+    } catch (e) {
+      return toolError(`claws_set_bin failed: ${e.message}`);
+    }
+  }
+
+  if (name === 'claws_get_bin') {
+    try {
+      const projectRoot = path.resolve(path.dirname(path.resolve(sock)), '..');
+      const bin = getClaudeBin(projectRoot);
+      const clawsFile = path.join(projectRoot, '.claws', 'claude-bin');
+      let source;
+      if (fs.existsSync(clawsFile) && fs.readFileSync(clawsFile, 'utf8').trim().split(/\r?\n/)[0]) {
+        source = `file:${clawsFile}`;
+      } else if (process.env.CLAWS_CLAUDE_BIN) {
+        source = 'env:CLAWS_CLAUDE_BIN';
+      } else {
+        source = 'default';
+      }
+      return { content: [{ type: 'text', text: `Worker binary: ${bin}\n  source: ${source}` }] };
+    } catch (e) {
+      return toolError(`claws_get_bin failed: ${e.message}`);
+    }
+  }
+
   return toolError(`unknown tool: ${name}`);
 }
 
