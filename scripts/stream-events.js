@@ -25,6 +25,9 @@
 //   CLAWS_TOPIC      subscribe pattern (default '**')  [default mode only]
 //   CLAWS_PEER_NAME  peer label (default 'orchestrator-stream') [default mode only]
 //   CLAWS_ROLE       'orchestrator' | 'worker' | 'observer' (default 'observer') [default mode only]
+//   CLAWS_DEBUG      '1' or 'true' → emit one structured JSON line to stderr per decision
+//                    point in the rearm loop (Check 1, Check 2, Check 3, rearm, exit).
+//                    Additive only — does NOT change exit codes or default stdout output.
 //
 // Default-mode output lines (stdout, one JSON per line):
 //   {"type":"sidecar.connected", "socket":"...", "ts":"..."}
@@ -117,6 +120,9 @@ if (_waitFlagSeen) {
   let _wMatched = false;
   const _wCorrId = _waitCorrId;
 
+  const _debug = process.env.CLAWS_DEBUG === '1' || process.env.CLAWS_DEBUG === 'true';
+  function dbg(obj) { if (_debug) process.stderr.write(JSON.stringify(obj) + '\n'); }
+
   // ── Helper: scan events.log for a matching completed/terminated event ──────────
   // Returns true if events.log contains a line matching topic + (corrId or terminal_id).
   function eventsLogContains({ topic, corrId, terminal_id }) {
@@ -173,9 +179,14 @@ if (_waitFlagSeen) {
 
   // ── Rearm decision loop (fires when inner timer expires) ──────────────────────
   function rearmDecisionLoop() {
+    const _now = Date.now();
+
     // Check 1: completion event already persisted in events.log? (race: Monitor armed after done)
-    if (eventsLogContains({ topic: 'system.worker.completed', corrId: _wCorrId })) {
+    const _c1Matched = eventsLogContains({ topic: 'system.worker.completed', corrId: _wCorrId });
+    dbg({ check: 1, event: 'completion-scan', corrId: _wCorrId, matched: _c1Matched, matchedAt: _c1Matched ? _now : null, now: _now });
+    if (_c1Matched) {
       process.stderr.write(`stream-events.js --wait: matched (raced) — system.worker.completed in events.log\n`);
+      dbg({ event: 'exit', code: 0, reason: 'check1-completed', corrId: _wCorrId, now: _now });
       clearTimeout(_wTimer);
       try { _wSock.destroy(); } catch {}
       process.exit(0);
@@ -190,9 +201,11 @@ if (_waitFlagSeen) {
     if (_keepAliveTermId) {
       const closedByCorrId     = eventsLogContains({ topic: 'system.terminal.closed',   corrId: _wCorrId });
       const terminatedByCorrId = eventsLogContains({ topic: 'system.worker.terminated', corrId: _wCorrId });
+      dbg({ check: 2, event: 'termination-scan', corrId: _wCorrId, closedByCorrId, terminatedByCorrId, now: _now });
       if (closedByCorrId || terminatedByCorrId) {
         const which = closedByCorrId ? 'system.terminal.closed(corrId)' : 'system.worker.terminated(corrId)';
         process.stderr.write(`stream-events.js --wait: matched (raced) — ${which} in events.log\n`);
+        dbg({ event: 'exit', code: 0, reason: 'check2-termination', corrId: _wCorrId, now: _now });
         clearTimeout(_wTimer);
         try { _wSock.destroy(); } catch {}
         process.exit(0);
@@ -202,17 +215,21 @@ if (_waitFlagSeen) {
     // Check 3: events.log recency scan — is the terminal still producing bus events?
     if (_keepAliveTermId) {
       const alive = eventsSeen(_keepAliveTermId, _staleThresholdMs);
+      dbg({ check: 3, event: 'liveness-scan', termId: _keepAliveTermId, alive, staleThresholdMs: _staleThresholdMs, now: _now });
       if (alive) {
+        dbg({ event: 'rearm', reason: 'alive', now: _now });
         process.stderr.write(`stream-events.js --wait: rearming — terminal ${_keepAliveTermId} active in events.log within ${_staleThresholdMs}ms\n`);
         _wTimer = setTimeout(rearmDecisionLoop, _rearmCycleMs);
         return;
       }
+      dbg({ event: 'exit', code: 2, reason: 'no-events-for-terminal', corrId: _wCorrId, now: _now });
       process.stderr.write(`stream-events.js --wait: exit stuck — no events for terminal ${_keepAliveTermId} within ${_staleThresholdMs}ms\n`);
       try { _wSock.destroy(); } catch {}
       process.exit(2);
     }
 
     // No --keep-alive-on provided: original timeout behavior (backwards compat)
+    dbg({ event: 'rearm', reason: 'no-keep-alive', now: _now });
     process.stderr.write(`stream-events.js --wait: timeout waiting for close event (correlation_id=${_wCorrId})\n`);
     process.exit(3);
   }
