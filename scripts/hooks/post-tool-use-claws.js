@@ -65,12 +65,53 @@ async function run(raw) {
     const socketPath = findSocket(cwd);
     if (!socketPath) { process.exit(0); return; }
 
+    // Layer 1: spawn per-worker pgrep watchers (fire-and-forget, <1ms).
+    // Complements the lifecycle.snapshot check below — verifies an OS-level
+    // stream-events.js process is actually alive watching the corrId, not just
+    // that lifecycle.monitors[] was pre-populated by mcp_server at spawn time.
+    spawnWatchers(extractWorkerEntries(resp), socketPath);
+
     for (const tid of terminalIds) {
       await checkOne(socketPath, tid, toolName);
     }
     process.exit(0);
   } catch {
     process.exit(0);
+  }
+}
+
+// Returns [{terminalId, corrId}] for spawning per-worker pgrep watchers.
+function extractWorkerEntries(resp) {
+  if (Array.isArray(resp.workers)) {
+    return resp.workers
+      .filter(w => w && (w.terminal_id != null || w.id != null))
+      .map(w => ({
+        terminalId: w.terminal_id != null ? w.terminal_id : w.id,
+        corrId:     w.correlation_id || null,
+      }));
+  }
+  const tid = resp.terminal_id != null   ? resp.terminal_id
+    : Array.isArray(resp.terminal_ids) && resp.terminal_ids[0] != null ? resp.terminal_ids[0]
+    : resp.id != null ? resp.id
+    : null;
+  return [{ terminalId: tid, corrId: resp.correlation_id || null }];
+}
+
+function spawnWatchers(entries, socketPath) {
+  const { spawn } = require('child_process');
+  const path      = require('path');
+  const watcherPath = path.join(__dirname, '..', 'monitor-arm-watch.js');
+  for (const { terminalId, corrId } of entries) {
+    if (!corrId || terminalId == null) continue;
+    try {
+      spawn(process.execPath, [
+        watcherPath,
+        '--corr-id',  corrId,
+        '--term-id',  String(terminalId),
+        '--grace-ms', '10000',
+        '--socket',   socketPath,
+      ], { detached: true, stdio: 'ignore' }).unref();
+    } catch { /* fire-and-forget — never throw */ }
   }
 }
 
