@@ -877,6 +877,7 @@ else
       ln -sf ../mcp_server.js "$INSTALL_DIR/.claws-bin/mcp_server.js"
       ln -sf ../scripts/shell-hook.sh "$INSTALL_DIR/.claws-bin/shell-hook.sh"
       ln -sf ../scripts/stream-events.js "$INSTALL_DIR/.claws-bin/stream-events.js"
+      ln -sf ../scripts/monitor-arm-watch.js "$INSTALL_DIR/.claws-bin/monitor-arm-watch.js"
       rm -rf "$INSTALL_DIR/.claws-bin/hooks"
       ln -sf ../scripts/hooks "$INSTALL_DIR/.claws-bin/hooks"
       echo '[install] dev mode: symlinked .claws-bin → source'
@@ -908,6 +909,11 @@ else
       if [ -f "$INSTALL_DIR/scripts/stream-events.js" ]; then
         cp "$INSTALL_DIR/scripts/stream-events.js" "$PROJECT_ROOT/.claws-bin/stream-events.js"
         chmod +x "$PROJECT_ROOT/.claws-bin/stream-events.js" 2>/dev/null || true
+      fi
+      # Copy per-spawn Monitor-arm watcher (v0.7.14+) — invoked by post-tool-use-claws.js
+      if [ -f "$INSTALL_DIR/scripts/monitor-arm-watch.js" ]; then
+        cp "$INSTALL_DIR/scripts/monitor-arm-watch.js" "$PROJECT_ROOT/.claws-bin/monitor-arm-watch.js"
+        chmod +x "$PROJECT_ROOT/.claws-bin/monitor-arm-watch.js" 2>/dev/null || true
       fi
       # Copy lifecycle hook scripts for inject-settings-hooks.js to reference.
       # Source-of-truth is $INSTALL_DIR/scripts/hooks/ (committed to git).
