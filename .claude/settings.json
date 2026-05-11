@@ -54,6 +54,46 @@
             "command": "node \"/Users/ANISH.NEUNAHA/Desktop/Claws/.claws-bin/dev-hooks/check-tag-vs-main.js\""
           }
         ]
+      },
+      {
+        "_source": "claws",
+        "matcher": "mcp__claws__claws_create",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/ANISH.NEUNAHA/.claws-src/scripts/hooks/post-tool-use-claws.js\""
+          }
+        ]
+      },
+      {
+        "_source": "claws",
+        "matcher": "mcp__claws__claws_worker",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/ANISH.NEUNAHA/.claws-src/scripts/hooks/post-tool-use-claws.js\""
+          }
+        ]
+      },
+      {
+        "_source": "claws",
+        "matcher": "mcp__claws__claws_fleet",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/ANISH.NEUNAHA/.claws-src/scripts/hooks/post-tool-use-claws.js\""
+          }
+        ]
+      },
+      {
+        "_source": "claws",
+        "matcher": "mcp__claws__claws_dispatch_subworker",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/ANISH.NEUNAHA/.claws-src/scripts/hooks/post-tool-use-claws.js\""
+          }
+        ]
       }
     ],
     "Stop": [

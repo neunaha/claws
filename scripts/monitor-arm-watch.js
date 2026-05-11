@@ -38,31 +38,39 @@ for (let i = 0; i < rawArgs.length; i++) {
 }
 
 if (!corrId || !socketPath) {
-  process.stderr.write('[monitor-arm-watch] missing required --corr-id or --socket\n');
+  process.stderr.write(`monitor-arm-watch: exit 2 | reason=missing-args | corr=${corrId}\n`);
   process.exit(2);
 }
+
+// Emit a startup line immediately (before the grace-period sleep) so the log
+// file is non-empty even if we crash during the sleep or pgrep phases.
+process.stderr.write(
+  `monitor-arm-watch: starting | corr=${corrId} | term=${termId}` +
+  ` | socket=${socketPath} | cwd=${process.cwd()}\n`
+);
 
 (async () => {
   await sleep(graceMs);
 
   let pg;
   try {
-    pg = spawnSync('pgrep', ['-f', `stream-events.js.*--wait ${corrId}`], {
+    pg = spawnSync('/usr/bin/pgrep', ['-f', `stream-events.js.*--wait ${corrId}`], {
       encoding: 'utf8',
       timeout:  5000,
     });
   } catch (e) {
-    process.stderr.write(`[monitor-arm-watch] pgrep spawn failed: ${e.message}\n`);
+    process.stderr.write(`monitor-arm-watch: exit 2 | reason=pgrep-spawn-failed:${e.message} | corr=${corrId}\n`);
     process.exit(2);
   }
 
   if (pg.error) {
-    process.stderr.write(`[monitor-arm-watch] pgrep error: ${pg.error.message}\n`);
+    process.stderr.write(`monitor-arm-watch: exit 2 | reason=pgrep-error:${pg.error.message} | corr=${corrId}\n`);
     process.exit(2);
   }
 
   if (pg.status === 0) {
     // Monitor process is alive — nothing to do.
+    process.stderr.write(`monitor-arm-watch: exit 0 | reason=monitor-found | corr=${corrId}\n`);
     process.exit(0);
   }
 
@@ -76,13 +84,14 @@ if (!corrId || !socketPath) {
         detected_at:    new Date().toISOString(),
       });
     } catch (e) {
-      process.stderr.write(`[monitor-arm-watch] socket error publishing unarmed: ${e.message}\n`);
+      process.stderr.write(`monitor-arm-watch: exit 2 | reason=socket-error:${e.message} | corr=${corrId}\n`);
       process.exit(2);
     }
+    process.stderr.write(`monitor-arm-watch: exit 1 | reason=unarmed-published | corr=${corrId}\n`);
     process.exit(1);
   }
 
-  process.stderr.write(`[monitor-arm-watch] pgrep unexpected exit status ${pg.status}\n`);
+  process.stderr.write(`monitor-arm-watch: exit 2 | reason=pgrep-unexpected-status:${pg.status} | corr=${corrId}\n`);
   process.exit(2);
 })();
 

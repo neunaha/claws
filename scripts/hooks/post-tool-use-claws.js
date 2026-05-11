@@ -18,6 +18,7 @@ if (!process.env.CLAWS_DEBUG) {
   process.on('unhandledRejection', () => { try { process.exit(0); } catch {} });
 }
 
+
 // M-13: 5-second self-kill safety timer — hook can never hang the parent process.
 setTimeout(() => { process.exit(0); }, 5000).unref();
 
@@ -113,17 +114,30 @@ function extractWorkerEntries(resp) {
 function spawnWatchers(entries, socketPath) {
   const { spawn } = require('child_process');
   const path      = require('path');
+  const fs        = require('fs');
   const watcherPath = path.join(__dirname, '..', 'monitor-arm-watch.js');
+  // Derive the project root from the socket path so the watcher's cwd is
+  // deterministic regardless of where the hook process was launched from.
+  const projectRoot = socketPath
+    ? path.dirname(path.dirname(socketPath))
+    : undefined;
   for (const { terminalId, corrId } of entries) {
     if (!corrId || terminalId == null) continue;
     try {
+      const debugLog = `/tmp/claws-monitor-arm-watch-${corrId}.log`;
+      const fd = fs.openSync(debugLog, 'a');
       spawn(process.execPath, [
         watcherPath,
         '--corr-id',  corrId,
         '--term-id',  String(terminalId),
         '--grace-ms', '10000',
         '--socket',   socketPath,
-      ], { detached: true, stdio: 'ignore' }).unref();
+      ], {
+        detached: true,
+        stdio:    ['ignore', fd, fd],
+        cwd:      projectRoot,
+      }).unref();
+      try { fs.closeSync(fd); } catch {}
     } catch { /* fire-and-forget — never throw */ }
   }
 }
