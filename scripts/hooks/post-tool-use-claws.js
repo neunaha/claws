@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+try { require('fs').appendFileSync('/tmp/claws-hook-trace.log', `${new Date().toISOString()} hook-fired pid=${process.pid} cwd=${process.cwd()} argv=${JSON.stringify(process.argv)}\n`); } catch {}
 // Claws PostToolUse hook — fail-closes the spawn → monitor race window.
 //
 // Fires after every MCP tool call. Only acts on spawn-class tools
@@ -59,6 +60,7 @@ function unwrapMcpResponse(resp) {
 }
 
 async function run(raw) {
+  try { require('fs').appendFileSync(`/tmp/claws-hook-stdin-${process.pid}.json`, raw); } catch {}
   try {
     const fs   = require('fs');
     const path = require('path');
