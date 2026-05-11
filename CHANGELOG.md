@@ -5,6 +5,11 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.14] - 2026-05-11
+
+### Changed
+- **Layer 2 debug instrumentation** — `mcp_server.js` all 4 Layer 2 `setTimeout` callbacks now emit `L2-DEBUG:` lines at every decision branch (callback-entered, rpc-result, skip-publish, about-to-publish, pconn-registered, publish-succeeded/failed, outer-error). A new `_logL2File()` helper writes in parallel to `.claws/l2-debug.log` for file-based capture. Investigation-only; no logic changes. Covered sites: `runBlockingWorker`, `claws_create`, `claws_worker-fast-path`, `claws_dispatch_subworker`.
+
 ## [0.7.14] - 2026-05-08
 
 ### Fixed
