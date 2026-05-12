@@ -46,17 +46,49 @@ try {
   process.exit(0);
 }
 
-// BUG6-RUNTIME-1 (v0714 sim pass 2, .local/audits/v0714-validation-report-pass2.md Sim 4):
-// Claude Code passes MCP tool responses as { content: [{ type: 'text', text: '<JSON>' }] }.
-// The hook previously checked resp.ok directly on this wrapper — undefined, so the hook
-// short-circuited before spawning monitor-arm-watch.js. Unwrap before any checks.
+// Append a structured diagnostic line to /tmp/claws-hook-diag.log (never throws).
+function writeDiag(event, detail) {
+  try {
+    const line = `${new Date().toISOString()} hook-diag ${event} ${JSON.stringify(detail)}\n`;
+    require('fs').appendFileSync('/tmp/claws-hook-diag.log', line);
+  } catch {}
+}
+
+// BUG6-L1 (v0714, .local/plans/v0714/investigations/bug6-hook-nested-context.md):
+// Forward-compat normalizer. Handles all observed Claude Code tool_response shapes and
+// returns null for unknown/unparseable input so callers can log a diagnostic instead of
+// silently proceeding with a broken value.
+//
+// Shapes handled:
+//  1. Bare array:     [{type:'text', text:'<JSON>'}]          ← current Claude Code
+//  2. Wrapped object: {content:[{type:'text', text:'<JSON>'}]} ← older Claude Code
+//  3. Plain object:   {ok:true, terminal_id:..., ...}          ← already-unwrapped / tests
+//  4. null / undefined / primitive → null
+//  5. Unknown shape → null + diagnostic
 function unwrapMcpResponse(resp) {
-  if (!resp || typeof resp !== 'object') return resp;
-  if (resp.ok !== undefined) return resp;  // already plain
-  if (Array.isArray(resp.content) && resp.content[0] && typeof resp.content[0].text === 'string') {
-    try { return JSON.parse(resp.content[0].text); } catch { return resp; }
+  if (resp == null || typeof resp !== 'object') {
+    writeDiag('unwrap-null-or-primitive', { type: typeof resp });
+    return null;
   }
-  return resp;
+
+  // Shape 3 — plain object already unwrapped
+  if (resp.ok !== undefined) return resp;
+
+  // Shape 1 — bare array of content blocks (current Claude Code)
+  if (Array.isArray(resp) && resp[0] && typeof resp[0].text === 'string') {
+    try { return JSON.parse(resp[0].text); }
+    catch (e) { writeDiag('unwrap-bare-array-parse-fail', { error: e.message, preview: resp[0].text.slice(0, 200) }); return null; }
+  }
+
+  // Shape 2 — wrapped object with content array (older Claude Code)
+  if (Array.isArray(resp.content) && resp.content[0] && typeof resp.content[0].text === 'string') {
+    try { return JSON.parse(resp.content[0].text); }
+    catch (e) { writeDiag('unwrap-wrapped-parse-fail', { error: e.message, preview: resp.content[0].text.slice(0, 200) }); return null; }
+  }
+
+  // Unknown shape — emit diagnostic so future format changes are observable
+  writeDiag('unwrap-unknown-shape', { keys: Object.keys(resp), isArray: Array.isArray(resp), preview: JSON.stringify(resp).slice(0, 300) });
+  return null;
 }
 
 async function run(raw) {
@@ -71,7 +103,8 @@ async function run(raw) {
     const toolName = data.tool_name || '';
     if (!SPAWN_CLASS.has(toolName)) { process.exit(0); return; }
 
-    const resp = unwrapMcpResponse(data.tool_response || {});
+    const resp = unwrapMcpResponse(data.tool_response);
+    if (!resp) { writeDiag('unwrap-failed', { tool: toolName }); process.exit(0); return; }
     if (!resp.ok) { process.exit(0); return; }
 
     const terminalIds = extractTerminalIds(resp);

@@ -1811,14 +1811,30 @@ export class ClawsServer {
       return { ok: true, worker: updated };
     }
 
+    if (cmd === 'monitors.register-intent') {
+      const r = req as import('./protocol').BaseRequest & { correlation_id?: string };
+      if (typeof r.correlation_id !== 'string' || !r.correlation_id) {
+        return { ok: false, error: 'monitors.register-intent:missing-correlation_id' };
+      }
+      this.peerRegistry.registerArmIntent(r.correlation_id);
+      return { ok: true };
+    }
+
     if (cmd === 'monitors.is-corr-armed') {
       const r = req as import('./protocol').BaseRequest & { correlation_id?: string };
       if (typeof r.correlation_id !== 'string' || !r.correlation_id) {
         return { ok: false, error: 'monitors.is-corr-armed:missing-correlation_id' };
       }
-      const armed = this.peerRegistry.isCorrIdArmed(r.correlation_id);
+      const claimed = this.peerRegistry.isCorrIdArmed(r.correlation_id);
+      const pending = this.peerRegistry.isCorrIdPending(r.correlation_id);
       const peerId = this.peerRegistry.getArmedPeerForCorrId(r.correlation_id) ?? null;
-      return { ok: true, armed, peerId };
+      return {
+        ok: true,
+        armed: claimed || pending,   // backward-compat: either intent OR execution counts as 'armed'
+        claimed,
+        pending,
+        peerId,
+      };
     }
 
     // ── Wave army commands ──────────────────────────────────────────────────

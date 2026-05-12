@@ -104,6 +104,7 @@ export function fingerprintPeer(peerName: string, role: string, nonce: string): 
 export class PeerRegistry {
   private readonly armedCorrelations = new Map<string, string>(); // corrId → peerId
   private readonly peerToCorr = new Map<string, string>();        // peerId → corrId
+  private readonly pendingArms = new Set<string>();               // corrIds: intent registered, execution not yet completed
   private traceLogPath: string | null = null;
 
   /** Set the path for the peer-registry trace log (called once at server start). */
@@ -133,6 +134,7 @@ export class PeerRegistry {
     this.removeMonitorClaim(peerId);
     this.armedCorrelations.set(correlationId, peerId);
     this.peerToCorr.set(peerId, correlationId);
+    this.pendingArms.delete(correlationId);   // graduation from intent to execution
   }
 
   /** Returns true if any live peer has declared a claim for this correlationId. */
@@ -140,7 +142,7 @@ export class PeerRegistry {
     return this.armedCorrelations.has(correlationId);
   }
 
-  /** Remove any claim held by peerId (called on peer disconnect). */
+  /** Remove any claim held by peerId (called on peer disconnect). Does NOT touch pendingArms. */
   removeMonitorClaim(peerId: string): void {
     const corrId = this.peerToCorr.get(peerId);
     if (corrId !== undefined) {
@@ -152,5 +154,20 @@ export class PeerRegistry {
   /** Return the peerId that claimed corrId, or undefined if unclaimed. */
   getArmedPeerForCorrId(correlationId: string): string | undefined {
     return this.armedCorrelations.get(correlationId);
+  }
+
+  /** Register intent to arm a monitor for corrId. Set server-side at spawn time. */
+  registerArmIntent(correlationId: string): void {
+    this.pendingArms.add(correlationId);
+  }
+
+  /** Remove intent without graduation (used only for cleanup / testing). */
+  removeArmIntent(correlationId: string): void {
+    this.pendingArms.delete(correlationId);
+  }
+
+  /** Returns true if intent was registered but execution (hello-claim) has not completed. */
+  isCorrIdPending(correlationId: string): boolean {
+    return this.pendingArms.has(correlationId);
   }
 }

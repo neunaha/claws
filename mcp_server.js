@@ -1008,6 +1008,7 @@ async function runBlockingWorker(sock, args) {
   try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _bCorrId, name: args.name || 'claws-worker' }); } catch (e) { /* non-fatal */ }
   const _bMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_bCorrId} --keep-alive-on ${termId}", description="claws monitor | term=${termId} | corr=${_bCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=7200000, persistent=false)`;
   try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _bCorrId, command: _bMonitorCmd }); } catch (e) { /* non-fatal */ }
+  try { await clawsRpc(sock, { cmd: 'monitors.register-intent', correlation_id: _bCorrId }); } catch (_e) { /* non-fatal */ }
   // T4: monitor-arm grace warning — 5s after spawn, warn if no monitor registered in lifecycle.
   const _bMonitorGraceMs = 5000;
   const _bTermIdStr = String(termId);
@@ -1022,16 +1023,22 @@ async function runBlockingWorker(sock, args) {
       }
     } catch (_e) { /* non-fatal */ }
   }, _bMonitorGraceMs);
-  // Layer 2 (Bug-6): 30s grace — verify corrId was declared by an armed stream-events.js process.
+  // Layer 2 (Bug-6 / Bug-13): 30s first check — true orphan vs arm-in-flight (two-stage state machine).
   setTimeout(async () => {
     const _l2f = (m) => { log(m); _logL2File(sock, m); };
     _l2f(`L2-DEBUG: callback-entered | site=runBlockingWorker | corrId=${_bCorrId} | termId=${_bTermIdStr}`);
     try {
       const armResp = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _bCorrId });
-      _l2f(`L2-DEBUG: rpc-result | site=runBlockingWorker | ok=${armResp.ok} | armed=${armResp.armed} | peerId=${armResp.peerId}`);
-      if (armResp.ok && !armResp.armed) {
-        log(`L2-warn: runBlockingWorker term=${_bTermIdStr} corr=${_bCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
-        _l2f(`L2-DEBUG: about-to-publish | site=runBlockingWorker | corrId=${_bCorrId}`);
+      _l2f(`L2-DEBUG: rpc-result | site=runBlockingWorker | ok=${armResp.ok} | armed=${armResp.armed} | claimed=${armResp.claimed} | pending=${armResp.pending} | peerId=${armResp.peerId}`);
+      if (!armResp.ok) return;  // RPC error, can't decide
+      if (armResp.claimed) {
+        _l2f(`L2-DEBUG: skip-publish | site=runBlockingWorker | reason=claimed | corrId=${_bCorrId}`);
+        return;
+      }
+      if (!armResp.pending) {
+        // True orphan — neither intent nor execution registered.
+        log(`L2-warn: runBlockingWorker term=${_bTermIdStr} corr=${_bCorrId} — no intent or execution at 30s. True orphan.`);
+        _l2f(`L2-DEBUG: about-to-publish | site=runBlockingWorker | corrId=${_bCorrId} | reason=no-intent`);
         try {
           await _pconnEnsureRegistered(sock);
           _l2f(`L2-DEBUG: pconn-registered | site=runBlockingWorker`);
@@ -1039,15 +1046,43 @@ async function runBlockingWorker(sock, args) {
             cmd: 'publish', protocol: 'claws/2',
             topic: 'system.monitor.unarmed',
             payload: { terminal_id: _bTermIdStr, correlation_id: _bCorrId, layer: 2,
-              detected_at: new Date().toISOString(), grace_ms: 30000 },
+              detected_at: new Date().toISOString(), grace_ms: 30000, reason: 'no-intent' },
           });
           _l2f(`L2-DEBUG: publish-succeeded | site=runBlockingWorker | corrId=${_bCorrId}`);
         } catch (_pe) {
           _l2f(`L2-DEBUG: publish-failed | site=runBlockingWorker | err=${_pe && _pe.message || _pe}`);
         }
-      } else {
-        _l2f(`L2-DEBUG: skip-publish | site=runBlockingWorker | reason=${armResp.ok ? 'armed=true' : 'rpc-not-ok'} | ok=${armResp.ok} | armed=${armResp.armed}`);
+        return;
       }
+      // pending=true, claimed=false — arm in flight. Re-check at +60s.
+      _l2f(`L2-DEBUG: arm-in-flight | site=runBlockingWorker | corrId=${_bCorrId} | scheduling-recheck-60s`);
+      setTimeout(async () => {
+        _l2f(`L2-DEBUG: recheck-entered | site=runBlockingWorker | corrId=${_bCorrId} | termId=${_bTermIdStr}`);
+        try {
+          const r2 = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _bCorrId });
+          _l2f(`L2-DEBUG: recheck-rpc-result | site=runBlockingWorker | ok=${r2.ok} | armed=${r2.armed} | claimed=${r2.claimed} | pending=${r2.pending} | peerId=${r2.peerId}`);
+          if (!r2.ok || r2.claimed) {
+            _l2f(`L2-DEBUG: recheck-skip | site=runBlockingWorker | reason=${!r2.ok ? 'rpc-error' : 'claimed'}`);
+            return;
+          }
+          const reason = r2.pending ? 'pending-timeout' : 'pending-vacated';
+          log(`L2-warn: runBlockingWorker term=${_bTermIdStr} corr=${_bCorrId} — ${reason} at 90s. Publishing unarmed.`);
+          _l2f(`L2-DEBUG: about-to-publish | site=runBlockingWorker | corrId=${_bCorrId} | reason=${reason}`);
+          try {
+            await _pconnEnsureRegistered(sock);
+            _l2f(`L2-DEBUG: pconn-registered | site=runBlockingWorker`);
+            await _pconnWrite({
+              cmd: 'publish', protocol: 'claws/2',
+              topic: 'system.monitor.unarmed',
+              payload: { terminal_id: _bTermIdStr, correlation_id: _bCorrId, layer: 2,
+                detected_at: new Date().toISOString(), grace_ms: 90000, reason },
+            });
+            _l2f(`L2-DEBUG: publish-succeeded | site=runBlockingWorker | corrId=${_bCorrId}`);
+          } catch (_pe) {
+            _l2f(`L2-DEBUG: publish-failed | site=runBlockingWorker | err=${_pe && _pe.message || _pe}`);
+          }
+        } catch (_e) { _l2f(`L2-DEBUG: recheck-error | site=runBlockingWorker | err=${_e && _e.message || _e}`); }
+      }, 60000);
     } catch (_e) { _l2f(`L2-DEBUG: outer-error | site=runBlockingWorker | err=${_e && _e.message || _e}`); }
   }, 30000);
 
@@ -1664,17 +1699,24 @@ async function _dispatchTool(name, args, sock) {
     // D+F: register spawn + monitor atomically before returning. Best-effort (lifecycle may not be in active mission).
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(_createTermId), correlationId: _createCorrId, name: args.name || 'claws' }); } catch (e) { /* lifecycle not initialized — non-fatal for claws_create */ }
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(_createTermId), correlationId: _createCorrId, command: _createMonitorCmd }); } catch (e) { /* non-fatal */ }
-    // Layer 2 (Bug-6): 30s grace — verify corrId was declared by an armed stream-events.js process.
+    try { await clawsRpc(sock, { cmd: 'monitors.register-intent', correlation_id: _createCorrId }); } catch (_e) { /* non-fatal */ }
+    // Layer 2 (Bug-6 / Bug-13): 30s first check — true orphan vs arm-in-flight (two-stage state machine).
     const _createTermIdStr = String(_createTermId);
     setTimeout(async () => {
       const _l2f = (m) => { log(m); _logL2File(sock, m); };
       _l2f(`L2-DEBUG: callback-entered | site=claws_create | corrId=${_createCorrId} | termId=${_createTermIdStr}`);
       try {
         const armResp = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _createCorrId });
-        _l2f(`L2-DEBUG: rpc-result | site=claws_create | ok=${armResp.ok} | armed=${armResp.armed} | peerId=${armResp.peerId}`);
-        if (armResp.ok && !armResp.armed) {
-          log(`L2-warn: claws_create term=${_createTermIdStr} corr=${_createCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
-          _l2f(`L2-DEBUG: about-to-publish | site=claws_create | corrId=${_createCorrId}`);
+        _l2f(`L2-DEBUG: rpc-result | site=claws_create | ok=${armResp.ok} | armed=${armResp.armed} | claimed=${armResp.claimed} | pending=${armResp.pending} | peerId=${armResp.peerId}`);
+        if (!armResp.ok) return;  // RPC error, can't decide
+        if (armResp.claimed) {
+          _l2f(`L2-DEBUG: skip-publish | site=claws_create | reason=claimed | corrId=${_createCorrId}`);
+          return;
+        }
+        if (!armResp.pending) {
+          // True orphan — neither intent nor execution registered.
+          log(`L2-warn: claws_create term=${_createTermIdStr} corr=${_createCorrId} — no intent or execution at 30s. True orphan.`);
+          _l2f(`L2-DEBUG: about-to-publish | site=claws_create | corrId=${_createCorrId} | reason=no-intent`);
           try {
             await _pconnEnsureRegistered(sock);
             _l2f(`L2-DEBUG: pconn-registered | site=claws_create`);
@@ -1682,15 +1724,43 @@ async function _dispatchTool(name, args, sock) {
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.monitor.unarmed',
               payload: { terminal_id: _createTermIdStr, correlation_id: _createCorrId, layer: 2,
-                detected_at: new Date().toISOString(), grace_ms: 30000 },
+                detected_at: new Date().toISOString(), grace_ms: 30000, reason: 'no-intent' },
             });
             _l2f(`L2-DEBUG: publish-succeeded | site=claws_create | corrId=${_createCorrId}`);
           } catch (_pe) {
             _l2f(`L2-DEBUG: publish-failed | site=claws_create | err=${_pe && _pe.message || _pe}`);
           }
-        } else {
-          _l2f(`L2-DEBUG: skip-publish | site=claws_create | reason=${armResp.ok ? 'armed=true' : 'rpc-not-ok'} | ok=${armResp.ok} | armed=${armResp.armed}`);
+          return;
         }
+        // pending=true, claimed=false — arm in flight. Re-check at +60s.
+        _l2f(`L2-DEBUG: arm-in-flight | site=claws_create | corrId=${_createCorrId} | scheduling-recheck-60s`);
+        setTimeout(async () => {
+          _l2f(`L2-DEBUG: recheck-entered | site=claws_create | corrId=${_createCorrId} | termId=${_createTermIdStr}`);
+          try {
+            const r2 = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _createCorrId });
+            _l2f(`L2-DEBUG: recheck-rpc-result | site=claws_create | ok=${r2.ok} | armed=${r2.armed} | claimed=${r2.claimed} | pending=${r2.pending} | peerId=${r2.peerId}`);
+            if (!r2.ok || r2.claimed) {
+              _l2f(`L2-DEBUG: recheck-skip | site=claws_create | reason=${!r2.ok ? 'rpc-error' : 'claimed'}`);
+              return;
+            }
+            const reason = r2.pending ? 'pending-timeout' : 'pending-vacated';
+            log(`L2-warn: claws_create term=${_createTermIdStr} corr=${_createCorrId} — ${reason} at 90s. Publishing unarmed.`);
+            _l2f(`L2-DEBUG: about-to-publish | site=claws_create | corrId=${_createCorrId} | reason=${reason}`);
+            try {
+              await _pconnEnsureRegistered(sock);
+              _l2f(`L2-DEBUG: pconn-registered | site=claws_create`);
+              await _pconnWrite({
+                cmd: 'publish', protocol: 'claws/2',
+                topic: 'system.monitor.unarmed',
+                payload: { terminal_id: _createTermIdStr, correlation_id: _createCorrId, layer: 2,
+                  detected_at: new Date().toISOString(), grace_ms: 90000, reason },
+              });
+              _l2f(`L2-DEBUG: publish-succeeded | site=claws_create | corrId=${_createCorrId}`);
+            } catch (_pe) {
+              _l2f(`L2-DEBUG: publish-failed | site=claws_create | err=${_pe && _pe.message || _pe}`);
+            }
+          } catch (_e) { _l2f(`L2-DEBUG: recheck-error | site=claws_create | err=${_e && _e.message || _e}`); }
+        }, 60000);
       } catch (_e) { _l2f(`L2-DEBUG: outer-error | site=claws_create | err=${_e && _e.message || _e}`); }
     }, 30000);
     const createResult = {
@@ -1993,6 +2063,7 @@ async function _dispatchTool(name, args, sock) {
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _fpCorrId, name: args.name || 'claws-worker' }); } catch (e) { /* non-fatal */ }
     const _fpMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_fpCorrId} --keep-alive-on ${termId}", description="claws monitor | term=${termId} | corr=${_fpCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=7200000, persistent=false)`;
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _fpCorrId, command: _fpMonitorCmd }); } catch (e) { /* non-fatal */ }
+    try { await clawsRpc(sock, { cmd: 'monitors.register-intent', correlation_id: _fpCorrId }); } catch (_e) { /* non-fatal */ }
     // T4: monitor-arm grace warning — 5s after spawn, warn if no monitor registered in lifecycle.
     const _fpMonitorGraceMs = 5000;
     const _fpTermIdStr = String(termId);
@@ -2007,16 +2078,22 @@ async function _dispatchTool(name, args, sock) {
         }
       } catch (_e) { /* non-fatal */ }
     }, _fpMonitorGraceMs);
-    // Layer 2 (Bug-6): 30s grace — verify corrId was declared by an armed stream-events.js process.
+    // Layer 2 (Bug-6 / Bug-13): 30s first check — true orphan vs arm-in-flight (two-stage state machine).
     setTimeout(async () => {
       const _l2f = (m) => { log(m); _logL2File(sock, m); };
       _l2f(`L2-DEBUG: callback-entered | site=claws_worker-fast-path | corrId=${_fpCorrId} | termId=${_fpTermIdStr}`);
       try {
         const armResp = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _fpCorrId });
-        _l2f(`L2-DEBUG: rpc-result | site=claws_worker-fast-path | ok=${armResp.ok} | armed=${armResp.armed} | peerId=${armResp.peerId}`);
-        if (armResp.ok && !armResp.armed) {
-          log(`L2-warn: claws_worker term=${_fpTermIdStr} corr=${_fpCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
-          _l2f(`L2-DEBUG: about-to-publish | site=claws_worker-fast-path | corrId=${_fpCorrId}`);
+        _l2f(`L2-DEBUG: rpc-result | site=claws_worker-fast-path | ok=${armResp.ok} | armed=${armResp.armed} | claimed=${armResp.claimed} | pending=${armResp.pending} | peerId=${armResp.peerId}`);
+        if (!armResp.ok) return;  // RPC error, can't decide
+        if (armResp.claimed) {
+          _l2f(`L2-DEBUG: skip-publish | site=claws_worker-fast-path | reason=claimed | corrId=${_fpCorrId}`);
+          return;
+        }
+        if (!armResp.pending) {
+          // True orphan — neither intent nor execution registered.
+          log(`L2-warn: claws_worker term=${_fpTermIdStr} corr=${_fpCorrId} — no intent or execution at 30s. True orphan.`);
+          _l2f(`L2-DEBUG: about-to-publish | site=claws_worker-fast-path | corrId=${_fpCorrId} | reason=no-intent`);
           try {
             await _pconnEnsureRegistered(sock);
             _l2f(`L2-DEBUG: pconn-registered | site=claws_worker-fast-path`);
@@ -2024,15 +2101,43 @@ async function _dispatchTool(name, args, sock) {
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.monitor.unarmed',
               payload: { terminal_id: _fpTermIdStr, correlation_id: _fpCorrId, layer: 2,
-                detected_at: new Date().toISOString(), grace_ms: 30000 },
+                detected_at: new Date().toISOString(), grace_ms: 30000, reason: 'no-intent' },
             });
             _l2f(`L2-DEBUG: publish-succeeded | site=claws_worker-fast-path | corrId=${_fpCorrId}`);
           } catch (_pe) {
             _l2f(`L2-DEBUG: publish-failed | site=claws_worker-fast-path | err=${_pe && _pe.message || _pe}`);
           }
-        } else {
-          _l2f(`L2-DEBUG: skip-publish | site=claws_worker-fast-path | reason=${armResp.ok ? 'armed=true' : 'rpc-not-ok'} | ok=${armResp.ok} | armed=${armResp.armed}`);
+          return;
         }
+        // pending=true, claimed=false — arm in flight. Re-check at +60s.
+        _l2f(`L2-DEBUG: arm-in-flight | site=claws_worker-fast-path | corrId=${_fpCorrId} | scheduling-recheck-60s`);
+        setTimeout(async () => {
+          _l2f(`L2-DEBUG: recheck-entered | site=claws_worker-fast-path | corrId=${_fpCorrId} | termId=${_fpTermIdStr}`);
+          try {
+            const r2 = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _fpCorrId });
+            _l2f(`L2-DEBUG: recheck-rpc-result | site=claws_worker-fast-path | ok=${r2.ok} | armed=${r2.armed} | claimed=${r2.claimed} | pending=${r2.pending} | peerId=${r2.peerId}`);
+            if (!r2.ok || r2.claimed) {
+              _l2f(`L2-DEBUG: recheck-skip | site=claws_worker-fast-path | reason=${!r2.ok ? 'rpc-error' : 'claimed'}`);
+              return;
+            }
+            const reason = r2.pending ? 'pending-timeout' : 'pending-vacated';
+            log(`L2-warn: claws_worker term=${_fpTermIdStr} corr=${_fpCorrId} — ${reason} at 90s. Publishing unarmed.`);
+            _l2f(`L2-DEBUG: about-to-publish | site=claws_worker-fast-path | corrId=${_fpCorrId} | reason=${reason}`);
+            try {
+              await _pconnEnsureRegistered(sock);
+              _l2f(`L2-DEBUG: pconn-registered | site=claws_worker-fast-path`);
+              await _pconnWrite({
+                cmd: 'publish', protocol: 'claws/2',
+                topic: 'system.monitor.unarmed',
+                payload: { terminal_id: _fpTermIdStr, correlation_id: _fpCorrId, layer: 2,
+                  detected_at: new Date().toISOString(), grace_ms: 90000, reason },
+              });
+              _l2f(`L2-DEBUG: publish-succeeded | site=claws_worker-fast-path | corrId=${_fpCorrId}`);
+            } catch (_pe) {
+              _l2f(`L2-DEBUG: publish-failed | site=claws_worker-fast-path | err=${_pe && _pe.message || _pe}`);
+            }
+          } catch (_e) { _l2f(`L2-DEBUG: recheck-error | site=claws_worker-fast-path | err=${_e && _e.message || _e}`); }
+        }, 60000);
       } catch (_e) { _l2f(`L2-DEBUG: outer-error | site=claws_worker-fast-path | err=${_e && _e.message || _e}`); }
     }, 30000);
 
@@ -2678,6 +2783,7 @@ async function _dispatchTool(name, args, sock) {
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-spawn', terminalId: String(termId), correlationId: _dswCorrId, name: workerName }); } catch (e) { /* non-fatal */ }
     const _dswMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_dswCorrId} --keep-alive-on ${termId}", description="claws monitor | term=${termId} | corr=${_dswCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=7200000, persistent=false)`;
     try { await clawsRpc(sock, { cmd: 'lifecycle.register-monitor', terminalId: String(termId), correlationId: _dswCorrId, command: _dswMonitorCmd }); } catch (e) { /* non-fatal */ }
+    try { await clawsRpc(sock, { cmd: 'monitors.register-intent', correlation_id: _dswCorrId }); } catch (_e) { /* non-fatal */ }
     // T4: monitor-arm grace warning — 5s after spawn, warn if no monitor registered in lifecycle.
     const _dswMonitorGraceMs = 5000;
     const _dswTermIdStr = String(termId);
@@ -2692,16 +2798,22 @@ async function _dispatchTool(name, args, sock) {
         }
       } catch (_e) { /* non-fatal */ }
     }, _dswMonitorGraceMs);
-    // Layer 2 (Bug-6): 30s grace — verify corrId was declared by an armed stream-events.js process.
+    // Layer 2 (Bug-6 / Bug-13): 30s first check — true orphan vs arm-in-flight (two-stage state machine).
     setTimeout(async () => {
       const _l2f = (m) => { log(m); _logL2File(sock, m); };
       _l2f(`L2-DEBUG: callback-entered | site=claws_dispatch_subworker | corrId=${_dswCorrId} | termId=${_dswTermIdStr}`);
       try {
         const armResp = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _dswCorrId });
-        _l2f(`L2-DEBUG: rpc-result | site=claws_dispatch_subworker | ok=${armResp.ok} | armed=${armResp.armed} | peerId=${armResp.peerId}`);
-        if (armResp.ok && !armResp.armed) {
-          log(`L2-warn: claws_dispatch_subworker term=${_dswTermIdStr} corr=${_dswCorrId} — corrId not armed by any Monitor peer after 30s. stream-events.js --wait may not be running. Use monitor_arm_command from spawn response.`);
-          _l2f(`L2-DEBUG: about-to-publish | site=claws_dispatch_subworker | corrId=${_dswCorrId}`);
+        _l2f(`L2-DEBUG: rpc-result | site=claws_dispatch_subworker | ok=${armResp.ok} | armed=${armResp.armed} | claimed=${armResp.claimed} | pending=${armResp.pending} | peerId=${armResp.peerId}`);
+        if (!armResp.ok) return;  // RPC error, can't decide
+        if (armResp.claimed) {
+          _l2f(`L2-DEBUG: skip-publish | site=claws_dispatch_subworker | reason=claimed | corrId=${_dswCorrId}`);
+          return;
+        }
+        if (!armResp.pending) {
+          // True orphan — neither intent nor execution registered.
+          log(`L2-warn: claws_dispatch_subworker term=${_dswTermIdStr} corr=${_dswCorrId} — no intent or execution at 30s. True orphan.`);
+          _l2f(`L2-DEBUG: about-to-publish | site=claws_dispatch_subworker | corrId=${_dswCorrId} | reason=no-intent`);
           try {
             await _pconnEnsureRegistered(sock);
             _l2f(`L2-DEBUG: pconn-registered | site=claws_dispatch_subworker`);
@@ -2709,15 +2821,43 @@ async function _dispatchTool(name, args, sock) {
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.monitor.unarmed',
               payload: { terminal_id: _dswTermIdStr, correlation_id: _dswCorrId, layer: 2,
-                detected_at: new Date().toISOString(), grace_ms: 30000 },
+                detected_at: new Date().toISOString(), grace_ms: 30000, reason: 'no-intent' },
             });
             _l2f(`L2-DEBUG: publish-succeeded | site=claws_dispatch_subworker | corrId=${_dswCorrId}`);
           } catch (_pe) {
             _l2f(`L2-DEBUG: publish-failed | site=claws_dispatch_subworker | err=${_pe && _pe.message || _pe}`);
           }
-        } else {
-          _l2f(`L2-DEBUG: skip-publish | site=claws_dispatch_subworker | reason=${armResp.ok ? 'armed=true' : 'rpc-not-ok'} | ok=${armResp.ok} | armed=${armResp.armed}`);
+          return;
         }
+        // pending=true, claimed=false — arm in flight. Re-check at +60s.
+        _l2f(`L2-DEBUG: arm-in-flight | site=claws_dispatch_subworker | corrId=${_dswCorrId} | scheduling-recheck-60s`);
+        setTimeout(async () => {
+          _l2f(`L2-DEBUG: recheck-entered | site=claws_dispatch_subworker | corrId=${_dswCorrId} | termId=${_dswTermIdStr}`);
+          try {
+            const r2 = await clawsRpc(sock, { cmd: 'monitors.is-corr-armed', correlation_id: _dswCorrId });
+            _l2f(`L2-DEBUG: recheck-rpc-result | site=claws_dispatch_subworker | ok=${r2.ok} | armed=${r2.armed} | claimed=${r2.claimed} | pending=${r2.pending} | peerId=${r2.peerId}`);
+            if (!r2.ok || r2.claimed) {
+              _l2f(`L2-DEBUG: recheck-skip | site=claws_dispatch_subworker | reason=${!r2.ok ? 'rpc-error' : 'claimed'}`);
+              return;
+            }
+            const reason = r2.pending ? 'pending-timeout' : 'pending-vacated';
+            log(`L2-warn: claws_dispatch_subworker term=${_dswTermIdStr} corr=${_dswCorrId} — ${reason} at 90s. Publishing unarmed.`);
+            _l2f(`L2-DEBUG: about-to-publish | site=claws_dispatch_subworker | corrId=${_dswCorrId} | reason=${reason}`);
+            try {
+              await _pconnEnsureRegistered(sock);
+              _l2f(`L2-DEBUG: pconn-registered | site=claws_dispatch_subworker`);
+              await _pconnWrite({
+                cmd: 'publish', protocol: 'claws/2',
+                topic: 'system.monitor.unarmed',
+                payload: { terminal_id: _dswTermIdStr, correlation_id: _dswCorrId, layer: 2,
+                  detected_at: new Date().toISOString(), grace_ms: 90000, reason },
+              });
+              _l2f(`L2-DEBUG: publish-succeeded | site=claws_dispatch_subworker | corrId=${_dswCorrId}`);
+            } catch (_pe) {
+              _l2f(`L2-DEBUG: publish-failed | site=claws_dispatch_subworker | err=${_pe && _pe.message || _pe}`);
+            }
+          } catch (_e) { _l2f(`L2-DEBUG: recheck-error | site=claws_dispatch_subworker | err=${_e && _e.message || _e}`); }
+        }, 60000);
       } catch (_e) { _l2f(`L2-DEBUG: outer-error | site=claws_dispatch_subworker | err=${_e && _e.message || _e}`); }
     }, 30000);
 

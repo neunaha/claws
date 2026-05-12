@@ -276,6 +276,117 @@ function check(name, fn) {
     if (r.ok) throw new Error('expected ok:false for missing correlation_id');
   });
 
+  // ── State-machine tests (Bug-13 two-state arm: intent vs execution) ────────
+
+  // ── SM-1. register-intent: pending=true, armed=true, claimed=false ────────
+  const corrIdSm1 = crypto.randomUUID();
+  const e = connect();
+  await new Promise((resolve) => e.socket.on('connect', resolve));
+
+  e.socket.write(JSON.stringify({
+    id: 40, cmd: 'monitors.register-intent', correlation_id: corrIdSm1,
+  }) + '\n');
+  await waitFor(() => e.responses.has(40), 2000);
+
+  check('monitors.register-intent with valid corrId returns ok:true', () => {
+    const r = e.responses.get(40);
+    if (!r || !r.ok) throw new Error(`expected ok:true, got ${JSON.stringify(r)}`);
+  });
+
+  e.socket.write(JSON.stringify({
+    id: 41, cmd: 'monitors.is-corr-armed', correlation_id: corrIdSm1,
+  }) + '\n');
+  await waitFor(() => e.responses.has(41), 2000);
+
+  check('after register-intent: armed=true, pending=true, claimed=false', () => {
+    const r = e.responses.get(41);
+    if (!r || !r.ok) throw new Error(`RPC failed: ${JSON.stringify(r)}`);
+    if (r.armed !== true) throw new Error(`expected armed=true, got ${r.armed}`);
+    if (r.pending !== true) throw new Error(`expected pending=true, got ${r.pending}`);
+    if (r.claimed !== false) throw new Error(`expected claimed=false, got ${r.claimed}`);
+    if (r.peerId !== null) throw new Error(`expected peerId=null, got ${r.peerId}`);
+  });
+
+  // ── SM-2. register-intent then hello-claim: graduation to claimed ─────────
+  const corrIdSm2 = crypto.randomUUID();
+
+  e.socket.write(JSON.stringify({
+    id: 42, cmd: 'monitors.register-intent', correlation_id: corrIdSm2,
+  }) + '\n');
+  await waitFor(() => e.responses.has(42), 2000);
+
+  // Now connect as a monitor and claim via hello
+  const f = connect();
+  await new Promise((resolve) => f.socket.on('connect', resolve));
+
+  f.socket.write(JSON.stringify({
+    id: 50, cmd: 'hello', protocol: 'claws/2',
+    role: 'observer', peerName: 'monitor-sm2',
+    monitorCorrelationId: corrIdSm2,
+  }) + '\n');
+  await waitFor(() => f.responses.has(50), 2000);
+
+  e.socket.write(JSON.stringify({
+    id: 43, cmd: 'monitors.is-corr-armed', correlation_id: corrIdSm2,
+  }) + '\n');
+  await waitFor(() => e.responses.has(43), 2000);
+
+  check('after register-intent + hello-claim: pending=false, claimed=true, armed=true', () => {
+    const r = e.responses.get(43);
+    if (!r || !r.ok) throw new Error(`RPC failed: ${JSON.stringify(r)}`);
+    if (r.armed !== true) throw new Error(`expected armed=true, got ${r.armed}`);
+    if (r.pending !== false) throw new Error(`expected pending=false after graduation, got ${r.pending}`);
+    if (r.claimed !== true) throw new Error(`expected claimed=true after hello, got ${r.claimed}`);
+    if (typeof r.peerId !== 'string') throw new Error(`expected peerId string, got ${r.peerId}`);
+  });
+
+  // ── SM-3. monitors.register-intent with missing corrId returns ok:false ───
+  e.socket.write(JSON.stringify({
+    id: 44, cmd: 'monitors.register-intent',
+  }) + '\n');
+  await waitFor(() => e.responses.has(44), 2000);
+
+  check('monitors.register-intent without correlation_id returns ok:false', () => {
+    const r = e.responses.get(44);
+    if (!r) throw new Error('no response');
+    if (r.ok) throw new Error('expected ok:false for missing correlation_id');
+  });
+
+  // ── SM-4. disconnect removes claim but NOT pending (corrId returns to neither state) ──
+  // Use corrIdSm2 where we did register-intent + hello-claim, then disconnect f
+  f.socket.destroy();
+  await new Promise((r) => setTimeout(r, 200));
+
+  e.socket.write(JSON.stringify({
+    id: 45, cmd: 'monitors.is-corr-armed', correlation_id: corrIdSm2,
+  }) + '\n');
+  await waitFor(() => e.responses.has(45), 2000);
+
+  check('after hello-claim + disconnect: pending=false, claimed=false, armed=false', () => {
+    const r = e.responses.get(45);
+    if (!r || !r.ok) throw new Error(`RPC failed: ${JSON.stringify(r)}`);
+    if (r.armed !== false) throw new Error(`expected armed=false after disconnect, got ${r.armed}`);
+    if (r.pending !== false) throw new Error(`expected pending=false (was graduated, not restored), got ${r.pending}`);
+    if (r.claimed !== false) throw new Error(`expected claimed=false after disconnect, got ${r.claimed}`);
+  });
+
+  // ── SM-5. intent-only corrId (never claimed) has armed=true before any hello ─
+  // Already tested by SM-1; additionally verify fresh corrId with no intent → armed=false
+  const corrIdSm5 = crypto.randomUUID();
+  e.socket.write(JSON.stringify({
+    id: 46, cmd: 'monitors.is-corr-armed', correlation_id: corrIdSm5,
+  }) + '\n');
+  await waitFor(() => e.responses.has(46), 2000);
+
+  check('fresh corrId with no intent: armed=false, pending=false, claimed=false', () => {
+    const r = e.responses.get(46);
+    if (!r || !r.ok) throw new Error(`RPC failed: ${JSON.stringify(r)}`);
+    if (r.armed !== false) throw new Error(`expected armed=false for fresh corrId, got ${r.armed}`);
+    if (r.pending !== false) throw new Error(`expected pending=false, got ${r.pending}`);
+    if (r.claimed !== false) throw new Error(`expected claimed=false, got ${r.claimed}`);
+  });
+
+  e.socket.destroy();
   a.socket.destroy();
   b.socket.destroy();
   d.socket.destroy();
