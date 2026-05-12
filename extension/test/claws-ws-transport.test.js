@@ -239,7 +239,7 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
   // ─── Test 3: Unix socket + WebSocket share peer registry ─────────────────
   await check('Unix orchestrator visible to WebSocket worker', async () => {
     // Register orchestrator on Unix socket — keep connection alive so the peer
-    // stays registered while we check orchestratorPresent from WS.
+    // stays registered while we check rootOrchestratorPresent from WS.
     const { resp: unixResp, socket: orchSocket } = await unixHelloKeepAlive(
       { id: 30, cmd: 'hello', protocol: 'claws/2', role: 'orchestrator', peerName: 'unix-orch-shared' },
     );
