@@ -1744,14 +1744,31 @@ async function _pconnEnsureRegistered(sockPath) {
         role: 'orchestrator', peerName: 'mcp-orchestrator',
       }, 5000).finally(() => { _helloInFlight = null; });
     }
-    const hr = await _helloInFlight;
+    let hr = await _helloInFlight;
     log(`PCONN-DEBUG: hello-ack | ok=${hr && hr.ok} | peerId=${hr && hr.peerId} | error=${hr && hr.error}`);
+    // Retry-on-already-registered: extension may still have the old peer in its Map
+    // if the closed socket's FIN hasn't been processed by its event loop yet.
+    // Exponential backoff gives the extension time to delete the stale peer before each retry.
+    let _helloRetries = 0;
+    while (hr && hr.ok === false && /already registered/i.test(hr.error || '') && _helloRetries < 3) {
+      _helloRetries++;
+      const _retryDelay = 100 * Math.pow(2, _helloRetries - 1); // 100, 200, 400 ms
+      log(`PCONN-DEBUG: hello-retry | attempt=${_helloRetries} | delay=${_retryDelay}ms | last_error=${hr.error}`);
+      await new Promise(r => setTimeout(r, _retryDelay));
+      if (!_helloInFlight) {
+        _helloInFlight = _pconnWrite({
+          cmd: 'hello', protocol: 'claws/2', role: 'orchestrator', peerName: 'mcp-orchestrator',
+        }, 5000).finally(() => { _helloInFlight = null; });
+      }
+      hr = await _helloInFlight;
+      log(`PCONN-DEBUG: hello-ack | ok=${hr && hr.ok} | peerId=${hr && hr.peerId} | error=${hr && hr.error}`);
+    }
     // Verify hello actually succeeded — silent failure is the root cause of Bug 12.
     // If the extension returned ok:false (e.g., 'orchestrator already registered' race),
     // throw so callers see the failure instead of proceeding with peerId=null.
     if (!hr || hr.ok !== true) {
       const err = (hr && hr.error) || 'no response';
-      throw new Error(`pconn hello failed: ${err}`);
+      throw new Error(`pconn hello failed: ${err}${_helloRetries > 0 ? ` (after ${_helloRetries} retries)` : ''}`);
     }
     // Capture identity and bind it to the current socket.
     _pconn.peerId = hr.peerId;

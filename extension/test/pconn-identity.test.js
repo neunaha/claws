@@ -53,7 +53,7 @@ async function waitFor(fn, ms) {
 // Tracks hello and publish frame counts. hello/publish responders are swappable
 // per-test so we can simulate ok:false responses.
 class FakeClawsServer {
-  constructor({ helloOk = true, publishOk = true } = {}) {
+  constructor({ helloOk = true, publishOk = true, orchestratorHelloSeq = null } = {}) {
     // All hellos (any role)
     this.helloCount = 0;
     // Only hellos from role='orchestrator' — this is the _pconn path we're testing.
@@ -64,6 +64,10 @@ class FakeClawsServer {
     this.connections = [];
     this._helloOk = helloOk;
     this._publishOk = publishOk;
+    // Per-call orchestrator hello response sequence. Array of booleans (true=ok, false=fail).
+    // If the array is shorter than the call count, the last element is repeated.
+    // null means use _helloOk for all calls.
+    this._orchestratorHelloSeq = orchestratorHelloSeq;
     this._nextPeerId = 1;
     this.server = null;
   }
@@ -89,7 +93,15 @@ class FakeClawsServer {
                 if (req.role === 'orchestrator') this.orchestratorHelloCount++;
                 // Return ok:false only for orchestrator hellos (matches real extension behavior).
                 const isOrchestrator = req.role === 'orchestrator';
-                const ok = isOrchestrator ? this._helloOk : true;
+                let ok;
+                if (isOrchestrator && this._orchestratorHelloSeq !== null) {
+                  const seqIdx = this.orchestratorHelloCount - 1;
+                  ok = seqIdx < this._orchestratorHelloSeq.length
+                    ? this._orchestratorHelloSeq[seqIdx]
+                    : this._orchestratorHelloSeq[this._orchestratorHelloSeq.length - 1];
+                } else {
+                  ok = isOrchestrator ? this._helloOk : true;
+                }
                 const resp = ok
                   ? { ok: true, rid, peerId: `p_${this._nextPeerId++}`, serverCapabilities: [] }
                   : { ok: false, rid, error: 'orchestrator already registered' };
@@ -357,6 +369,80 @@ function check(name, fn) {
       // Publish ok:false causes a throw; the catch suppresses it. But we should NOT see
       // a second hello attempt as a result of the failed publish.
       if (srv.orchestratorHelloCount !== 1) throw new Error(`expected orchestratorHelloCount=1, got ${srv.orchestratorHelloCount}`);
+    });
+
+    mcp.close();
+    await srv.close();
+    try { fs.rmSync(tmp.dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+
+  // ── Test 6: Retry-on-already-registered (positive) — 2 failures then success ─
+  // Simulates the Bug 12 race: extension still has the old peer in its Map on the
+  // first 2 hellos, then clears it so the 3rd hello succeeds.
+  {
+    const tmp = makeTmp();
+    // Seq: [false, false, true] → first 2 orchestrator hellos fail, 3rd succeeds.
+    const srv = new FakeClawsServer({ orchestratorHelloSeq: [false, false, true] });
+    await srv.listen(tmp.sockPath);
+    const mcp = new McpSession(tmp.sockPath);
+    await mcp.init();
+
+    // Allow extra time for 2 retry delays (100ms + 200ms = 300ms overhead).
+    const resp = await mcp.callTool('claws_done', {}, 10000);
+    await sleep(300);
+
+    check('retry-positive: 3 orchestrator hellos sent (1 initial + 2 retries)', () => {
+      if (srv.orchestratorHelloCount !== 3)
+        throw new Error(`expected orchestratorHelloCount=3, got ${srv.orchestratorHelloCount}`);
+    });
+    check('retry-positive: system.worker.completed published after retry success', () => {
+      if (!srv.publishedTopics.includes('system.worker.completed'))
+        throw new Error(`expected system.worker.completed, got [${srv.publishedTopics.join(', ')}]`);
+    });
+    check('retry-positive: claws_done returns ok:true', () => {
+      if (!resp.result) throw new Error(`no result: ${JSON.stringify(resp)}`);
+      if (resp.result.isError) throw new Error(`unexpected error: ${resp.result.content[0].text}`);
+      const d = JSON.parse(resp.result.content[0].text);
+      if (d.ok !== true) throw new Error(`expected ok:true, got ${JSON.stringify(d)}`);
+    });
+
+    mcp.close();
+    await srv.close();
+    try { fs.rmSync(tmp.dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+
+  // ── Test 7: Retry-on-already-registered (negative) — all hellos fail, exhausted ─
+  // Simulates the race persisting through all retries. Expects:
+  //   - 4 total orchestrator hellos (1 initial + 3 retries)
+  //   - 0 publish attempts (throw before publish)
+  //   - claws_done still returns ok:true (non-fatal suppression)
+  {
+    const tmp = makeTmp();
+    // Seq: all false (last element repeated for any call beyond the array length).
+    const srv = new FakeClawsServer({ orchestratorHelloSeq: [false, false, false, false] });
+    await srv.listen(tmp.sockPath);
+    const mcp = new McpSession(tmp.sockPath);
+    await mcp.init();
+
+    // Allow extra time for 3 retry delays (100ms + 200ms + 400ms = 700ms overhead).
+    const resp = await mcp.callTool('claws_done', {}, 12000);
+    await sleep(300);
+
+    check('retry-exhausted: 12 orchestrator hellos sent (3 handleTool calls × 4 attempts each)', () => {
+      // handleTool calls _pconnEnsureRegistered 3 times: pre-invoke, inside claws_done, post-invoke.
+      // Each call: 1 initial + 3 retries = 4 attempts. Total: 3 × 4 = 12.
+      if (srv.orchestratorHelloCount !== 12)
+        throw new Error(`expected orchestratorHelloCount=12 (3 calls × 4 attempts each), got ${srv.orchestratorHelloCount}`);
+    });
+    check('retry-exhausted: no publish attempted after all retries fail', () => {
+      if (srv.publishCount !== 0)
+        throw new Error(`expected publishCount=0, got ${srv.publishCount}`);
+    });
+    check('retry-exhausted: claws_done still returns ok:true (non-fatal suppression)', () => {
+      if (!resp.result) throw new Error(`no result: ${JSON.stringify(resp)}`);
+      if (resp.result.isError) throw new Error(`unexpected MCP error: ${resp.result.content[0].text}`);
+      const d = JSON.parse(resp.result.content[0].text);
+      if (d.ok !== true) throw new Error(`expected ok:true, got ${JSON.stringify(d)}`);
     });
 
     mcp.close();
