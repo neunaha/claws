@@ -1764,7 +1764,7 @@ async function _pconnEnsureRegistered(sockPath) {
       log(`PCONN-DEBUG: hello-ack | ok=${hr && hr.ok} | peerId=${hr && hr.peerId} | error=${hr && hr.error}`);
     }
     // Verify hello actually succeeded — silent failure is the root cause of Bug 12.
-    // If the extension returned ok:false (e.g., 'orchestrator already registered' race),
+    // If the extension returned ok:false (e.g., 'root orchestrator already registered' race),
     // throw so callers see the failure instead of proceeding with peerId=null.
     if (!hr || hr.ok !== true) {
       const err = (hr && hr.error) || 'no response';
@@ -2077,7 +2077,7 @@ async function _dispatchTool(name, args, sock) {
    * subscribe/publish/task/broadcast call so the server can allocate a
    * stable peerId for this connection.
    * Role requirements: none (any role may hello).
-   * Returns: peerId, serverCapabilities, orchestratorPresent.
+   * Returns: peerId, serverCapabilities, rootOrchestratorPresent.
    */
   if (name === 'claws_hello') {
     // Connect the persistent socket if not already connected. All subsequent
@@ -2095,6 +2095,8 @@ async function _dispatchTool(name, args, sock) {
       peerName: args.peerName,
       terminalId: args.terminalId,
       capabilities: Array.isArray(args.capabilities) ? args.capabilities : undefined,
+      waveId: args.waveId || undefined,
+      subWorkerRole: args.subWorkerRole || undefined,
     });
     if (!resp.ok) return toolError(`ERROR: ${resp.error || 'hello failed'}`);
     // Cache identity so we can re-register after a socket reconnect.
@@ -2106,7 +2108,7 @@ async function _dispatchTool(name, args, sock) {
     const out = {
       peerId: resp.peerId,
       serverCapabilities: resp.serverCapabilities || [],
-      orchestratorPresent: !!resp.orchestratorPresent,
+      rootOrchestratorPresent: !!resp.rootOrchestratorPresent,
     };
     return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] };
   }

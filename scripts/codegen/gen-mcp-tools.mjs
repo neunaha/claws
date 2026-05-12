@@ -193,10 +193,12 @@ export default async function genMcpTools(_bundlePath, repoRoot, extRoot) {
     })),
 
     tool('claws_hello', z.object({
-      role:         z.enum(['orchestrator', 'worker', 'observer']).describe('Peer role. Orchestrator may assign/cancel/broadcast; worker may publish status and claim tasks; observer is read-only.'),
-      peerName:     z.string().describe("Human label for this peer (e.g. 'sdlc-lead', 'test-worker-1')."),
-      terminalId:   z.string().describe('Optional: associate this peer with a specific terminal id so the server can correlate logs and do inject fan-out.').optional(),
-      capabilities: z.array(z.string()).describe('Optional list of capability strings the peer advertises (server intersects with its own).').optional(),
+      role:            z.enum(['orchestrator', 'worker', 'observer']).describe('Peer role. Orchestrator may assign/cancel/broadcast; worker may publish status and claim tasks; observer is read-only.'),
+      peerName:        z.string().describe("Human label for this peer (e.g. 'sdlc-lead', 'test-worker-1')."),
+      terminalId:      z.string().describe('Optional: associate this peer with a specific terminal id so the server can correlate logs and do inject fan-out.').optional(),
+      capabilities:    z.array(z.string()).describe('Optional list of capability strings the peer advertises (server intersects with its own).').optional(),
+      waveId:          z.string().describe('Wave id this peer belongs to (wave army protocol). Required when registering as a wave LEAD with role=orchestrator so the server scopes the singleton guard to root peers only.').optional(),
+      subWorkerRole:   z.string().describe("Sub-worker role within the wave (e.g. 'lead', 'tester', 'reviewer'). Used with waveId for wave army heartbeat tracking.").optional(),
     })),
 
     tool('claws_subscribe', z.object({

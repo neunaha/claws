@@ -379,6 +379,14 @@
             "type": "string"
           },
           "description": "Optional list of capability strings the peer advertises (server intersects with its own)."
+        },
+        "waveId": {
+          "type": "string",
+          "description": "Wave id this peer belongs to (wave army protocol). Required when registering as a wave LEAD with role=orchestrator so the server scopes the singleton guard to root peers only."
+        },
+        "subWorkerRole": {
+          "type": "string",
+          "description": "Sub-worker role within the wave (e.g. 'lead', 'tester', 'reviewer'). Used with waveId for wave army heartbeat tracking."
         }
       },
       "required": [

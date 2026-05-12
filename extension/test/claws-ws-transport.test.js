@@ -246,14 +246,14 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
     assert(unixResp.ok === true, `unix orchestrator hello failed: ${unixResp.error}`);
 
     try {
-      // Worker on WebSocket should see orchestratorPresent=true
+      // Worker on WebSocket should see rootOrchestratorPresent=true
       const { responses } = await wsExchange(
         [{ id: 31, cmd: 'hello', protocol: 'claws/2', role: 'worker', peerName: 'ws-worker-shared' }],
         1,
       );
       const resp = responses[0];
       assert(resp.ok === true, `ws worker hello failed: ${resp.error}`);
-      assert(resp.orchestratorPresent === true, `expected orchestratorPresent:true, got ${resp.orchestratorPresent}`);
+      assert(resp.rootOrchestratorPresent === true, `expected rootOrchestratorPresent:true, got ${resp.rootOrchestratorPresent}`);
     } finally {
       orchSocket.destroy();
     }

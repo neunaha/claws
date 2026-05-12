@@ -132,7 +132,9 @@ export interface IntrospectRequest extends BaseRequest {
  * claws/2 handshake. Must be the first frame a peer sends on a new
  * connection when speaking the v2 protocol. Server replies with the
  * allocated peerId and its capability set. A second `hello` with
- * `role: 'orchestrator'` while one is already registered is rejected.
+ * `role: 'orchestrator'` and no `waveId` while a root orchestrator is
+ * already registered is rejected. Wave LEADs may register as orchestrator
+ * by including a `waveId` — the singleton guard is scoped to root peers only.
  */
 export interface HelloRequest extends BaseRequest {
   cmd: 'hello';

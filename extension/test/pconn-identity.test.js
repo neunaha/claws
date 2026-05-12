@@ -104,7 +104,7 @@ class FakeClawsServer {
                 }
                 const resp = ok
                   ? { ok: true, rid, peerId: `p_${this._nextPeerId++}`, serverCapabilities: [] }
-                  : { ok: false, rid, error: 'orchestrator already registered' };
+                  : { ok: false, rid, error: 'root orchestrator already registered' };
                 conn.write(JSON.stringify(resp) + '\n');
               } else if (req.cmd === 'publish') {
                 this.publishCount++;

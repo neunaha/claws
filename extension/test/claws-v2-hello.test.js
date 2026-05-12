@@ -158,12 +158,30 @@ function check(name, fn) {
     const r = b.responses.get(2);
     if (!r) throw new Error('no response');
     if (r.ok) throw new Error('expected ok:false');
-    if (!/orchestrator already registered/.test(String(r.error || ''))) {
+    if (!/root orchestrator already registered/.test(String(r.error || ''))) {
       throw new Error(`wrong error: ${r.error}`);
     }
   });
 
-  // ── 3. hello without protocol field is rejected ──────────────────────
+  // ── 3. wave orchestrator (with waveId) is allowed alongside root orchestrator ──
+  const d = connect();
+  await new Promise((resolve) => d.socket.on('connect', resolve));
+
+  d.socket.write(JSON.stringify({
+    id: 30, cmd: 'hello', protocol: 'claws/2',
+    role: 'orchestrator', peerName: 'test-wave-lead', waveId: 'test-wave',
+  }) + '\n');
+
+  await waitFor(() => d.responses.has(30), 2000);
+
+  check('wave orchestrator with waveId allowed alongside root orchestrator', () => {
+    const r = d.responses.get(30);
+    if (!r) throw new Error('no response');
+    if (!r.ok) throw new Error(`expected ok:true but got: ${r.error}`);
+    if (typeof r.peerId !== 'string') throw new Error(`no peerId: ${JSON.stringify(r)}`);
+  });
+
+  // ── 5. hello without protocol field is rejected ──────────────────────
   b.socket.write(JSON.stringify({
     id: 3, cmd: 'hello', role: 'worker', peerName: 'no-proto',
   }) + '\n');
@@ -176,7 +194,7 @@ function check(name, fn) {
     if (r.ok) throw new Error('expected ok:false');
   });
 
-  // ── 4. ping returns ok + serverTime ──────────────────────────────────
+  // ── 6. ping returns ok + serverTime ──────────────────────────────────
   b.socket.write(JSON.stringify({ id: 4, cmd: 'ping' }) + '\n');
   await waitFor(() => b.responses.has(4), 2000);
 
@@ -186,7 +204,7 @@ function check(name, fn) {
     if (typeof r.serverTime !== 'number') throw new Error(`serverTime not a number: ${r.serverTime}`);
   });
 
-  // ── 5. claws/1 client (no hello) can still use list — backward compat ─
+  // ── 7. claws/1 client (no hello) can still use list — backward compat ─
   const c = connect();
   await new Promise((resolve) => c.socket.on('connect', resolve));
 
@@ -202,6 +220,7 @@ function check(name, fn) {
   a.socket.destroy();
   b.socket.destroy();
   c.socket.destroy();
+  d.socket.destroy();
   await ext.deactivate();
   await new Promise((r) => setTimeout(r, 100));
 
