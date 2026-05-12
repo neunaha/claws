@@ -7,6 +7,7 @@
 
 import * as net from 'net';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
 export { matchTopic } from './topic-utils';
 
 /**
@@ -103,6 +104,29 @@ export function fingerprintPeer(peerName: string, role: string, nonce: string): 
 export class PeerRegistry {
   private readonly armedCorrelations = new Map<string, string>(); // corrId → peerId
   private readonly peerToCorr = new Map<string, string>();        // peerId → corrId
+  private traceLogPath: string | null = null;
+
+  /** Set the path for the peer-registry trace log (called once at server start). */
+  setTraceLogPath(p: string): void { this.traceLogPath = p; }
+
+  /** Append a structured trace line to .claws/peer-registry-trace.log. */
+  private trace(event: string, peerId: string, extra?: Record<string, unknown>): void {
+    if (!this.traceLogPath) return;
+    try {
+      const line = JSON.stringify({ ts: new Date().toISOString(), event, peerId, ...extra }) + '\n';
+      fs.appendFileSync(this.traceLogPath, line);
+    } catch { /* non-fatal */ }
+  }
+
+  /** Notify registry that a peer was registered (called from ClawsServer hello handler). */
+  notifyRegister(peerId: string, role: string, extra?: { fingerprint?: string; monitorCorrelationId?: string }): void {
+    this.trace('register', peerId, { role, ...extra });
+  }
+
+  /** Notify registry that a peer was unregistered (called from ClawsServer handleDisconnect). */
+  notifyUnregister(peerId: string, reason: string): void {
+    this.trace('unregister', peerId, { reason });
+  }
 
   /** Record that peerId is the Monitor process for correlationId. One peer → one claim. */
   recordMonitorClaim(peerId: string, correlationId: string): void {

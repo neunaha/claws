@@ -403,6 +403,10 @@ export class ClawsServer {
       })
       .then(() => this.bind(this.socketPath!))
       .then(() => {
+        // Bug-12 investigation: enable peer-registry trace log.
+        this.peerRegistry.setTraceLogPath(path.join(this.opts.workspaceRoot, '.claws', 'peer-registry-trace.log'));
+      })
+      .then(() => {
         const intervalMs = this.getConfig().heartbeatIntervalMs;
         if (intervalMs > 0) {
           this.heartbeatTimer = setInterval(() => {
@@ -721,6 +725,7 @@ export class ClawsServer {
     }
     // Bug-6 Layer 2: remove any armedCorrelations claim held by this peer.
     this.peerRegistry.removeMonitorClaim(peerId);
+    this.peerRegistry.notifyUnregister(peerId, 'socket-close');
     // Notify wave registry so it can cancel violation timers for this peer.
     if (peerId) this.waveRegistry.handlePeerDisconnect(peerId);
     // Clean up backpressure state for the disconnected peer.
@@ -1285,6 +1290,7 @@ export class ClawsServer {
       this.socketToPeer.set(ctx.socket, peerId);
       ctx.setPeerId(peerId);
       ctx.setNegotiatedProtocol('claws/2');
+      this.peerRegistry.notifyRegister(peerId, peer.role, { fingerprint, monitorCorrelationId: r.monitorCorrelationId });
 
       // Re-add restored subscriptions to the subscription index.
       if (tombstone) {

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.14] - 2026-05-12
 
 ### Changed
+- **Bug 12 PCONN/peer-registry debug instrumentation** — `PeerRegistry` gains `notifyRegister()` / `notifyUnregister()` methods that write structured JSON to `.claws/peer-registry-trace.log` on every peer lifecycle event. `ClawsServer` wires these at hello and `handleDisconnect`. `mcp_server.js` gains per-socket `_pconnSocketSeq` IDs and `PCONN-DEBUG:` log lines at every connect attempt, hello send/ack, write start/response, and reconnect cycle, plus a `write-failed-silently` log when `resp.ok === false`. Investigation-only; no logic changes.
 - **Bug 13 arm-race observability** — `stream-events.js --wait` now logs a stderr line when the `monitorCorrelationId` hello is dispatched (`hello sent | corrId=… | t=…`). Permanent observability trace; no logic change. Enables comparing arm-dispatch time against the L2 30s window during future arm-race investigations. Root cause documented in `.local/plans/v0714/investigations/bug13-arm-race.md`.
 
 ## [0.7.14] - 2026-05-11

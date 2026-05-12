@@ -211,6 +211,7 @@ const _eventBuffer = {
 };
 
 let _pconnConnecting = null; // Promise | null — guards concurrent connect attempts
+let _pconnSocketSeq  = 0;   // PCONN-DEBUG: monotonic socket ID for tracing socket identity
 
 // Wave D — terminal IDs (strings) for which system.worker.terminated was received.
 // Populated by _pconnHandleData; read by detectCompletion as 4th completion signal.
@@ -336,18 +337,21 @@ function _pconnHandleClose() {
     setTimeout(async () => {
       try {
         await _pconnEnsure(sp);
+        log(`PCONN-DEBUG: reconnect-ensure-done | peerId=${_pconn.peerId} | role=${_pconn.role}`);
         if (_pconn.role && !_pconn.peerId) {
+          log(`PCONN-DEBUG: reconnect-about-to-hello | role=${_pconn.role}`);
           const resp = await _pconnWrite({
             cmd: 'hello', protocol: 'claws/2',
             role: _pconn.role, peerName: _pconn.peerName,
             capabilities: _pconn.capabilities || undefined,
           }, 5000);
+          log(`PCONN-DEBUG: reconnect-hello-ack | ok=${resp && resp.ok} | peerId=${resp && resp.peerId} | error=${resp && resp.error}`);
           if (resp.ok) {
             _pconn.peerId = resp.peerId;
             log(`reconnected and re-registered as ${resp.peerId} role=${_pconn.role}`);
           }
         }
-      } catch { /* reconnect failed; next stateful call will retry */ }
+      } catch (e) { log(`PCONN-DEBUG: reconnect-failed | err=${e && e.message || e}`); }
     }, 1000);
   }
 }
@@ -355,6 +359,8 @@ function _pconnHandleClose() {
 function _pconnConnect(sockPath) {
   return new Promise((resolve, reject) => {
     const sock = net.createConnection(sockPath);
+    const _sockId = ++_pconnSocketSeq;
+    log(`PCONN-DEBUG: connect-attempt | sockId=${_sockId} | socket=${sockPath}`);
     // M-50: 5s connect timeout — prevents _pconnConnect from hanging forever
     // when the extension socket exists but VS Code is reloading (ECONNREFUSED
     // can take arbitrarily long on some platforms without a ceiling).
@@ -365,17 +371,23 @@ function _pconnConnect(sockPath) {
       _pconn.socket = sock;
       _pconn.sockPath = sockPath;
       _pconn.connected = true;
+      log(`PCONN-DEBUG: connected | sockId=${_sockId}`);
       resolve();
     });
     sock.on('data', _pconnHandleData);
     sock.on('error', (err) => {
       if (!_pconn.connected) {
+        log(`PCONN-DEBUG: connect-error | sockId=${_sockId} | err=${err.message}`);
         reject(err);
       } else {
+        log(`PCONN-DEBUG: socket-event | type=error | sockId=${_sockId} | err=${err.message}`);
         log('persistent socket error: ' + err.message);
       }
     });
-    sock.on('close', _pconnHandleClose);
+    sock.on('close', () => {
+      log(`PCONN-DEBUG: socket-event | type=close | sockId=${_sockId} | peerId=${_pconn.peerId}`);
+      _pconnHandleClose();
+    });
   });
 }
 
@@ -393,11 +405,23 @@ function _pconnWrite(req, timeout) {
     }
     const rid = _pconn.nextRid++;
     const ms = timeout || 30000;
+    const _topic = req.topic || '';
+    log(`PCONN-DEBUG: write-start | rid=${rid} | cmd=${req.cmd} | topic=${_topic} | peerId=${_pconn.peerId}`);
     const timer = setTimeout(() => {
       _pconn.pending.delete(rid);
       reject(new Error('stateful socket timeout'));
     }, ms);
-    _pconn.pending.set(rid, { resolve, reject, timer });
+    _pconn.pending.set(rid, {
+      resolve: (resp) => {
+        log(`PCONN-DEBUG: write-response | rid=${rid} | cmd=${req.cmd} | ok=${resp && resp.ok} | error=${resp && resp.error || ''}`);
+        if (resp && resp.ok === false) {
+          log(`PCONN-DEBUG: write-failed-silently | rid=${rid} | cmd=${req.cmd} | topic=${_topic} | error=${resp.error}`);
+        }
+        resolve(resp);
+      },
+      reject,
+      timer,
+    });
     try {
       // Stateful commands route via taskId/assignee/subscriptionId/peerId — never 'id'.
       // Explicitly drop any user-supplied 'id' before stamping the RPC correlation id,
@@ -1479,6 +1503,7 @@ async function _pconnEnsureRegistered(sockPath) {
   // Reset failure timestamp on successful connect.
   _circuitBreaker.lastFailureTs = 0;
   if (!_pconn.peerId) {
+    log(`PCONN-DEBUG: about-to-hello | peerId=null`);
     if (!_helloInFlight) {
       _helloInFlight = _pconnWrite({
         cmd: 'hello', protocol: 'claws/2',
@@ -1486,6 +1511,7 @@ async function _pconnEnsureRegistered(sockPath) {
       }, 5000).finally(() => { _helloInFlight = null; });
     }
     const hr = await _helloInFlight;
+    log(`PCONN-DEBUG: hello-ack | ok=${hr && hr.ok} | peerId=${hr && hr.peerId} | error=${hr && hr.error}`);
     if (hr && hr.ok && !_pconn.peerId) {
       _pconn.peerId = hr.peerId;
       _pconn.role = 'orchestrator';
