@@ -964,6 +964,182 @@ function detectCompletion(text, opt, termId, terminatedSet, busCompletedSet) {
   return null;
 }
 
+// ─── Shared detach-watcher factory ───────────────────────────────────────────
+// _fpTick (claws_worker fast-path) and _dswTick (claws_dispatch_subworker)
+// were near-identical ~150-line implementations that drifted: BUG-26 was
+// applied asymmetrically; _dswCwd (Bug 11) lived undetected for the same
+// reason. Single implementation below; applied at both sites.
+// tick (runBlockingWorker detach) is structurally different (no HB state
+// machine, dead _msState tracking, different timeout behavior) and is kept
+// in place.
+//
+// Params:
+//   sock            — Claws socket path
+//   termId          — terminal ID
+//   corrId          — correlation UUID for this worker
+//   opt             — { complete_marker, error_markers, timeout_ms, poll_interval_ms, close_on_complete }
+//   markerScanFrom  — log offset to start scanning for completion markers (0 for Claude TUI workers)
+//   hbState         — WorkerHeartbeatStateMachine instance (required — always pass one)
+//   startedAt       — spawn timestamp (ms)
+//   extraPayload    — extra fields merged into system.worker.completed payload
+//                     fp: { booted: launchClaude }  dsw: { waveId, role }
+//   closeOnTimeout  — if true, close terminal + mark closed on timeout (dsw behavior; fp=false)
+function _setupDetachWatcher({ sock, termId, corrId, opt, markerScanFrom, hbState, startedAt, extraPayload, closeOnTimeout = false }) {
+  let pubScanOffset = 0;
+  let hbLastPublishedAt = Date.now();
+  let progressBurst = [];
+  let progressBurstStart = 0;
+  let lastPublishedToolCount = 0;
+  let lastTodoSig = '';
+  let lastPublishedErrorsCount = 0;
+
+  const tick = async () => {
+    try {
+      if (Date.now() > startedAt + opt.timeout_ms) {
+        clearInterval(intervalId);
+        _detachWatchers.delete(termId);
+        try {
+          await _pconnEnsureRegistered(sock);
+          await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
+            payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - startedAt, marker_line: null, detach: true, correlation_id: corrId, completion_signal: null, ...extraPayload } });
+        } catch (e) { log('detach watcher publish failed: ' + (e && e.message || e)); }
+        try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
+        if (closeOnTimeout) {
+          try { await clawsRpc(sock, { cmd: 'close', id: termId, close_origin: 'timeout' }); } catch {}
+          try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
+        }
+        return;
+      }
+      const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
+      const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
+      try {
+        hbState.observe(text);
+        const hbNow = Date.now();
+        if (hbNow - hbLastPublishedAt >= 30000) {
+          const hbSnap = hbState.snapshot();
+          const elapsedSec = Math.floor(hbSnap.durationMs / 1000);
+          await _pconnEnsureRegistered(sock);
+          await _pconnWriteOrThrow({
+            cmd: 'publish', protocol: 'claws/2',
+            topic: `worker.${termId}.heartbeat`,
+            payload: {
+              kind: 'heartbeat',
+              summary: `still active · ${elapsedSec}s elapsed`,
+              current_action: hbSnap.state,
+              duration_ms: hbSnap.durationMs,
+              tokens_in: hbSnap.cumulative.tokens_in || undefined,
+              tokens_out: hbSnap.cumulative.tokens_out || undefined,
+              captured_at: new Date().toISOString(),
+              correlation_id: corrId,
+            },
+          });
+          hbLastPublishedAt = hbNow;
+        }
+        // HB-L5: progress event burst aggregation (5s window)
+        const l5Snap = hbState.snapshot();
+        const newTools = l5Snap.toolCount - lastPublishedToolCount;
+        if (newTools > 0) {
+          progressBurst.push({ kind: 'tools', count: newTools, ts: Date.now() });
+          if (progressBurstStart === 0) progressBurstStart = Date.now();
+          lastPublishedToolCount = l5Snap.toolCount;
+        }
+        if (progressBurst.length > 0 && (Date.now() - progressBurstStart) >= 5000) {
+          const burstTotal = progressBurst.reduce((a, e) => a + e.count, 0);
+          const burstElapsed = Math.round((Date.now() - progressBurstStart) / 1000);
+          try {
+            await _pconnEnsureRegistered(sock);
+            await _pconnWriteOrThrow({
+              cmd: 'publish', protocol: 'claws/2',
+              topic: `worker.${termId}.heartbeat`,
+              payload: {
+                kind: 'progress',
+                summary: `${burstTotal} tool call${burstTotal !== 1 ? 's' : ''} in last ${burstElapsed}s`,
+                current_action: l5Snap.state,
+                duration_ms: l5Snap.durationMs,
+                total_tool_calls: l5Snap.toolCount,
+                tokens_in: l5Snap.cumulative.tokens_in || undefined,
+                tokens_out: l5Snap.cumulative.tokens_out || undefined,
+                captured_at: new Date().toISOString(),
+                correlation_id: corrId,
+              },
+            });
+          } catch (e) { log('hb-l5 progress publish failed: ' + (e && e.message || e)); }
+          progressBurst = [];
+          progressBurstStart = 0;
+        }
+        // HB-L6: kind=approach (TodoWrite changes) — single-fire per distinct todoItems content
+        const l6Snap = hbState.snapshot();
+        const todoSig = l6Snap.todoItems ? JSON.stringify(l6Snap.todoItems) : '';
+        if (todoSig && todoSig !== lastTodoSig) {
+          lastTodoSig = todoSig;
+          try {
+            await _pconnEnsureRegistered(sock);
+            await _pconnWriteOrThrow({
+              cmd: 'publish', protocol: 'claws/2',
+              topic: `worker.${termId}.heartbeat`,
+              payload: {
+                kind: 'approach',
+                summary: `planning: ${l6Snap.todoItems.length} task${l6Snap.todoItems.length !== 1 ? 's' : ''}`,
+                approach_detail: l6Snap.todoItems,
+                current_action: l6Snap.state,
+                duration_ms: l6Snap.durationMs,
+                captured_at: new Date().toISOString(),
+                correlation_id: corrId,
+              },
+            });
+          } catch (e) { log('hb-l6 approach publish failed: ' + (e && e.message || e)); }
+        }
+        // HB-L6: kind=error (new error indicators) — single-fire per new batch
+        if (l6Snap.errorsCount > lastPublishedErrorsCount) {
+          const newErrors = hbState.lastErrors.slice(lastPublishedErrorsCount);
+          lastPublishedErrorsCount = l6Snap.errorsCount;
+          try {
+            await _pconnEnsureRegistered(sock);
+            await _pconnWriteOrThrow({
+              cmd: 'publish', protocol: 'claws/2',
+              topic: `worker.${termId}.heartbeat`,
+              payload: {
+                kind: 'error',
+                summary: `${newErrors.length} error${newErrors.length !== 1 ? 's' : ''} detected`,
+                error_detail: newErrors.map(e => e.detail || e.summary || String(e)).slice(0, 5).join('; '),
+                current_action: l6Snap.state,
+                duration_ms: l6Snap.durationMs,
+                captured_at: new Date().toISOString(),
+                correlation_id: corrId,
+              },
+            });
+          } catch (e) { log('hb-l6 error publish failed: ' + (e && e.message || e)); }
+        }
+      } catch (e) { log('hb backstop publish failed: ' + (e && e.message || e)); }
+      if (text.length > pubScanOffset) await _scanAndPublishCLAWSPUB(text.slice(pubScanOffset), sock);
+      pubScanOffset = text.length;
+      const scanText = text.length > markerScanFrom ? text.slice(markerScanFrom) : '';
+      const det = detectCompletion(scanText, opt, String(termId), _workerTerminatedSet, _workerCompletedViaBusSet);
+      const detStatus = det ? det.status : null;
+      const markerLine = det ? det.line : null;
+      const signal = det ? det.signal : null;
+      if (detStatus !== null) {
+        clearInterval(intervalId);
+        _detachWatchers.delete(termId);
+        try {
+          await _pconnEnsureRegistered(sock);
+          await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
+            payload: { terminal_id: termId, status: detStatus, duration_ms: Date.now() - startedAt, marker_line: markerLine, detach: true, correlation_id: corrId, completion_signal: signal, ...extraPayload } });
+        } catch (e) { log('detach watcher publish failed: ' + (e && e.message || e)); }
+        try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: detStatus }); } catch (e) { /* non-fatal */ }
+        if (opt.close_on_complete !== false) {
+          const closeOrigin = detStatus === 'completed' ? 'marker' : detStatus === 'failed' ? 'error' : detStatus === 'timeout' ? 'timeout' : 'orchestrator';
+          try { await clawsRpc(sock, { cmd: 'close', id: termId, close_origin: closeOrigin }); } catch {}
+          try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
+        }
+      }
+    } catch (e) { log('detach watcher tick error: ' + (e && e.message || e)); }
+  };
+  const intervalId = setInterval(tick, opt.poll_interval_ms);
+  _detachWatchers.set(termId, { intervalId, opt, startedAt });
+  return intervalId;
+}
+
 async function runBlockingWorker(sock, args) {
   const DEFAULTS = {
     timeout_ms: 5 * 60 * 1000,
@@ -2282,168 +2458,12 @@ async function _dispatchTool(name, args, sock) {
       poll_interval_ms: typeof args.poll_interval_ms === 'number' ? args.poll_interval_ms : 1500,
       close_on_complete: args.close_on_complete !== false,
     };
-    let _fpScanOffset = 0;
-    // HB-L4-fix: one state machine per worker, lives for the full fast-path watcher lifetime.
-    const _fpHbState = new WorkerHeartbeatStateMachine({
-      terminalId: termId,
-      correlationId: _fpCorrId,
+    const _fpHbState = new WorkerHeartbeatStateMachine({ terminalId: termId, correlationId: _fpCorrId });
+    _setupDetachWatcher({
+      sock, termId, corrId: _fpCorrId, opt: _fpOpt,
+      markerScanFrom: _fpMarkerScanFrom, hbState: _fpHbState,
+      startedAt: _fpStartedAt, extraPayload: { booted: launchClaude },
     });
-    let _fpHbLastPublishedAt = Date.now();
-    let _fpProgressBurst = [];               // HB-L5: tool events in current window
-    let _fpProgressBurstStart = 0;           // HB-L5: window open timestamp
-    let _fpLastPublishedToolCount = 0;       // HB-L5: toolCount at last progress publish
-    let _fpLastTodoSig = '';                 // HB-L6: last published todoItems JSON sig
-    let _fpLastPublishedErrorsCount = 0;     // HB-L6: errorsCount at last error publish
-
-    const _fpTick = async () => {
-      try {
-        if (Date.now() > _fpStartedAt + _fpOpt.timeout_ms) {
-          clearInterval(_fpIntervalId);
-          _detachWatchers.delete(termId);
-          try {
-            await _pconnEnsureRegistered(sock);
-            await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-              payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _fpStartedAt, marker_line: null, booted: launchClaude, detach: true, correlation_id: _fpCorrId, completion_signal: null } });
-          } catch (e) { log('fast-path watcher publish failed: ' + (e && e.message || e)); }
-          try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
-          return;
-        }
-        const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
-        const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
-        // HB-L4-fix: state machine observes pty for backstop heartbeat publishing.
-        // L5+ will add progress/approach/error/mission_complete kinds; this layer is liveness only.
-        try {
-          const _fpTransitions = _fpHbState.observe(text);
-          const _fpHbNow = Date.now();
-          if (_fpHbNow - _fpHbLastPublishedAt >= 30000) {
-            const fpHbSnap = _fpHbState.snapshot();
-            const elapsedSec = Math.floor(fpHbSnap.durationMs / 1000);
-            const summary = `still active · ${elapsedSec}s elapsed`;
-            await _pconnEnsureRegistered(sock);
-            await _pconnWriteOrThrow({
-              cmd: 'publish', protocol: 'claws/2',
-              topic: `worker.${termId}.heartbeat`,
-              payload: {
-                kind: 'heartbeat',
-                summary,
-                current_action: fpHbSnap.state,
-                duration_ms: fpHbSnap.durationMs,
-                tokens_in: fpHbSnap.cumulative.tokens_in || undefined,
-                tokens_out: fpHbSnap.cumulative.tokens_out || undefined,
-                captured_at: new Date().toISOString(),
-                correlation_id: _fpCorrId,
-              },
-            });
-            _fpHbLastPublishedAt = _fpHbNow;
-          }
-          // HB-L5: progress event burst aggregation (5s window, fast-path watcher only)
-          const _fpL5Snap = _fpHbState.snapshot();
-          const _fpNewTools = _fpL5Snap.toolCount - _fpLastPublishedToolCount;
-          if (_fpNewTools > 0) {
-            _fpProgressBurst.push({ kind: 'tools', count: _fpNewTools, ts: Date.now() });
-            if (_fpProgressBurstStart === 0) _fpProgressBurstStart = Date.now();
-            _fpLastPublishedToolCount = _fpL5Snap.toolCount;
-          }
-          if (_fpProgressBurst.length > 0 && (Date.now() - _fpProgressBurstStart) >= 5000) {
-            const _fpBurstTotal = _fpProgressBurst.reduce((a, e) => a + e.count, 0);
-            const _fpBurstElapsed = Math.round((Date.now() - _fpProgressBurstStart) / 1000);
-            try {
-              await _pconnEnsureRegistered(sock);
-              await _pconnWriteOrThrow({
-                cmd: 'publish', protocol: 'claws/2',
-                topic: `worker.${termId}.heartbeat`,
-                payload: {
-                  kind: 'progress',
-                  summary: `${_fpBurstTotal} tool call${_fpBurstTotal !== 1 ? 's' : ''} in last ${_fpBurstElapsed}s`,
-                  current_action: _fpL5Snap.state,
-                  duration_ms: _fpL5Snap.durationMs,
-                  total_tool_calls: _fpL5Snap.toolCount,
-                  tokens_in: _fpL5Snap.cumulative.tokens_in || undefined,
-                  tokens_out: _fpL5Snap.cumulative.tokens_out || undefined,
-                  captured_at: new Date().toISOString(),
-                  correlation_id: _fpCorrId,
-                },
-              });
-            } catch (e) { log('hb-l5 progress publish failed: ' + (e && e.message || e)); }
-            _fpProgressBurst = [];
-            _fpProgressBurstStart = 0;
-          }
-          // HB-L6: kind=approach (TodoWrite changes) — single-fire per distinct todoItems content
-          const _fpL6Snap = _fpHbState.snapshot();
-          const _fpTodoSig = _fpL6Snap.todoItems ? JSON.stringify(_fpL6Snap.todoItems) : '';
-          if (_fpTodoSig && _fpTodoSig !== _fpLastTodoSig) {
-            _fpLastTodoSig = _fpTodoSig;
-            try {
-              await _pconnEnsureRegistered(sock);
-              await _pconnWriteOrThrow({
-                cmd: 'publish', protocol: 'claws/2',
-                topic: `worker.${termId}.heartbeat`,
-                payload: {
-                  kind: 'approach',
-                  summary: `planning: ${_fpL6Snap.todoItems.length} task${_fpL6Snap.todoItems.length !== 1 ? 's' : ''}`,
-                  approach_detail: _fpL6Snap.todoItems,
-                  current_action: _fpL6Snap.state,
-                  duration_ms: _fpL6Snap.durationMs,
-                  captured_at: new Date().toISOString(),
-                  correlation_id: _fpCorrId,
-                },
-              });
-            } catch (e) { log('hb-l6 approach publish failed: ' + (e && e.message || e)); }
-          }
-          // HB-L6: kind=error (new error indicators) — single-fire per new batch
-          if (_fpL6Snap.errorsCount > _fpLastPublishedErrorsCount) {
-            const _fpNewErrors = _fpHbState.lastErrors.slice(_fpLastPublishedErrorsCount);
-            _fpLastPublishedErrorsCount = _fpL6Snap.errorsCount;
-            try {
-              await _pconnEnsureRegistered(sock);
-              await _pconnWriteOrThrow({
-                cmd: 'publish', protocol: 'claws/2',
-                topic: `worker.${termId}.heartbeat`,
-                payload: {
-                  kind: 'error',
-                  summary: `${_fpNewErrors.length} error${_fpNewErrors.length !== 1 ? 's' : ''} detected`,
-                  error_detail: _fpNewErrors.map(e => e.detail || e.summary || String(e)).slice(0, 5).join('; '),
-                  current_action: _fpL6Snap.state,
-                  duration_ms: _fpL6Snap.durationMs,
-                  captured_at: new Date().toISOString(),
-                  correlation_id: _fpCorrId,
-                },
-              });
-            } catch (e) { log('hb-l6 error publish failed: ' + (e && e.message || e)); }
-          }
-        } catch (e) {
-          log('hb-l4 fast-path backstop publish failed: ' + (e && e.message || e));
-        }
-        if (text.length > _fpScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_fpScanOffset), sock);
-        _fpScanOffset = text.length;
-        const _fpNow = Date.now();
-        // BUG-A: slice past mission body so marker strings in the mission text
-        // don't trigger false-positive completion before work begins.
-        const _fpScanText = text.length > _fpMarkerScanFrom ? text.slice(_fpMarkerScanFrom) : '';
-        const _fpDet = detectCompletion(_fpScanText, _fpOpt, String(termId), _workerTerminatedSet, _workerCompletedViaBusSet);
-        const _fpStatus = _fpDet ? _fpDet.status : null;
-        const _fpMarkerLine = _fpDet ? _fpDet.line : null;
-        const _fpSignal = _fpDet ? _fpDet.signal : null;
-        if (_fpStatus !== null) {
-          clearInterval(_fpIntervalId);
-          _detachWatchers.delete(termId);
-          try {
-            await _pconnEnsureRegistered(sock);
-            await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-              payload: { terminal_id: termId, status: _fpStatus, duration_ms: Date.now() - _fpStartedAt, marker_line: _fpMarkerLine, booted: launchClaude, detach: true, correlation_id: _fpCorrId, completion_signal: _fpSignal } });
-          } catch (e) { log('fast-path watcher publish failed: ' + (e && e.message || e)); }
-          try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: _fpStatus }); } catch (e) { /* non-fatal */ }
-          if (_fpOpt.close_on_complete) {
-            const _fpCloseOrigin = _fpStatus === 'completed' ? 'marker' : _fpStatus === 'failed' ? 'error' : _fpStatus === 'timeout' ? 'timeout' : 'orchestrator';
-            try { await clawsRpc(sock, { cmd: 'close', id: termId, close_origin: _fpCloseOrigin }); } catch {}
-            // BUG-B fix: notify lifecycle store so workers[].closed flips to true.
-            try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
-          }
-        }
-      } catch (e) { log('fast-path watcher tick error: ' + (e && e.message || e)); }
-    };
-    const _fpIntervalId = setInterval(_fpTick, _fpOpt.poll_interval_ms);
-    _detachWatchers.set(termId, { intervalId: _fpIntervalId, opt: _fpOpt, startedAt: _fpStartedAt });
 
     const run_token = randomUUID().slice(0, 12);
     const workerEventsLogPath = path.join(path.dirname(path.resolve(sock)), 'events.log');
@@ -2960,173 +2980,16 @@ async function _dispatchTool(name, args, sock) {
           if (_dswRbNudges > 0) log(`dispatch_subworker paste-collapse recovery: sent ${_dswRbNudges} CR nudges`);
         } catch (e) { /* recovery failure must never break the watcher path */ }
 
-        // BUG-09: register auto-close watcher mirroring the fast-path detach watcher pattern.
+        // BUG-09: register auto-close watcher via shared _setupDetachWatcher helper.
         const _dswStartedAt = Date.now();
-        let _dswScanOffset = 0;
-
-        // BUG-E fix: HeartbeatStateMachine for sub-worker observability (mirrors _fpTick pattern).
-        const _dswHbState = new WorkerHeartbeatStateMachine({
-          terminalId: termId,
-          correlationId: _dswCorrId,
-        });
-        let _dswHbLastPublishedAt = Date.now();
-        let _dswProgressBurst = [];
-        let _dswProgressBurstStart = 0;
-        let _dswLastPublishedToolCount = 0;
-        let _dswLastTodoSig = '';
-        let _dswLastPublishedErrorsCount = 0;
-
         const _dswOpt = { complete_marker: _dswCompleteMarker, error_markers: _dswErrorMarkers, timeout_ms: _dswTimeoutMs, poll_interval_ms: _dswPollMs, close_on_complete: _dswCloseOnComplete };
-        const _dswTick = async () => {
-          try {
-            if (Date.now() > _dswStartedAt + _dswTimeoutMs) {
-              clearInterval(_dswIntervalId);
-              _detachWatchers.delete(termId);
-              try {
-                await _pconnEnsureRegistered(_dswSock);
-                await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-                  payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _dswStartedAt, marker_line: null, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId, completion_signal: null } });
-              } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
-              try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
-              if (_dswCloseOnComplete) {
-                try { await clawsRpc(_dswSock, { cmd: 'close', id: termId, close_origin: 'timeout' }); } catch {}
-                // BUG-B fix: notify lifecycle store so workers[].closed flips to true.
-                try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
-              }
-              return;
-            }
-            const snap = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
-            const text = snap.ok && typeof snap.bytes === 'string' ? snap.bytes : '';
-            // BUG-E: observe pty for heartbeat state machine + publish backstop heartbeat
-            try {
-              _dswHbState.observe(text);
-              const _dswHbNow = Date.now();
-              if (_dswHbNow - _dswHbLastPublishedAt >= 30000) {
-                const dswHbSnap = _dswHbState.snapshot();
-                const elapsedSec = Math.floor(dswHbSnap.durationMs / 1000);
-                await _pconnEnsureRegistered(_dswSock);
-                await _pconnWriteOrThrow({
-                  cmd: 'publish', protocol: 'claws/2',
-                  topic: `worker.${termId}.heartbeat`,
-                  payload: {
-                    kind: 'heartbeat',
-                    summary: `still active · ${elapsedSec}s elapsed`,
-                    current_action: dswHbSnap.state,
-                    duration_ms: dswHbSnap.durationMs,
-                    tokens_in: dswHbSnap.cumulative.tokens_in || undefined,
-                    tokens_out: dswHbSnap.cumulative.tokens_out || undefined,
-                    captured_at: new Date().toISOString(),
-                    correlation_id: _dswCorrId,
-                  },
-                });
-                _dswHbLastPublishedAt = _dswHbNow;
-              }
-              // L5: progress event burst aggregation (5s window)
-              const _dswL5Snap = _dswHbState.snapshot();
-              const _dswNewTools = _dswL5Snap.toolCount - _dswLastPublishedToolCount;
-              if (_dswNewTools > 0) {
-                _dswProgressBurst.push({ kind: 'tools', count: _dswNewTools, ts: Date.now() });
-                if (_dswProgressBurstStart === 0) _dswProgressBurstStart = Date.now();
-                _dswLastPublishedToolCount = _dswL5Snap.toolCount;
-              }
-              if (_dswProgressBurst.length > 0 && (Date.now() - _dswProgressBurstStart) >= 5000) {
-                const _dswBurstTotal = _dswProgressBurst.reduce((a, e) => a + e.count, 0);
-                const _dswBurstElapsed = Math.round((Date.now() - _dswProgressBurstStart) / 1000);
-                try {
-                  await _pconnEnsureRegistered(_dswSock);
-                  await _pconnWriteOrThrow({
-                    cmd: 'publish', protocol: 'claws/2',
-                    topic: `worker.${termId}.heartbeat`,
-                    payload: {
-                      kind: 'progress',
-                      summary: `${_dswBurstTotal} tool call${_dswBurstTotal !== 1 ? 's' : ''} in last ${_dswBurstElapsed}s`,
-                      current_action: _dswL5Snap.state,
-                      duration_ms: _dswL5Snap.durationMs,
-                      total_tool_calls: _dswL5Snap.toolCount,
-                      tokens_in: _dswL5Snap.cumulative.tokens_in || undefined,
-                      tokens_out: _dswL5Snap.cumulative.tokens_out || undefined,
-                      captured_at: new Date().toISOString(),
-                      correlation_id: _dswCorrId,
-                    },
-                  });
-                } catch (e) { log('hb-l5 dsw progress publish failed: ' + (e && e.message || e)); }
-                _dswProgressBurst = [];
-                _dswProgressBurstStart = 0;
-              }
-              // L6: kind=approach (TodoWrite changes)
-              const _dswL6Snap = _dswHbState.snapshot();
-              const _dswTodoSig = _dswL6Snap.todoItems ? JSON.stringify(_dswL6Snap.todoItems) : '';
-              if (_dswTodoSig && _dswTodoSig !== _dswLastTodoSig) {
-                _dswLastTodoSig = _dswTodoSig;
-                try {
-                  await _pconnEnsureRegistered(_dswSock);
-                  await _pconnWriteOrThrow({
-                    cmd: 'publish', protocol: 'claws/2',
-                    topic: `worker.${termId}.heartbeat`,
-                    payload: {
-                      kind: 'approach',
-                      summary: `planning: ${_dswL6Snap.todoItems.length} task${_dswL6Snap.todoItems.length !== 1 ? 's' : ''}`,
-                      approach_detail: _dswL6Snap.todoItems,
-                      current_action: _dswL6Snap.state,
-                      duration_ms: _dswL6Snap.durationMs,
-                      captured_at: new Date().toISOString(),
-                      correlation_id: _dswCorrId,
-                    },
-                  });
-                } catch (e) { log('hb-l6 dsw approach publish failed: ' + (e && e.message || e)); }
-              }
-              // L6: kind=error
-              if (_dswL6Snap.errorsCount > _dswLastPublishedErrorsCount) {
-                const _dswNewErrors = _dswHbState.lastErrors.slice(_dswLastPublishedErrorsCount);
-                _dswLastPublishedErrorsCount = _dswL6Snap.errorsCount;
-                try {
-                  await _pconnEnsureRegistered(_dswSock);
-                  await _pconnWriteOrThrow({
-                    cmd: 'publish', protocol: 'claws/2',
-                    topic: `worker.${termId}.heartbeat`,
-                    payload: {
-                      kind: 'error',
-                      summary: `${_dswNewErrors.length} error${_dswNewErrors.length !== 1 ? 's' : ''} detected`,
-                      error_detail: _dswNewErrors.map(e => e.detail || e.summary || String(e)).slice(0, 5).join('; '),
-                      current_action: _dswL6Snap.state,
-                      duration_ms: _dswL6Snap.durationMs,
-                      captured_at: new Date().toISOString(),
-                      correlation_id: _dswCorrId,
-                    },
-                  });
-                } catch (e) { log('hb-l6 dsw error publish failed: ' + (e && e.message || e)); }
-              }
-            } catch (e) {
-              log('hb-dsw backstop publish failed: ' + (e && e.message || e));
-            }
-            if (text.length > _dswScanOffset) await _scanAndPublishCLAWSPUB(text.slice(_dswScanOffset), _dswSock);
-            _dswScanOffset = text.length;
-            // BUG-C fix: scan completion only from post-mission offset to prevent false-positive detection.
-            const _dswDetText = text.slice(_dswMarkerScanFrom);
-            const _dswDet = detectCompletion(_dswDetText, _dswOpt, String(termId), _workerTerminatedSet, _workerCompletedViaBusSet);
-            const _dswStatus = _dswDet ? _dswDet.status : null;
-            const _dswMarkerLine = _dswDet ? _dswDet.line : null;
-            const _dswSignal = _dswDet ? _dswDet.signal : null;
-            if (_dswStatus) {
-              clearInterval(_dswIntervalId);
-              _detachWatchers.delete(termId);
-              try {
-                await _pconnEnsureRegistered(_dswSock);
-                await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
-                  payload: { terminal_id: termId, status: _dswStatus, duration_ms: Date.now() - _dswStartedAt, marker_line: _dswMarkerLine, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId, completion_signal: _dswSignal } });
-              } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
-              try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: _dswStatus }); } catch (e) { /* non-fatal */ }
-              if (_dswCloseOnComplete) {
-                const _dswCloseOrigin = _dswStatus === 'completed' ? 'marker' : _dswStatus === 'failed' ? 'error' : _dswStatus === 'timeout' ? 'timeout' : 'orchestrator';
-                try { await clawsRpc(_dswSock, { cmd: 'close', id: termId, close_origin: _dswCloseOrigin }); } catch {}
-                // BUG-B fix: notify lifecycle store so workers[].closed flips to true.
-                try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'closed' }); } catch {}
-              }
-            }
-          } catch (e) { log('dsw watcher tick error: ' + (e && e.message || e)); }
-        };
-        const _dswIntervalId = setInterval(_dswTick, _dswPollMs);
-        _detachWatchers.set(termId, { intervalId: _dswIntervalId, opt: _dswOpt, startedAt: _dswStartedAt });
+        const _dswHbState = new WorkerHeartbeatStateMachine({ terminalId: termId, correlationId: _dswCorrId });
+        _setupDetachWatcher({
+          sock: _dswSock, termId, corrId: _dswCorrId, opt: _dswOpt,
+          markerScanFrom: _dswMarkerScanFrom, hbState: _dswHbState,
+          startedAt: _dswStartedAt, extraPayload: { waveId: _dswWid, role: _dswRole },
+          closeOnTimeout: _dswCloseOnComplete,
+        });
       } catch (e) { log('claws_dispatch_subworker background boot error: ' + (e && e.message || e)); }
     });
 
