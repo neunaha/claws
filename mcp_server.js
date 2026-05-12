@@ -2903,6 +2903,7 @@ async function _dispatchTool(name, args, sock) {
     const _dswTimeoutMs = typeof args.timeout_ms === 'number' ? args.timeout_ms : 5 * 60 * 1000;
     const _dswPollMs = typeof args.poll_interval_ms === 'number' ? args.poll_interval_ms : 1500;
     const _dswCloseOnComplete = args.close_on_complete !== false;
+    const _dswCwd = typeof args.cwd === 'string' && args.cwd.length > 0 ? args.cwd : null;
     setImmediate(async () => {
       try {
         await sleep(400);
