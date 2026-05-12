@@ -192,6 +192,8 @@ const _pconn = {
   capabilities: null,
   sockPath: null,         // set on first successful connect
   connected: false,
+  socketId: 0,            // monotonic counter incremented per _pconnConnect; identifies current socket
+  helloSocketId: null,    // socketId of the socket on which hello last succeeded; null if none
 };
 
 // ─── Push-frame ring buffer ───────────────────────────────────────────────────
@@ -323,6 +325,7 @@ function _pconnHandleClose() {
   _pconn.socket = null;
   _pconn.buf = '';
   _pconn.peerId = null;
+  _pconn.helloSocketId = null;  // invalidate hello state — new socket requires fresh hello
   _eventBuffer.subscribed = false; // reconnect requires fresh auto-subscribe
   _workerTerminatedSubscribed = false; // reconnect requires re-subscribe
   _workerBusCompletedSubscribed = false; // reconnect requires re-subscribe
@@ -340,16 +343,15 @@ function _pconnHandleClose() {
         log(`PCONN-DEBUG: reconnect-ensure-done | peerId=${_pconn.peerId} | role=${_pconn.role}`);
         if (_pconn.role && !_pconn.peerId) {
           log(`PCONN-DEBUG: reconnect-about-to-hello | role=${_pconn.role}`);
-          const resp = await _pconnWrite({
+          const resp = await _pconnWriteOrThrow({
             cmd: 'hello', protocol: 'claws/2',
             role: _pconn.role, peerName: _pconn.peerName,
             capabilities: _pconn.capabilities || undefined,
           }, 5000);
-          log(`PCONN-DEBUG: reconnect-hello-ack | ok=${resp && resp.ok} | peerId=${resp && resp.peerId} | error=${resp && resp.error}`);
-          if (resp.ok) {
-            _pconn.peerId = resp.peerId;
-            log(`reconnected and re-registered as ${resp.peerId} role=${_pconn.role}`);
-          }
+          log(`PCONN-DEBUG: reconnect-hello-ack | ok=${resp && resp.ok} | peerId=${resp && resp.peerId}`);
+          _pconn.peerId = resp.peerId;
+          _pconn.helloSocketId = _pconn.socketId;  // bind hello to this socket
+          log(`reconnected and re-registered as ${resp.peerId} role=${_pconn.role}`);
         }
       } catch (e) { log(`PCONN-DEBUG: reconnect-failed | err=${e && e.message || e}`); }
     }, 1000);
@@ -371,6 +373,8 @@ function _pconnConnect(sockPath) {
       _pconn.socket = sock;
       _pconn.sockPath = sockPath;
       _pconn.connected = true;
+      _pconn.socketId = _sockId;  // record which socket is now active
+      sock._pconnSocketId = _sockId; // attach for event correlation in close/error handlers
       log(`PCONN-DEBUG: connected | sockId=${_sockId}`);
       resolve();
     });
@@ -434,6 +438,17 @@ function _pconnWrite(req, timeout) {
       reject(err);
     }
   });
+}
+
+// Like _pconnWrite but throws if the response has ok !== true. Use at every
+// call site that publishes or does stateful work so silent ok:false failures
+// surface to the nearest catch block instead of being logged as success.
+async function _pconnWriteOrThrow(req, timeout) {
+  const resp = await _pconnWrite(req, timeout);
+  if (!resp || resp.ok !== true) {
+    throw new Error(`pconn write failed: ${resp && resp.error || 'no response'} (cmd=${req.cmd}${req.topic ? ' topic=' + req.topic : ''})`);
+  }
+  return resp;
 }
 
 // Persistent-socket RPC for stateful claws/2 commands. Connects the persistent
@@ -566,7 +581,7 @@ async function _scanAndPublishCLAWSPUB(newText, sockPath) {
     }
     try {
       await _pconnEnsureRegistered(sockPath);
-      await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic, payload }, 3000);
+      await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic, payload }, 3000);
       _circuitBreaker.scanConsecutiveErrors = 0;
     } catch (e) {
       _circuitBreaker.scanConsecutiveErrors++;
@@ -996,7 +1011,7 @@ async function runBlockingWorker(sock, args) {
   log(`runBlockingWorker: publishing system.worker.spawned for terminal ${termId}`);
   try {
     await _pconnEnsureRegistered(sock);
-    await _pconnWrite({
+    await _pconnWriteOrThrow({
       cmd: 'publish', protocol: 'claws/2',
       topic: 'system.worker.spawned',
       payload: { terminal_id: termId, name: args.name || 'claws-worker', wrapped: true, started_at: new Date(startedAt).toISOString(), correlation_id: _bCorrId },
@@ -1042,7 +1057,7 @@ async function runBlockingWorker(sock, args) {
         try {
           await _pconnEnsureRegistered(sock);
           _l2f(`L2-DEBUG: pconn-registered | site=runBlockingWorker`);
-          await _pconnWrite({
+          await _pconnWriteOrThrow({
             cmd: 'publish', protocol: 'claws/2',
             topic: 'system.monitor.unarmed',
             payload: { terminal_id: _bTermIdStr, correlation_id: _bCorrId, layer: 2,
@@ -1071,7 +1086,7 @@ async function runBlockingWorker(sock, args) {
           try {
             await _pconnEnsureRegistered(sock);
             _l2f(`L2-DEBUG: pconn-registered | site=runBlockingWorker`);
-            await _pconnWrite({
+            await _pconnWriteOrThrow({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.monitor.unarmed',
               payload: { terminal_id: _bTermIdStr, correlation_id: _bCorrId, layer: 2,
@@ -1268,7 +1283,7 @@ async function runBlockingWorker(sock, args) {
           _detachWatchers.delete(termId);
           try {
             await _pconnEnsureRegistered(sock);
-            await _pconnWrite({
+            await _pconnWriteOrThrow({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.worker.completed',
               payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true, correlation_id: _bCorrId, completion_signal: completionSignal },
@@ -1300,7 +1315,7 @@ async function runBlockingWorker(sock, args) {
           _detachWatchers.delete(termId);
           try {
             await _pconnEnsureRegistered(sock);
-            await _pconnWrite({
+            await _pconnWriteOrThrow({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.worker.completed',
               payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, detach: true, correlation_id: _bCorrId, completion_signal: completionSignal },
@@ -1361,7 +1376,7 @@ async function runBlockingWorker(sock, args) {
   // Publish system.worker.completed — best-effort, never aborts on failure.
   try {
     await _pconnEnsureRegistered(sock);
-    await _pconnWrite({
+    await _pconnWriteOrThrow({
       cmd: 'publish', protocol: 'claws/2',
       topic: 'system.worker.completed',
       payload: { terminal_id: termId, status, duration_ms: Date.now() - startedAt, marker_line: markerLine, booted, correlation_id: _bCorrId, completion_signal: completionSignal },
@@ -1537,8 +1552,16 @@ async function _pconnEnsureRegistered(sockPath) {
   }
   // Reset failure timestamp on successful connect.
   _circuitBreaker.lastFailureTs = 0;
-  if (!_pconn.peerId) {
-    log(`PCONN-DEBUG: about-to-hello | peerId=null`);
+  // Socket identity guard: skip hello ONLY if peerId is set AND it was negotiated on
+  // the current socket. If the socket disconnected and reconnected, socketId changes
+  // but helloSocketId does not — the mismatch forces a re-hello on the new socket.
+  if (_pconn.peerId && _pconn.helloSocketId === _pconn.socketId) {
+    // valid registration on the current socket — skip hello
+  } else {
+    // Either no peerId, or hello was on a previous (now-closed) socket — re-hello required.
+    _pconn.peerId = null;
+    _pconn.helloSocketId = null;
+    log(`PCONN-DEBUG: about-to-hello | socketId=${_pconn.socketId} | helloSocketId=${_pconn.helloSocketId}`);
     if (!_helloInFlight) {
       _helloInFlight = _pconnWrite({
         cmd: 'hello', protocol: 'claws/2',
@@ -1547,30 +1570,37 @@ async function _pconnEnsureRegistered(sockPath) {
     }
     const hr = await _helloInFlight;
     log(`PCONN-DEBUG: hello-ack | ok=${hr && hr.ok} | peerId=${hr && hr.peerId} | error=${hr && hr.error}`);
-    if (hr && hr.ok && !_pconn.peerId) {
-      _pconn.peerId = hr.peerId;
-      _pconn.role = 'orchestrator';
-      _pconn.peerName = 'mcp-orchestrator';
-      // Re-enable scan if it was disabled — explicit reconnect counts as resume.
-      _circuitBreaker.scanDisabled = false;
-      _circuitBreaker.scanConsecutiveErrors = 0;
-      log('auto-registered as peer ' + hr.peerId + ' role=orchestrator');
+    // Verify hello actually succeeded — silent failure is the root cause of Bug 12.
+    // If the extension returned ok:false (e.g., 'orchestrator already registered' race),
+    // throw so callers see the failure instead of proceeding with peerId=null.
+    if (!hr || hr.ok !== true) {
+      const err = (hr && hr.error) || 'no response';
+      throw new Error(`pconn hello failed: ${err}`);
     }
+    // Capture identity and bind it to the current socket.
+    _pconn.peerId = hr.peerId;
+    _pconn.helloSocketId = _pconn.socketId;  // hello succeeded on THIS socket
+    _pconn.role = 'orchestrator';
+    _pconn.peerName = 'mcp-orchestrator';
+    // Re-enable scan if it was disabled — explicit reconnect counts as resume.
+    _circuitBreaker.scanDisabled = false;
+    _circuitBreaker.scanConsecutiveErrors = 0;
+    log('auto-registered as peer ' + hr.peerId + ' role=orchestrator socketId=' + _pconn.socketId);
   }
   // Wave D: subscribe to system.worker.terminated once registered so push frames
   // arrive and populate _workerTerminatedSet for the terminated completion signal.
   if (_pconn.peerId && !_workerTerminatedSubscribed) {
     try {
-      const sr = await _pconnWrite({ cmd: 'subscribe', protocol: 'claws/2', topic: 'system.worker.terminated' }, 5000);
-      if (sr && sr.ok) _workerTerminatedSubscribed = true;
+      await _pconnWriteOrThrow({ cmd: 'subscribe', protocol: 'claws/2', topic: 'system.worker.terminated' }, 5000);
+      _workerTerminatedSubscribed = true;
     } catch { /* non-fatal; watcher falls back to marker/error/pub_complete signals */ }
   }
   // Phase 4a: subscribe to worker.+.complete wildcard so bus-published completions
   // populate _workerCompletedViaBusSet for the highest-priority completion signal.
   if (_pconn.peerId && !_workerBusCompletedSubscribed) {
     try {
-      const sr2 = await _pconnWrite({ cmd: 'subscribe', protocol: 'claws/2', topic: 'worker.+.complete' }, 5000);
-      if (sr2 && sr2.ok) _workerBusCompletedSubscribed = true;
+      await _pconnWriteOrThrow({ cmd: 'subscribe', protocol: 'claws/2', topic: 'worker.+.complete' }, 5000);
+      _workerBusCompletedSubscribed = true;
     } catch { /* non-fatal */ }
   }
 }
@@ -1633,7 +1663,7 @@ async function handleTool(name, args) {
   const _t0 = Date.now();
   try {
     await _pconnEnsureRegistered(sock);
-    await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: `tool.${name}.invoked`, payload: { peerId: _pconn.peerId, args_keys: Object.keys(args) } });
+    await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: `tool.${name}.invoked`, payload: { peerId: _pconn.peerId, args_keys: Object.keys(args) } });
   } catch (_pe) { /* best-effort */ }
   let _r;
   try {
@@ -1641,13 +1671,13 @@ async function handleTool(name, args) {
   } catch (_te) {
     try {
       await _pconnEnsureRegistered(sock);
-      await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: `tool.${name}.failed`, payload: { duration_ms: Date.now() - _t0, error: _te && _te.message || String(_te) } });
+      await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: `tool.${name}.failed`, payload: { duration_ms: Date.now() - _t0, error: _te && _te.message || String(_te) } });
     } catch (_pe) { /* best-effort */ }
     throw _te;
   }
   try {
     await _pconnEnsureRegistered(sock);
-    await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: `tool.${name}.completed`, payload: { duration_ms: Date.now() - _t0 } });
+    await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: `tool.${name}.completed`, payload: { duration_ms: Date.now() - _t0 } });
   } catch (_pe) { /* best-effort */ }
   return _r;
 }
@@ -1720,7 +1750,7 @@ async function _dispatchTool(name, args, sock) {
           try {
             await _pconnEnsureRegistered(sock);
             _l2f(`L2-DEBUG: pconn-registered | site=claws_create`);
-            await _pconnWrite({
+            await _pconnWriteOrThrow({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.monitor.unarmed',
               payload: { terminal_id: _createTermIdStr, correlation_id: _createCorrId, layer: 2,
@@ -1749,7 +1779,7 @@ async function _dispatchTool(name, args, sock) {
             try {
               await _pconnEnsureRegistered(sock);
               _l2f(`L2-DEBUG: pconn-registered | site=claws_create`);
-              await _pconnWrite({
+              await _pconnWriteOrThrow({
                 cmd: 'publish', protocol: 'claws/2',
                 topic: 'system.monitor.unarmed',
                 payload: { terminal_id: _createTermIdStr, correlation_id: _createCorrId, layer: 2,
@@ -1939,7 +1969,7 @@ async function _dispatchTool(name, args, sock) {
     if (!termId) return toolError('ERROR: CLAWS_TERMINAL_ID not set — claws_done must be called from inside a Claws worker terminal (wrapped=true).');
     try {
       await _pconnEnsureRegistered(sock);
-      await _pconnWrite({
+      await _pconnWriteOrThrow({
         cmd: 'publish', protocol: 'claws/2',
         topic: 'system.worker.completed',
         payload: { terminal_id: termId, status: 'completed', completion_signal: 'claws_done', marker: '__CLAWS_DONE__' },
@@ -2052,7 +2082,7 @@ async function _dispatchTool(name, args, sock) {
     // BUG-23: publish system.worker.spawned on non-blocking fast path — best-effort.
     try {
       await _pconnEnsureRegistered(sock);
-      await _pconnWrite({
+      await _pconnWriteOrThrow({
         cmd: 'publish', protocol: 'claws/2',
         topic: 'system.worker.spawned',
         payload: { terminal_id: termId, name: args.name || 'claws-worker', wrapped: true, started_at: new Date(_fpStartedAt).toISOString(), correlation_id: _fpCorrId },
@@ -2097,7 +2127,7 @@ async function _dispatchTool(name, args, sock) {
           try {
             await _pconnEnsureRegistered(sock);
             _l2f(`L2-DEBUG: pconn-registered | site=claws_worker-fast-path`);
-            await _pconnWrite({
+            await _pconnWriteOrThrow({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.monitor.unarmed',
               payload: { terminal_id: _fpTermIdStr, correlation_id: _fpCorrId, layer: 2,
@@ -2126,7 +2156,7 @@ async function _dispatchTool(name, args, sock) {
             try {
               await _pconnEnsureRegistered(sock);
               _l2f(`L2-DEBUG: pconn-registered | site=claws_worker-fast-path`);
-              await _pconnWrite({
+              await _pconnWriteOrThrow({
                 cmd: 'publish', protocol: 'claws/2',
                 topic: 'system.monitor.unarmed',
                 payload: { terminal_id: _fpTermIdStr, correlation_id: _fpCorrId, layer: 2,
@@ -2272,7 +2302,7 @@ async function _dispatchTool(name, args, sock) {
           _detachWatchers.delete(termId);
           try {
             await _pconnEnsureRegistered(sock);
-            await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
+            await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
               payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _fpStartedAt, marker_line: null, booted: launchClaude, detach: true, correlation_id: _fpCorrId, completion_signal: null } });
           } catch (e) { log('fast-path watcher publish failed: ' + (e && e.message || e)); }
           try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
@@ -2290,7 +2320,7 @@ async function _dispatchTool(name, args, sock) {
             const elapsedSec = Math.floor(fpHbSnap.durationMs / 1000);
             const summary = `still active · ${elapsedSec}s elapsed`;
             await _pconnEnsureRegistered(sock);
-            await _pconnWrite({
+            await _pconnWriteOrThrow({
               cmd: 'publish', protocol: 'claws/2',
               topic: `worker.${termId}.heartbeat`,
               payload: {
@@ -2319,7 +2349,7 @@ async function _dispatchTool(name, args, sock) {
             const _fpBurstElapsed = Math.round((Date.now() - _fpProgressBurstStart) / 1000);
             try {
               await _pconnEnsureRegistered(sock);
-              await _pconnWrite({
+              await _pconnWriteOrThrow({
                 cmd: 'publish', protocol: 'claws/2',
                 topic: `worker.${termId}.heartbeat`,
                 payload: {
@@ -2345,7 +2375,7 @@ async function _dispatchTool(name, args, sock) {
             _fpLastTodoSig = _fpTodoSig;
             try {
               await _pconnEnsureRegistered(sock);
-              await _pconnWrite({
+              await _pconnWriteOrThrow({
                 cmd: 'publish', protocol: 'claws/2',
                 topic: `worker.${termId}.heartbeat`,
                 payload: {
@@ -2366,7 +2396,7 @@ async function _dispatchTool(name, args, sock) {
             _fpLastPublishedErrorsCount = _fpL6Snap.errorsCount;
             try {
               await _pconnEnsureRegistered(sock);
-              await _pconnWrite({
+              await _pconnWriteOrThrow({
                 cmd: 'publish', protocol: 'claws/2',
                 topic: `worker.${termId}.heartbeat`,
                 payload: {
@@ -2399,7 +2429,7 @@ async function _dispatchTool(name, args, sock) {
           _detachWatchers.delete(termId);
           try {
             await _pconnEnsureRegistered(sock);
-            await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
+            await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
               payload: { terminal_id: termId, status: _fpStatus, duration_ms: Date.now() - _fpStartedAt, marker_line: _fpMarkerLine, booted: launchClaude, detach: true, correlation_id: _fpCorrId, completion_signal: _fpSignal } });
           } catch (e) { log('fast-path watcher publish failed: ' + (e && e.message || e)); }
           try { await clawsRpc(sock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: _fpStatus }); } catch (e) { /* non-fatal */ }
@@ -2570,11 +2600,9 @@ async function _dispatchTool(name, args, sock) {
     if (!_eventBuffer.subscribed) {
       try {
         await _pconnEnsureRegistered(sock);
-        const sr = await _pconnWrite({ cmd: 'subscribe', topic: '**' }, 5000);
-        if (sr.ok) {
-          _eventBuffer.subscribed = true;
-          _eventBuffer.subscribeCursor = sr.resumeCursor ?? null;
-        }
+        const sr = await _pconnWriteOrThrow({ cmd: 'subscribe', topic: '**' }, 5000);
+        _eventBuffer.subscribed = true;
+        _eventBuffer.subscribeCursor = sr.resumeCursor ?? null;
       } catch (err) {
         log('claws_drain_events: auto-subscribe failed: ' + (err && err.message || err));
       }
@@ -2771,7 +2799,7 @@ async function _dispatchTool(name, args, sock) {
     log(`dispatch_subworker: publishing system.worker.spawned for terminal ${termId}`);
     try {
       await _pconnEnsureRegistered(sock);
-      await _pconnWrite({
+      await _pconnWriteOrThrow({
         cmd: 'publish', protocol: 'claws/2',
         topic: 'system.worker.spawned',
         payload: { terminal_id: termId, waveId: args.waveId, role: args.role, name: workerName, wrapped: true, started_at: new Date().toISOString(), correlation_id: _dswCorrId },
@@ -2817,7 +2845,7 @@ async function _dispatchTool(name, args, sock) {
           try {
             await _pconnEnsureRegistered(sock);
             _l2f(`L2-DEBUG: pconn-registered | site=claws_dispatch_subworker`);
-            await _pconnWrite({
+            await _pconnWriteOrThrow({
               cmd: 'publish', protocol: 'claws/2',
               topic: 'system.monitor.unarmed',
               payload: { terminal_id: _dswTermIdStr, correlation_id: _dswCorrId, layer: 2,
@@ -2846,7 +2874,7 @@ async function _dispatchTool(name, args, sock) {
             try {
               await _pconnEnsureRegistered(sock);
               _l2f(`L2-DEBUG: pconn-registered | site=claws_dispatch_subworker`);
-              await _pconnWrite({
+              await _pconnWriteOrThrow({
                 cmd: 'publish', protocol: 'claws/2',
                 topic: 'system.monitor.unarmed',
                 payload: { terminal_id: _dswTermIdStr, correlation_id: _dswCorrId, layer: 2,
@@ -2955,7 +2983,7 @@ async function _dispatchTool(name, args, sock) {
               _detachWatchers.delete(termId);
               try {
                 await _pconnEnsureRegistered(_dswSock);
-                await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
+                await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
                   payload: { terminal_id: termId, status: 'timeout', duration_ms: Date.now() - _dswStartedAt, marker_line: null, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId, completion_signal: null } });
               } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
               try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: 'timeout' }); } catch (e) { /* non-fatal */ }
@@ -2976,7 +3004,7 @@ async function _dispatchTool(name, args, sock) {
                 const dswHbSnap = _dswHbState.snapshot();
                 const elapsedSec = Math.floor(dswHbSnap.durationMs / 1000);
                 await _pconnEnsureRegistered(_dswSock);
-                await _pconnWrite({
+                await _pconnWriteOrThrow({
                   cmd: 'publish', protocol: 'claws/2',
                   topic: `worker.${termId}.heartbeat`,
                   payload: {
@@ -3005,7 +3033,7 @@ async function _dispatchTool(name, args, sock) {
                 const _dswBurstElapsed = Math.round((Date.now() - _dswProgressBurstStart) / 1000);
                 try {
                   await _pconnEnsureRegistered(_dswSock);
-                  await _pconnWrite({
+                  await _pconnWriteOrThrow({
                     cmd: 'publish', protocol: 'claws/2',
                     topic: `worker.${termId}.heartbeat`,
                     payload: {
@@ -3031,7 +3059,7 @@ async function _dispatchTool(name, args, sock) {
                 _dswLastTodoSig = _dswTodoSig;
                 try {
                   await _pconnEnsureRegistered(_dswSock);
-                  await _pconnWrite({
+                  await _pconnWriteOrThrow({
                     cmd: 'publish', protocol: 'claws/2',
                     topic: `worker.${termId}.heartbeat`,
                     payload: {
@@ -3052,7 +3080,7 @@ async function _dispatchTool(name, args, sock) {
                 _dswLastPublishedErrorsCount = _dswL6Snap.errorsCount;
                 try {
                   await _pconnEnsureRegistered(_dswSock);
-                  await _pconnWrite({
+                  await _pconnWriteOrThrow({
                     cmd: 'publish', protocol: 'claws/2',
                     topic: `worker.${termId}.heartbeat`,
                     payload: {
@@ -3083,7 +3111,7 @@ async function _dispatchTool(name, args, sock) {
               _detachWatchers.delete(termId);
               try {
                 await _pconnEnsureRegistered(_dswSock);
-                await _pconnWrite({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
+                await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: 'system.worker.completed',
                   payload: { terminal_id: termId, status: _dswStatus, duration_ms: Date.now() - _dswStartedAt, marker_line: _dswMarkerLine, waveId: _dswWid, role: _dswRole, detach: true, correlation_id: _dswCorrId, completion_signal: _dswSignal } });
               } catch (e) { log('dsw watcher publish failed: ' + (e && e.message || e)); }
               try { await clawsRpc(_dswSock, { cmd: 'lifecycle.mark-worker-status', terminalId: String(termId), status: _dswStatus }); } catch (e) { /* non-fatal */ }
