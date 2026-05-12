@@ -5,6 +5,11 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.14] - 2026-05-12
+
+### Changed
+- **Bug 13 arm-race observability** — `stream-events.js --wait` now logs a stderr line when the `monitorCorrelationId` hello is dispatched (`hello sent | corrId=… | t=…`). Permanent observability trace; no logic change. Enables comparing arm-dispatch time against the L2 30s window during future arm-race investigations. Root cause documented in `.local/plans/v0714/investigations/bug13-arm-race.md`.
+
 ## [0.7.14] - 2026-05-11
 
 ### Changed

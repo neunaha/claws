@@ -249,6 +249,9 @@ if (_waitFlagSeen) {
   });
 
   _wSock.on('connect', () => {
+    // Bug-13 observability: log hello-send time so arm-race investigations can compare
+    // this timestamp against the L2 30s window start (spawn time in mcp_server.js).
+    process.stderr.write(`stream-events.js --wait: hello sent | corrId=${_wCorrId} | t=${new Date().toISOString()}\n`);
     _wSock.write(JSON.stringify({ id: 1, cmd: 'hello', protocol: 'claws/2', role: 'observer', peerName: 'wait-mode', monitorCorrelationId: _wCorrId }) + '\n');
   });
 
