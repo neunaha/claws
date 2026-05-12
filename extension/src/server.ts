@@ -448,6 +448,22 @@ export class ClawsServer {
               }
             }
 
+            // Bug-15: emit per-terminal alive events so stream-events.js --keep-alive-on
+            // can confirm liveness without depending on worker hello or shell-integration
+            // transitions. Fires every heartbeat cycle (default 60 s); the 120 s stale
+            // threshold gives a 2× safety margin.
+            try {
+              const liveIds = this.opts.terminalManager.liveTerminalIds();
+              for (const id of liveIds) {
+                void this.emitSystemEvent(`system.terminal.${id}.alive`, {
+                  terminal_id: String(id),
+                  ts: new Date().toISOString(),
+                });
+              }
+            } catch (e) {
+              this.opts.logger(`[claws] terminal.alive emit failed: ${String(e)}`);
+            }
+
             // Retention: delete segments older than the configured threshold.
             const retentionDays = this.getConfig().eventLog.retentionDays;
             if (retentionDays > 0) {
@@ -920,9 +936,11 @@ export class ClawsServer {
     }
   }
 
-  /** True if some peer has already registered with role 'orchestrator'. */
-  private hasOrchestrator(): boolean {
-    for (const p of this.peers.values()) if (p.role === 'orchestrator') return true;
+  /** True if a root (non-wave) orchestrator is already registered. */
+  private hasRootOrchestrator(): boolean {
+    for (const p of this.peers.values()) {
+      if (p.role === 'orchestrator' && !p.waveId) return true;
+    }
     return false;
   }
 
@@ -1244,13 +1262,13 @@ export class ClawsServer {
           return {
             ok: true, peerId: existingPeerIdForSocket, protocol: PROTOCOL_VERSION_V2,
             serverCapabilities: ['push', 'broadcast', 'tasks'],
-            orchestratorPresent: this.hasOrchestrator(), restored: false, idempotent: true,
+            rootOrchestratorPresent: this.hasRootOrchestrator(), restored: false, idempotent: true,
           };
         }
       }
 
-      if (r.role === 'orchestrator' && this.hasOrchestrator()) {
-        return { ok: false, error: 'orchestrator already registered' };
+      if (r.role === 'orchestrator' && !r.waveId && this.hasRootOrchestrator()) {
+        return { ok: false, error: 'root orchestrator already registered' };
       }
 
       // Compute stable fingerprint when instanceNonce is provided.
@@ -1335,7 +1353,7 @@ export class ClawsServer {
         peerId,
         protocol: PROTOCOL_VERSION_V2,
         serverCapabilities: ['push', 'broadcast', 'tasks'],
-        orchestratorPresent: this.hasOrchestrator(),
+        rootOrchestratorPresent: this.hasRootOrchestrator(),
         restored: tombstone !== undefined,
       };
     }
