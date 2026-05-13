@@ -3,7 +3,7 @@ import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'child_process'
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { CaptureStore } from './capture-store';
+import { CaptureStore } from '../../capture-store';
 
 interface NodePtyModule {
   spawn(

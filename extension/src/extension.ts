@@ -6,6 +6,7 @@ import { CaptureStore } from './capture-store';
 import { TerminalManager } from './terminal-manager';
 import { ClawsPty, loadNodePtyStatus } from './backends/vscode/claws-pty';
 import { ClawsServer, IntrospectSnapshot } from './server';
+import { VsCodeBackend } from './backends/vscode/vscode-backend';
 import {
   DEFAULT_EXEC_TIMEOUT_MS,
   DEFAULT_POLL_LIMIT,
@@ -110,6 +111,9 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
   const terminalManager = new TerminalManager(captureStore, logger);
   terminalManager.adoptExisting(vscode.window.terminals);
 
+  const vscodeBackend = new VsCodeBackend({ captureStore, terminalManager, logger });
+  void vscodeBackend.start();
+
   const history: HistoryEvent[] = [];
   let nextSeq = 1;
   const runningExec = new WeakMap<vscode.Terminal, {
@@ -117,7 +121,6 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
     output: string;
     startedAt: number;
   }>();
-  const execWaiters = new WeakMap<vscode.Terminal, Array<(ev: HistoryEvent) => void>>();
 
   const pushEvent = (
     terminal: vscode.Terminal,
@@ -148,7 +151,7 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
       `[seq ${ev.seq}] ${ev.terminalName}#${ev.terminalId} exit=${ev.exitCode} ` +
       `cmd=${JSON.stringify((commandLine || '').slice(0, 80))}`,
     );
-    const waiters = execWaiters.get(terminal);
+    const waiters = vscodeBackend.execWaiters.get(terminal);
     if (waiters && waiters.length) {
       const w = waiters.shift()!;
       w(ev);
@@ -330,10 +333,9 @@ function activateInner(context: vscode.ExtensionContext, logger: (msg: string) =
       workspaceRoot: root,
       socketRel: cfg('socketPath', DEFAULT_SOCKET_REL),
       captureStore,
-      terminalManager,
+      backend: vscodeBackend,
       logger,
       history,
-      execWaiters,
       getConfig,
       getIntrospect: buildIntrospectSnapshot,
     });

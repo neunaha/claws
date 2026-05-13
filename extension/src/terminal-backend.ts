@@ -32,6 +32,14 @@ export interface BackendTerminalInfo {
   logPath: string | null;
   /** Platform-specific status. */
   status: 'alive' | 'closed' | 'unknown';
+  /** Vehicle lifecycle state (VsCodeBackend only — optional). */
+  vehicleState?: string;
+  /** Shell process PID (VS Code terminal.processId — separate from pty shellPid in wrapped case). */
+  pid?: number | null;
+  /** True if VS Code shell integration is active (VS Code only). */
+  hasShellIntegration?: boolean;
+  /** pty mode ('pty' | 'pipe' | 'none') — VsCodeBackend only. */
+  ptyMode?: string;
 }
 
 /** Result of a readLog call. Mirrors the existing CaptureSlice shape. */
@@ -65,8 +73,10 @@ export interface TerminalCreatedEvent {
 
 export interface TerminalClosedEvent {
   id: string;
-  /** Who initiated the close. */
-  origin: 'orchestrator' | 'user' | 'process_exit' | 'backend';
+  /** Who initiated the close. Matches TerminalCloseOrigin enum in event-schemas.ts. */
+  origin: 'orchestrator' | 'user' | 'process_exit' | 'backend'
+        | 'marker' | 'error' | 'timeout' | 'pub_complete'
+        | 'wave_violation' | 'idle_timeout' | 'ttl_max';
 }
 
 export interface TerminalDataEvent {

@@ -4,7 +4,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { loadNodePtyStatus } from './claws-pty';
-import { ClawsServer } from './server';
+import { ClawsServer } from '../../server';
 
 export interface StatusBarOptions {
   activated: boolean;

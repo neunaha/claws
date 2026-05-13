@@ -115,6 +115,10 @@ export class VsCodeBackend extends EventEmitter implements TerminalBackend {
       wrapped: d.wrapped,
       logPath: d.logPath ?? null,
       status: (d.status === 'adopted' ? 'alive' : d.status === 'unknown' ? 'unknown' : 'closed') as BackendTerminalInfo['status'],
+      vehicleState: d.vehicleState,
+      pid: d.pid ?? null,
+      hasShellIntegration: d.hasShellIntegration,
+      ptyMode: d.ptyMode,
     }));
   }
 

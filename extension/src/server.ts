@@ -1,14 +1,12 @@
-import * as vscode from 'vscode';
 import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID, createHmac, timingSafeEqual } from 'crypto';
 import { z } from 'zod';
 import { CaptureStore } from './capture-store';
-import { TerminalManager } from './terminal-manager';
+import { TerminalBackend } from './terminal-backend';
 import { ClawsRequest, ClawsResponse, HistoryEvent, PROTOCOL_VERSION, PROTOCOL_VERSION_V2, SubWorkerRole } from './protocol';
 import { WaveRegistry } from './wave-registry';
-import { stripAnsi } from './ansi-strip';
 import {
   ServerConfigProvider,
   defaultServerConfig,
@@ -18,7 +16,7 @@ import { TaskRecord, allocTaskId } from './task-registry';
 import { LifecycleStore } from './lifecycle-store';
 import { canTransition, explainIllegalTransition, canReflect } from './lifecycle-rules';
 import { LifecycleEngine } from './lifecycle-engine';
-import { EnvelopeV1, SCHEMA_BY_NAME } from './event-schemas';
+import { EnvelopeV1, SCHEMA_BY_NAME, VehicleStateName } from './event-schemas';
 import { schemaForTopic } from './topic-registry';
 import { EventLogWriter, EventLogReader, parseCursor } from './event-log';
 import { PipelineRegistry } from './pipeline-registry';
@@ -77,14 +75,24 @@ export interface IntrospectSnapshot {
 
 export type IntrospectProvider = () => IntrospectSnapshot;
 
+/**
+ * Extra non-interface capabilities that VsCodeBackend (and future backends)
+ * may expose. Server calls these via optional-chaining — no runtime error if absent.
+ */
+interface ExtendedBackend extends TerminalBackend {
+  liveTerminalIds?(): Set<string>;
+  readonly terminalCount?: number;
+  setStateChangeCallback?(cb: (id: string, from: VehicleStateName | null, to: VehicleStateName) => void): void;
+  setContentChangeCallback?(cb: (id: string, pid: number | null, basename: string | null) => void): void;
+}
+
 export interface ServerOptions {
   workspaceRoot: string;
   socketRel: string;
   captureStore: CaptureStore;
-  terminalManager: TerminalManager;
+  backend: TerminalBackend;
   logger: (msg: string) => void;
   history: HistoryEvent[];
-  execWaiters: WeakMap<vscode.Terminal, Array<(ev: HistoryEvent) => void>>;
   /**
    * Optional live-config reader. If omitted the server uses hard-coded
    * defaults (180s exec timeout, 100 poll limit). The extension wires this
@@ -188,17 +196,18 @@ export class ClawsServer {
   private readonly wsTransport = new WebSocketTransport();
   /** Bug-6 Layer 2 — tracks Monitor peers that declared monitorCorrelationId at hello time. */
   private readonly peerRegistry = new PeerRegistry();
+  /** Tracks whether each terminal was created wrapped — populated from backend 'terminal:created' events. */
+  private readonly terminalWrapped = new Map<string, boolean>();
 
   constructor(private readonly opts: ServerOptions) {
     this.lifecycleStore = new LifecycleStore(opts.workspaceRoot);
     // LH-9 1D: reconcile against live terminals AFTER loadFromDisk has
-    // populated state from JSON. extension.ts has already called
-    // terminalManager.adoptExisting(vscode.window.terminals) by this point,
-    // so liveTerminalIds() reflects whatever VS Code preserved across the
-    // last extension reload. Anything in spawned_workers that isn't live
-    // is a stale entry from a prior session and gets marked closed.
+    // populated state from JSON. The backend's liveTerminalIds() reflects
+    // whatever terminals survived the last extension reload. Anything in
+    // spawned_workers that isn't live is a stale entry and gets marked closed.
     try {
-      const liveIds = opts.terminalManager.liveTerminalIds();
+      const extBackend = opts.backend as ExtendedBackend;
+      const liveIds = extBackend.liveTerminalIds?.() ?? new Set<string>();
       const { workersClosed, monitorsDropped } = this.lifecycleStore.reconcileWithLiveTerminals(liveIds);
       if (workersClosed.length > 0 || monitorsDropped.length > 0) {
         opts.logger(`[claws] lifecycle reconcile on boot: ${workersClosed.length} stale worker(s) closed: ${workersClosed.join(', ')}; ${monitorsDropped.length} orphan monitor(s) dropped: ${monitorsDropped.join(', ')}`);
@@ -227,7 +236,7 @@ export class ClawsServer {
         });
         const { terminalId } = this.waveRegistry.markSubWorkerAutoClosed(waveId, role);
         if (terminalId) {
-          opts.terminalManager.close(terminalId, 'wave_violation');
+          void opts.backend.closeTerminal(terminalId, 'wave_violation');
         }
       },
       (waveId, subWorkerCount) => {
@@ -239,11 +248,15 @@ export class ClawsServer {
         });
       },
     );
-    opts.terminalManager.setStateChangeCallback((id, from, to) => {
+    opts.backend.on('terminal:created', (ev) => {
+      this.terminalWrapped.set(ev.id, ev.wrapped);
+    });
+    const extBackend = opts.backend as ExtendedBackend;
+    extBackend.setStateChangeCallback?.((id, from, to) => {
       const payload = { terminalId: id, from, to, ts: new Date().toISOString() };
       void this.emitSystemEvent(`vehicle.${id}.state`, payload);
     });
-    opts.terminalManager.setContentChangeCallback((id, pid, basename) => {
+    extBackend.setContentChangeCallback?.((id, pid, basename) => {
       const payload = {
         terminalId:    id,
         contentType:   classifyContentType(basename),
@@ -254,7 +267,8 @@ export class ClawsServer {
       };
       void this.emitSystemEvent(`vehicle.${id}.content`, payload);
     });
-    opts.terminalManager.setTerminalCloseCallback((id, wrapped, origin) => {
+    opts.backend.on('terminal:closed', (ev) => {
+      const { id, origin } = ev;
       // LH-10: look up correlation_id from lifecycle state so per-worker Monitors
       // (filtered on correlation_id) can self-exit on terminal close — Monitor closure parity.
       const correlationId = this.lifecycleStore.snapshot()
@@ -265,26 +279,23 @@ export class ClawsServer {
         closed_at: new Date().toISOString(),
         ...(correlationId ? { correlation_id: correlationId } : {}),
       });
-      if (wrapped) {
-        // BUG-7 Option A: terminal_id is session-local (VS Code resets and recycles the
-        // counter on extension reload). events.log is globally append-only. Consumers
-        // matching only by terminal_id will false-positive against prior-session entries.
-        // correlation_id is a UUID — globally unique, collision-free across sessions.
+      // Only emit system.worker.terminated for wrapped terminals (they host Claude workers).
+      // BUG-7 Option A: terminal_id is session-local. correlation_id is globally unique.
+      const wasWrapped = this.terminalWrapped.get(String(id)) ?? false;
+      this.terminalWrapped.delete(String(id));
+      if (wasWrapped) {
         void this.emitSystemEvent('system.worker.terminated', {
           terminal_id: id,
           terminated_at: new Date().toISOString(),
           ...(correlationId ? { correlation_id: correlationId } : {}),
         });
       }
-      // LH-9 1A: every close path — UI X-button, programmatic close, pty
-      // exit, VS Code reload — funnels through this callback. Mark the
-      // worker closed in lifecycle so .claws/lifecycle-state.json never
-      // drifts from reality. Best-effort: non-lifecycle terminals (plain
-      // claws_create with no register-spawn) return null, which is fine.
+      // LH-9 1A: every close path funnels through this event. Mark the
+      // worker closed in lifecycle so .claws/lifecycle-state.json never drifts.
       try {
         const updated = this.lifecycleStore.markWorkerStatus(String(id), 'closed');
         if (updated) this.lifecycleEngine.onWorkerEvent('terminal-close-callback:' + id);
-        this.lifecycleStore.removeMonitorByTerminalId(String(id)); // LH-10: heal monitor metadata on close
+        this.lifecycleStore.removeMonitorByTerminalId(String(id)); // LH-10
       } catch (_err) { /* non-fatal */ }
     });
   }
@@ -413,7 +424,7 @@ export class ClawsServer {
             void this.emitSystemEvent('system.heartbeat', {
               uptimeMs: this.uptimeMs(),
               peers: this.peers.size,
-              terminals: this.opts.terminalManager.terminalCount,
+              terminals: (this.opts.backend as ExtendedBackend).terminalCount ?? 0,
             });
 
             // L13: emit system.metrics with throughput + queue depth snapshot.
@@ -453,7 +464,7 @@ export class ClawsServer {
             // transitions. Fires every heartbeat cycle (default 60 s); the 120 s stale
             // threshold gives a 2× safety margin.
             try {
-              const liveIds = this.opts.terminalManager.liveTerminalIds();
+              const liveIds = (this.opts.backend as ExtendedBackend).liveTerminalIds?.() ?? new Set<string>();
               for (const id of liveIds) {
                 void this.emitSystemEvent(`system.terminal.${id}.alive`, {
                   terminal_id: String(id),
@@ -485,7 +496,7 @@ export class ClawsServer {
             for (const { id, reason } of expired) {
               this.opts.logger(`[claws/ttl] worker ${id} expired (${reason}) — closing`);
               try {
-                this.opts.terminalManager.close(id, reason);
+                void this.opts.backend.closeTerminal(id, 'orchestrator');
               } catch (err) {
                 this.opts.logger(`[claws/ttl] close ${id} failed: ${(err as Error).message}`);
               }
@@ -965,10 +976,10 @@ export class ClawsServer {
 
   private async handle(req: ClawsRequest, ctx: ConnCtx): Promise<ClawsResponse> {
     const { cmd } = req;
-    const tm = this.opts.terminalManager;
+    const backend = this.opts.backend;
 
     if (cmd === 'list') {
-      return { ok: true, terminals: await tm.describeAll() };
+      return { ok: true, terminals: await backend.listTerminals() };
     }
 
     if (cmd === 'create') {
@@ -991,21 +1002,14 @@ export class ClawsServer {
       const callerWaveId = callerPeer3?.waveId ?? r.waveId;
       const callerRole = (callerPeer3?.subWorkerRole ?? r.waveRole) as SubWorkerRole | undefined;
 
-      if (r.wrapped === true) {
-        const { id } = tm.createWrapped(r);
-        if (callerWaveId) this.waveRegistry.trackTerminal(callerWaveId, String(id), callerRole);
-        return { ok: true, id, logPath: null, wrapped: true };
-      }
-      const { id } = tm.createStandard(r);
+      const { id, logPath } = await backend.createTerminal(r);
       if (callerWaveId) this.waveRegistry.trackTerminal(callerWaveId, String(id), callerRole);
-      return { ok: true, id, wrapped: false };
+      return { ok: true, id, logPath: logPath ?? null, wrapped: r.wrapped === true };
     }
 
     if (cmd === 'show') {
       const r = req as ClawsRequest & { id: string | number; preserveFocus?: boolean };
-      const t = tm.terminalById(r.id);
-      if (!t) return { ok: false, error: `unknown terminal id ${r.id}` };
-      t.show(r.preserveFocus !== false);
+      await backend.focusTerminal?.(String(r.id));
       return { ok: true };
     }
 
@@ -1014,42 +1018,31 @@ export class ClawsServer {
         id: string | number; text?: string; newline?: boolean;
         show?: boolean; paste?: boolean;
       };
-      const rec = tm.recordById(r.id);
-      if (!rec) return { ok: false, error: `unknown terminal id ${r.id}` };
-      if (r.show !== false) rec.terminal.show(true);
+      const id = String(r.id);
+      if (r.show !== false) await backend.focusTerminal?.(id);
       const text = r.text ?? '';
       const newline = r.newline !== false;
-      // `mode` is part of the contract — see protocol.ts comments on
-      // SendRequest for the semantic delta between the two paths.
-      if (rec.pty) {
-        rec.pty.writeInjected(text, newline, r.paste === true);
-        return { ok: true, mode: 'wrapped' };
-      }
-      rec.terminal.sendText(text, newline);
-      return { ok: true, mode: 'unwrapped' };
+      await backend.sendText(id, text, { newline, paste: r.paste === true });
+      return { ok: true, mode: 'wrapped' };
     }
 
     if (cmd === 'exec') {
       const r = req as ClawsRequest & {
         id: string | number; command: string; timeoutMs?: number; show?: boolean;
       };
-      const rec = tm.recordById(r.id);
-      if (!rec) return { ok: false, error: `unknown terminal id ${r.id}` };
-      if (r.show !== false) rec.terminal.show(true);
+      const id = String(r.id);
+      if (r.show !== false) await backend.focusTerminal?.(id);
       const startedAt = new Date().toISOString();
-      void this.emitSystemEvent(`command.${rec.id}.start`, {
-        terminalId: rec.id,
+      void this.emitSystemEvent(`command.${id}.start`, {
+        terminalId: id,
         command:    r.command,
         startedAt,
       });
-      if (!rec.terminal.shellIntegration) {
-        if (rec.pty) {
-          rec.pty.writeInjected(r.command, true, false);
-        } else {
-          rec.terminal.sendText(r.command, true);
-        }
-        void this.emitSystemEvent(`command.${rec.id}.end`, {
-          terminalId: rec.id,
+      if (!backend.execCommand) {
+        // Backend has no exec support — fall back to sendText (degraded, no output capture).
+        await backend.sendText(id, r.command, { newline: true, paste: false });
+        void this.emitSystemEvent(`command.${id}.end`, {
+          terminalId: id,
           command:    r.command,
           exitCode:   null,
           durationMs: 0,
@@ -1059,37 +1052,19 @@ export class ClawsServer {
         return {
           ok: true,
           degraded: true,
-          note: 'no shell integration active; output not captured via exec — use readLog on wrapped terminals',
+          note: 'backend has no execCommand; command sent via sendText — use readLog on wrapped terminals',
         };
       }
       const timeoutMs = r.timeoutMs || this.getConfig().execTimeoutMs;
-      const event = await new Promise<HistoryEvent>((resolve, reject) => {
-        const list = this.opts.execWaiters.get(rec.terminal) || [];
-        const resolver = (ev: HistoryEvent) => { clearTimeout(timer); resolve(ev); };
-        const timer = setTimeout(() => {
-          const i = list.indexOf(resolver);
-          if (i >= 0) list.splice(i, 1);
-          reject(new Error(`exec timeout after ${timeoutMs}ms`));
-        }, timeoutMs);
-        list.push(resolver);
-        this.opts.execWaiters.set(rec.terminal, list);
-        try {
-          rec.terminal.shellIntegration!.executeCommand(r.command);
-        } catch (err) {
-          clearTimeout(timer);
-          const i = list.indexOf(resolver);
-          if (i >= 0) list.splice(i, 1);
-          reject(err);
-        }
-      });
-      void this.emitSystemEvent(`command.${rec.id}.end`, {
-        terminalId: rec.id,
+      const { exitCode } = await backend.execCommand(id, r.command, timeoutMs);
+      void this.emitSystemEvent(`command.${id}.end`, {
+        terminalId: id,
         command:    r.command,
-        exitCode:   (event as unknown as { exitCode?: number }).exitCode ?? null,
+        exitCode,
         durationMs: Date.now() - new Date(startedAt).getTime(),
         endedAt:    new Date().toISOString(),
       });
-      return { ok: true, event };
+      return { ok: true, exitCode };
     }
 
     if (cmd === 'read') {
@@ -1131,54 +1106,34 @@ export class ClawsServer {
 
     if (cmd === 'close') {
       const r = req as ClawsRequest & { id: string | number; close_origin?: string };
-      // BUG-13: kill foreground process before disposing so Claude TUI
-      // processes don't orphan and keep publishing bus events.
-      const rec = tm.recordById(r.id);
-      if (rec?.pty) {
-        const fgPid = rec.pty.getForegroundProcess().pid ?? rec.pty.pid;
-        if (fgPid != null) {
-          try { process.kill(fgPid, 'SIGTERM'); } catch { /* already gone */ }
-          const killTimer = setTimeout(() => {
-            try {
-              process.kill(fgPid, 0); // throws if already gone
-              process.kill(fgPid, 'SIGKILL');
-            } catch { /* already gone */ }
-          }, 5000);
-          if (typeof killTimer.unref === 'function') killTimer.unref();
-        }
-      }
       // Use caller-supplied close_origin so semantic accuracy flows through
       // (e.g. mcp_server.js watchers pass 'marker'/'error'/'timeout').
       const closeOrigin = (['marker','error','timeout','orchestrator','user','pub_complete','wave_violation','idle_timeout','ttl_max'] as const)
         .find(o => o === r.close_origin) ?? 'orchestrator';
       const idStr = String(r.id);
-      // LH-9 1B: mark lifecycle closed BEFORE attempting tm.close so that an
-      // already-gone terminal still produces a healed state record. Previously
-      // this lived after the alreadyClosed early-return, which left the JSON
-      // with closed:false forever for any terminal that died via VS Code's
-      // close-X / reload / pty exit but happened to be re-targeted by a
-      // belt-and-suspenders close call. The setTerminalCloseCallback covers
-      // the live path; this covers the stale path.
+      // Check liveness before closing — used to return alreadyClosed for idempotency semantics.
+      const extBackendForClose = backend as ExtendedBackend;
+      const liveIdsForClose = extBackendForClose.liveTerminalIds?.() ?? new Set<string>();
+      const wasAlive = liveIdsForClose.has(idStr);
+      // LH-9 1B: mark lifecycle closed BEFORE attempting backend.closeTerminal so that an
+      // already-gone terminal still produces a healed state record.
       try {
         const updated = this.lifecycleStore.markWorkerStatus(idStr, 'closed');
         if (updated) this.lifecycleEngine.onWorkerEvent('claws-close:' + idStr);
       } catch (_e) { /* non-fatal */ }
-      const ok = tm.close(r.id, closeOrigin);
-      if (!ok) return { ok: true, alreadyClosed: true };
-      return { ok: true, alreadyClosed: false };
+      await backend.closeTerminal(idStr, closeOrigin);
+      return { ok: true, alreadyClosed: !wasAlive };
     }
 
     if (cmd === 'readLog') {
       const r = req as ClawsRequest & {
         id: string | number; offset?: number; limit?: number; strip?: boolean;
       };
-      const rec = tm.recordById(r.id);
-      if (!rec) return { ok: false, error: `unknown terminal id ${r.id}` };
+      const idStr = String(r.id);
       const strip = r.strip !== false;
       const limit = Math.min(r.limit || MAX_READLOG_BYTES, MAX_READLOG_BYTES);
-
-      if (rec.wrapped && rec.pty) {
-        const slice = this.opts.captureStore.read(String(r.id), r.offset, limit, strip);
+      try {
+        const slice = await backend.readLog(idStr, r.offset, limit, strip);
         return {
           ok: true,
           bytes: slice.bytes,
@@ -1188,38 +1143,9 @@ export class ClawsServer {
           truncated: slice.truncated,
           logPath: null,
         };
+      } catch (err) {
+        return { ok: false, error: `readLog failed: ${(err as Error).message}` };
       }
-
-      if (rec.logPath && fs.existsSync(rec.logPath)) {
-        try {
-          const stat = fs.statSync(rec.logPath);
-          const totalSize = stat.size;
-          let offset = r.offset;
-          if (offset == null) offset = Math.max(0, totalSize - limit);
-          const fd = fs.openSync(rec.logPath, 'r');
-          try {
-            const buf = Buffer.alloc(Math.min(limit, totalSize - offset));
-            fs.readSync(fd, buf, 0, buf.length, offset);
-            let text = buf.toString('utf8');
-            if (strip) text = stripAnsi(text);
-            return {
-              ok: true,
-              bytes: text,
-              offset,
-              nextOffset: offset + buf.length,
-              totalSize,
-              truncated: totalSize > offset + buf.length,
-              logPath: rec.logPath,
-            };
-          } finally {
-            fs.closeSync(fd);
-          }
-        } catch (err) {
-          return { ok: false, error: `read failed: ${(err as Error).message}` };
-        }
-      }
-
-      return { ok: false, error: `terminal ${r.id} is not wrapped (no log available)` };
     }
 
     if (cmd === 'introspect') {
@@ -1527,14 +1453,7 @@ export class ClawsServer {
             const text = typeof payloadObj['text'] === 'string'
               ? payloadObj['text']
               : JSON.stringify(r.payload);
-            const sinkRec = this.opts.terminalManager.recordById(sinkStep.terminalId);
-            if (sinkRec) {
-              if (sinkRec.pty) {
-                sinkRec.pty.writeInjected(text, true, false);
-              } else {
-                sinkRec.terminal.sendText(text, true);
-              }
-            }
+            void this.opts.backend.sendText(String(sinkStep.terminalId), text, { newline: true, paste: false });
             void this.emitSystemEvent(`pipeline.${pipeline.pipelineId}.step.${sourceStep.stepId}`, {
               pipelineId: pipeline.pipelineId,
               stepId:     sourceStep.stepId,
@@ -1569,14 +1488,7 @@ export class ClawsServer {
         this.pushFrame(peer.socket, 'system.broadcast', from, { text: injectText });
         count++;
         if (r.inject && peer.terminalId) {
-          const rec = this.opts.terminalManager.recordById(String(peer.terminalId));
-          if (rec) {
-            if (rec.pty) {
-              rec.pty.writeInjected(injectText, true, true);
-            } else {
-              rec.terminal.sendText(injectText, true);
-            }
-          }
+          void this.opts.backend.sendText(String(peer.terminalId), injectText, { newline: true, paste: true });
         }
       }
       return { ok: true, deliveredTo: count };
@@ -1615,14 +1527,7 @@ export class ClawsServer {
       if (deliver === 'inject' || deliver === 'both') {
         const assigneePeer = this.peers.get(r.assignee);
         if (assigneePeer?.terminalId) {
-          const rec = this.opts.terminalManager.recordById(String(assigneePeer.terminalId));
-          if (rec) {
-            if (rec.pty) {
-              rec.pty.writeInjected(r.prompt, true, true);
-            } else {
-              rec.terminal.sendText(r.prompt, true);
-            }
-          }
+          void this.opts.backend.sendText(String(assigneePeer.terminalId), r.prompt, { newline: true, paste: true });
         }
       }
       this.opts.logger(`[claws/2] task assigned: ${taskId} to ${r.assignee}`);
@@ -1953,8 +1858,12 @@ export class ClawsServer {
       const closedTerminals: string[] = [];
       const alreadyClosed: string[] = [];
       for (const tid of terminalIdsToClose) {
-        const closed = tm.close(tid);
-        if (closed) { closedTerminals.push(tid); } else { alreadyClosed.push(tid); }
+        try {
+          await backend.closeTerminal(tid, 'orchestrator');
+          closedTerminals.push(tid);
+        } catch {
+          alreadyClosed.push(tid);
+        }
       }
       // Always emit harvested so orchestrators can confirm lifecycle closed.
       void this.emitSystemEvent(`wave.${r.waveId}.harvested`, {
