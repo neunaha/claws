@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Internal
+- **v0.8 P1 commit 1 — TerminalBackend interface + platform.ts + MockBackend** — Pure additions, no behavior change. `extension/src/terminal-backend.ts`: full `TerminalBackend` interface + all supporting types (`BackendCreateOptions`, `BackendTerminalInfo`, `BackendLogSlice`, `BackendSendOptions`, event types, `TerminalBackendFactory`, `BackendFactoryOptions`). `extension/src/platform.ts`: `NodePlatform` type alias (`'win32' | 'darwin' | 'linux'`), `isWindows`/`isMac`/`isLinux` predicates, `getProcessHelpers()` factory (darwin+linux branches using pgrep/ps; win32 throws P2 stub). `extension/test/fixtures/mock-backend.ts`: `MockBackend implements TerminalBackend` with in-memory state, EventEmitter-based events, and test helpers (`injectData`, `getSentTexts`). No existing file modified.
 - **Pre-P1.1 gate** — cleared 7 pre-existing test failures (4 in `test:worker-fixes-v079` + 3 hidden by suite-abort) so `npm test` exits clean before v0.8 P1 (TerminalBackend extraction) begins. Fixes: `worker-fixes-v079` regexes updated to match current code (safeMission, detectCompletion, general -ef guard); `install.sh` uncommitted-work error message updated; `terminal-manager.test.js` updated for `close()` signature with `origin` param; `worker-boot-paste-collapse.test.js` extraction terminator updated (`_dswTick` → `_setupDetachWatcher`).
 
 ## [0.7.14] - 2026-05-12
