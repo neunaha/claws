@@ -3,8 +3,8 @@
   "version": "0.7.14",
   "description": "Claws — Terminal Control Bridge for VS Code. One command to install.",
   "bin": {
-    "claws": "./cli.js",
-    "claws-install": "./cli.js"
+    "claws-code": "./bin/cli.js",
+    "claws": "./bin/cli.js"
   },
   "repository": {
     "type": "git",
