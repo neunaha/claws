@@ -102,6 +102,8 @@ function log(msg) {
 
 // L2 investigation helper — writes to stderr AND .claws/l2-debug.log for file-based capture.
 function _logL2File(sockPath, msg) {
+  // Named pipes are kernel objects with no filesystem directory — skip on win32.
+  if (sockPath && sockPath.startsWith('\\\\.\\pipe\\')) return;
   try {
     const logPath = path.join(path.dirname(path.resolve(sockPath)), 'l2-debug.log');
     fs.appendFileSync(logPath, new Date().toISOString() + ' ' + msg + '\n');
@@ -1800,13 +1802,47 @@ async function _pconnEnsureRegistered(sockPath) {
 
 // ─── Tool handlers ─────────────────────────────────────────────────────────
 
+// Compute a named pipe path from a workspace root path (win32 only).
+// Same algorithm as extension/src/transport.ts getServerEndpoint().
+function _winPipeName(workspaceRoot) {
+  const hash = require('crypto')
+    .createHash('sha256')
+    .update(workspaceRoot.toLowerCase())
+    .digest('hex')
+    .slice(0, 8);
+  return `\\\\.\\pipe\\claws-${hash}`;
+}
+
+// Walk up from a starting directory looking for a .claws/ directory.
+// Used on win32 to locate the workspace root (pipes have no filesystem presence).
+function _findWorkspaceRoot(startDir) {
+  let dir = startDir;
+  while (dir) {
+    try { if (fs.statSync(path.join(dir, '.claws')).isDirectory()) return dir; } catch {}
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
 function getSocket() {
   // Absolute override wins immediately.
   const envSock = process.env.CLAWS_SOCKET;
   if (envSock && path.isAbsolute(envSock)) return envSock;
 
-  // Walk up from CWD to find .claws/claws.sock — works when Claude Code chdir'd
-  // to the workspace root before spawning the MCP server.
+  if (process.platform === 'win32') {
+    // Named pipes have no filesystem presence — derive the name from the
+    // workspace root path using the same sha256[0:8] algorithm as transport.ts.
+    const workspaceRoot = process.env.CLAWS_WORKSPACE_ROOT
+      || _findWorkspaceRoot(process.cwd())
+      || _findWorkspaceRoot(__dirname)
+      || process.cwd();
+    return _winPipeName(workspaceRoot);
+  }
+
+  // Mac / Linux: walk up from CWD to find .claws/claws.sock.
+  // Works when Claude Code chdir'd to the workspace root before spawning the MCP server.
   for (let dir = process.cwd();;) {
     const candidate = path.join(dir, '.claws', 'claws.sock');
     try { if (fs.statSync(candidate).isSocket()) return candidate; } catch {}

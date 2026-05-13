@@ -45,8 +45,37 @@ const net  = require('net');
 const fs   = require('fs');
 const path = require('path');
 
+// Walk up from startDir looking for a .claws/ directory (win32 workspace detection).
+function _findWorkspaceRootWin(startDir) {
+  let dir = startDir;
+  while (dir) {
+    try { if (fs.statSync(path.join(dir, '.claws')).isDirectory()) return dir; } catch {}
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
 function findSocket() {
   if (process.env.CLAWS_SOCKET) return process.env.CLAWS_SOCKET;
+
+  if (process.platform === 'win32') {
+    // Named pipes are kernel objects — derive name from workspace root hash.
+    // Same algorithm as extension/src/transport.ts getServerEndpoint().
+    const workspaceRoot = process.env.CLAWS_WORKSPACE_ROOT
+      || _findWorkspaceRootWin(process.cwd())
+      || _findWorkspaceRootWin(path.dirname(__dirname))
+      || process.cwd();
+    const hash = require('crypto')
+      .createHash('sha256')
+      .update(workspaceRoot.toLowerCase())
+      .digest('hex')
+      .slice(0, 8);
+    return `\\\\.\\pipe\\claws-${hash}`;
+  }
+
+  // Mac / Linux: walk up the directory tree looking for .claws/claws.sock.
   for (const start of [process.cwd(), __dirname]) {
     let dir = start;
     while (dir && dir !== '/' && dir !== path.dirname(dir)) {

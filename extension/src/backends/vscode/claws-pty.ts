@@ -179,6 +179,15 @@ export class ClawsPty implements vscode.Pseudoterminal {
   getForegroundProcess(): { pid: number | null; basename: string | null } {
     const shellPid = this.ptyProc?.pid ?? this.childProc?.pid;
     if (!shellPid) return { pid: null, basename: null };
+    if (process.platform === 'win32') {
+      // ConPTY stub: pgrep/ps do not exist on Windows. Return the shell PID and
+      // the basename of the configured shell path as the best approximation.
+      // The safety gate uses basename for TUI detection; 'unknown' triggers a
+      // warning (not a hard block), so this is safe for v0.8.
+      const shell = this.opts.shellPath || '';
+      const basename = shell ? (shell.split(/[\\/]/).pop() ?? null) : null;
+      return { pid: shellPid, basename };
+    }
     try {
       const pgrepResult = spawnSync('pgrep', ['-P', String(shellPid)], { encoding: 'utf8', timeout: 500 });
       const childOutput = (pgrepResult.stdout ?? '').trim();

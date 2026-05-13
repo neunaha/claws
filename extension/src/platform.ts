@@ -22,13 +22,17 @@ export interface ProcessHelpers {
 
 /**
  * Return platform-appropriate process helpers.
- * On win32 every method throws "not implemented" — Windows support is P2.
+ * On win32, returns the shell PID and null basename (ConPTY does not expose
+ * the foreground process without Win32 API calls — v0.8 stub, improved in v0.8.1).
  */
 export function getProcessHelpers(): ProcessHelpers {
   if (currentPlatform === 'win32') {
     return {
-      getForegroundProcess(): never {
-        throw new Error('getProcessHelpers: win32 not implemented (P2)');
+      getForegroundProcess(shellPid: number): { pid: number | null; basename: string | null } {
+        // Win32 stub: ConPTY process tree requires NtQueryInformationProcess or
+        // toolhelp32 — neither is available in pure Node. Return the shell PID
+        // so the safety gate can still warn (basename=null → 'unknown' content type).
+        return { pid: shellPid, basename: null };
       },
     };
   }
