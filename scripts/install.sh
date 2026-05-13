@@ -255,7 +255,7 @@ if [ -d "$INSTALL_DIR/.git" ]; then
   if [ "${CLAWS_DEV_PROTECT:-0}" = "1" ]; then
     _claws_dirty="$(cd "$INSTALL_DIR" && git status --porcelain 2>/dev/null | head -c 1)"
     if [ -n "$_claws_dirty" ] && [ "${CLAWS_FORCE_RESET:-0}" != "1" ]; then
-      bad "$INSTALL_DIR has uncommitted changes (CLAWS_DEV_PROTECT=1 active)."
+      bad "uncommitted changes — refusing to git reset ($INSTALL_DIR has local edits; CLAWS_DEV_PROTECT=1 active)."
       bad "Choose one:"
       bad "  1. Commit or stash your changes, then re-run."
       bad "  2. Re-run with CLAWS_FORCE_RESET=1 to discard local changes."

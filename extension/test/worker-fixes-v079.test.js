@@ -68,7 +68,12 @@ check(
 // separately after a sleep so Claude Code v2.x's paste-detect window closes.
 check(
   'mission is sent directly as user prompt (no file referrer)',
-  /const\s+payload\s*=\s*hasMission\s*\?\s*args\.mission/.test(MCP),
+  // payload derives from args.mission: either directly (payload = args.mission) or
+  // via a processing variable (safeMission = ...args.mission...; payload = safeMission).
+  // Both forms satisfy "no file-abstraction layer" — the mission is args.mission itself.
+  (/const\s+payload\s*=\s*hasMission\s*\?\s*args\.mission/.test(MCP) ||
+   (/const\s+safeMission\s*=\s*hasMission[\s\S]{0,300}args\.mission/.test(MCP) &&
+    /const\s+payload\s*=\s*hasMission\s*\?\s*safeMission/.test(MCP))),
 );
 check(
   'NO file-referrer pattern in mcp_server.js (forbidden by project owner)',
@@ -98,7 +103,9 @@ check(
 );
 check(
   'install.sh prompt-templates rename has -ef self-collision guard',
-  /-ef\s*"\$TARGET\/\.claude\/skills\/claws-prompt-templates"/.test(INSTALL_SH),
+  // The general skill-copy loop's -ef guard covers claws-prompt-templates via
+  // $_skill_name (refactored from a specific guard in v0.7.14 sweep).
+  /-ef\s*"\$TARGET\/\.claude\/skills\/(?:\$_skill_name|claws-prompt-templates)"/.test(INSTALL_SH),
 );
 
 // Uncommitted-work guard before git reset --hard. install.sh Step 1 used to
@@ -160,8 +167,10 @@ check(
 );
 check(
   'claws_workers_wait handler present (non-blocking companion to detach)',
+  // Handler uses detectCompletion(scanText, detectOpt, ...) which wraps
+  // findStandaloneMarker — higher-level abstraction added in v0.7.10+.
   /if\s*\(\s*name\s*===\s*'claws_workers_wait'\s*\)/.test(MCP) &&
-  /findStandaloneMarker\(scanText, completeMarker\)/.test(MCP),
+  /detectCompletion\(scanText,\s*detect/.test(MCP),
 );
 
 // ─── Final report ────────────────────────────────────────────────────────────

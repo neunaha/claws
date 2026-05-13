@@ -37,7 +37,11 @@ function check(name, fn) {
 // Match from `close(id: string | number): boolean {` to the matching `}` by
 // scanning for the closing brace at the same indent level.
 function extractCloseBody(source) {
-  const sig = 'close(id: string | number): boolean {';
+  // Match the close() signature regardless of optional extra parameters (e.g., origin).
+  const sigRe = /close\(id: string \| number[^)]*\): boolean \{/;
+  const sigMatch = sigRe.exec(source);
+  assert.ok(sigMatch, 'close() method signature not found in terminal-manager.ts');
+  const sig = sigMatch[0];
   const start = source.indexOf(sig);
   assert.ok(start >= 0, 'close() method signature not found in terminal-manager.ts');
   let depth = 0;

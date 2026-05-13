@@ -91,9 +91,10 @@ assert.ok(/text:\s*payload,\s*newline:\s*true,\s*paste:\s*true/.test(MCP),
 //
 // Extract the dispatch_subworker watcher section, starting from the LH-3
 // recovery comment block (anchored after the _dswMission paste-send) down
-// to the first occurrence of '_dswTick'. This scopes the assertions to the
-// dispatch_subworker block, preventing false-positives from runBlockingWorker.
-const dswBlockMatch = MCP.match(/PASTE-COLLAPSE RECOVERY \(LH-3[\s\S]{0,3000}_dswTick/);
+// to the first occurrence of '_setupDetachWatcher' (the watcher setup that
+// follows the recovery block). '_dswTick' was the original terminator but was
+// replaced by the shared _setupDetachWatcher helper in a later refactor.
+const dswBlockMatch = MCP.match(/PASTE-COLLAPSE RECOVERY \(LH-3[\s\S]{0,3000}_setupDetachWatcher/);
 assert.ok(dswBlockMatch,
   'mcp_server.js: dispatch_subworker block must contain LH-3 paste-collapse recovery section');
 const dswBlock = dswBlockMatch[0];

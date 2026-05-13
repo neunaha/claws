@@ -5,6 +5,11 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Internal
+- **Pre-P1.1 gate** — cleared 7 pre-existing test failures (4 in `test:worker-fixes-v079` + 3 hidden by suite-abort) so `npm test` exits clean before v0.8 P1 (TerminalBackend extraction) begins. Fixes: `worker-fixes-v079` regexes updated to match current code (safeMission, detectCompletion, general -ef guard); `install.sh` uncommitted-work error message updated; `terminal-manager.test.js` updated for `close()` signature with `origin` param; `worker-boot-paste-collapse.test.js` extraction terminator updated (`_dswTick` → `_setupDetachWatcher`).
+
 ## [0.7.14] - 2026-05-12
 
 ### Internal
