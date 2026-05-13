@@ -3,10 +3,10 @@
  * Claws CLI — one-command installer for Claude Code plugin
  *
  * Usage:
- *   npx claws-cli            # install everything
- *   npx claws-cli install    # same
- *   npx claws-cli update     # pull latest + re-inject
- *   npx claws-cli status     # check if everything is wired
+ *   npx claws-code            # install everything
+ *   npx claws-code install    # same
+ *   npx claws-code update     # pull latest + re-inject
+ *   npx claws-code status     # check if everything is wired
  */
 
 const { execSync, spawnSync } = require('child_process');
@@ -219,5 +219,5 @@ if (cmd === 'install' || cmd === 'i') install();
 else if (cmd === 'update' || cmd === 'u') install(); // update = re-run install (idempotent)
 else if (cmd === 'status' || cmd === 's') status();
 else {
-  console.log('Usage: npx claws-cli [install|update|status]');
+  console.log('Usage: npx claws-code [install|update|status]');
 }

@@ -1,5 +1,5 @@
 <!-- CLAWS:BEGIN -->
-## Claws — {PROJECT_NAME} (v{VERSION})
+## Claws — {PROJECT_NAME} (v{VERSION}) · npm: claws-code
 
 The Claws MCP server is running at `{SOCKET_PATH}`. Machine-wide invariants (boot sequence, completion convention, Monitor pattern, lifecycle phases, Wave Discipline) live in `~/.claude/CLAUDE.md` — do not duplicate them here.
 

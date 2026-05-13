@@ -1,5 +1,5 @@
 <!-- CLAWS-GLOBAL:BEGIN -->
-## Claws — Machine-Wide Terminal Policy (v{VERSION})
+## Claws — Machine-Wide Terminal Policy (v{VERSION}) · npm: claws-code
 
 Claws may be installed in the current project. The trigger is the file `.claws/claws.sock` in the project root — if it exists, the rest of this section applies. If it does not, this section is inert.
 

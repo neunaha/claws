@@ -39,9 +39,16 @@
 
 ### Step 1 — Install into your project
 
-**From the project root**, paste this into any terminal:
+**From the project root**, run one of:
 
 ```bash
+# Primary — requires Node.js 18+ (ships with VS Code)
+npx claws-code install
+```
+
+```bash
+# Fallback — non-Node systems, air-gapped environments, or CI
+# Note: curl installer is supported through v0.8.x and will be deprecated in v0.9
 bash <(curl -fsSL https://raw.githubusercontent.com/neunaha/claws/main/scripts/install.sh)
 ```
 
