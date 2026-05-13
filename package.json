@@ -22,6 +22,7 @@
   "license": "MIT",
   "scripts": {
     "test:mcp": "node tests/mcp/worker.test.js",
-    "test:installer": "node --test test/installer-platform.test.js"
+    "test:installer": "node --test test/installer-platform.test.js",
+    "test:installer-full": "node --test test/installer.test.js"
   }
 }
