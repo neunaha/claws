@@ -236,6 +236,26 @@ function sendRequest(cmd) {
   await ext.deactivate();
   await new Promise((r) => setTimeout(r, 100));
 
+  // Win32 source guard: getServerEndpoint() in transport.ts must handle win32
+  // (named pipe path) alongside unix socket path for profile-provider endpoint.
+  assertions.push((() => {
+    try {
+      const transportSrc = fs.readFileSync(
+        path.join(EXT_ROOT, 'src', 'transport.ts'),
+        'utf8',
+      );
+      if (!transportSrc.includes('export function getServerEndpoint')) {
+        throw new Error('transport.ts missing getServerEndpoint() — profile provider endpoint undefined on win32');
+      }
+      if (!transportSrc.includes("platform === 'win32'")) {
+        throw new Error("transport.ts getServerEndpoint() has no win32 branch");
+      }
+      return { name: 'transport.ts getServerEndpoint() handles win32 named pipe for profile-provider', ok: true };
+    } catch (e) {
+      return { name: 'transport.ts getServerEndpoint() handles win32 named pipe for profile-provider', ok: false, err: e.message };
+    }
+  })());
+
   for (const a of assertions) {
     console.log(`  ${a.ok ? '✓' : '✗'} ${a.name}${a.ok ? '' : ' — ' + a.err}`);
   }

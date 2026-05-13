@@ -89,6 +89,26 @@ async function check(name, fn) {
     );
   });
 
+  // 6. win32 x64 arch passes through — runElectronRebuild is arch-agnostic at spawn level
+  await check('win32 x64 arch: success path does not call fail', async () => {
+    let failCalled = false;
+    runElectronRebuild('39.8.5', 'x64', {
+      spawnFn: () => ({ status: 0, signal: null, error: undefined }),
+      failFn: () => { failCalled = true; },
+    });
+    assert.strictEqual(failCalled, false, 'win32 x64 rebuild success must not trigger fail');
+  });
+
+  // 7. win32 arm64 arch passes through — rebuild with arm64 succeeds
+  await check('win32 arm64 arch: success path does not call fail', async () => {
+    let failCalled = false;
+    runElectronRebuild('39.8.5', 'arm64', {
+      spawnFn: () => ({ status: 0, signal: null, error: undefined }),
+      failFn: () => { failCalled = true; },
+    });
+    assert.strictEqual(failCalled, false, 'win32 arm64 rebuild success must not trigger fail');
+  });
+
   let failed = 0;
   for (const c of checks) {
     console.log(`  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? '' : ' — ' + c.err}`);

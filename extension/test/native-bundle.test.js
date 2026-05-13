@@ -60,6 +60,15 @@ check('bundled package.json parses', () => {
   if (!pkg.main) throw new Error('no main field');
 });
 
+check('metadata.arch is a known architecture string (arm64 or x64 — win32/mac/linux compatible)', () => {
+  if (!fs.existsSync(METADATA)) throw new Error(`metadata not found at ${METADATA}`);
+  const meta = JSON.parse(fs.readFileSync(METADATA, 'utf8'));
+  const known = ['arm64', 'x64'];
+  if (!known.includes(meta.arch)) {
+    throw new Error(`unexpected arch '${meta.arch}' — expected one of ${known.join('/')}`);
+  }
+});
+
 let failed = 0;
 for (const c of checks) {
   console.log(`  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? '' : ' — ' + c.err}`);

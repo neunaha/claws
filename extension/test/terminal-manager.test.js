@@ -97,6 +97,26 @@ check('onTerminalClosed() guard "if (!id) return" is present (idempotency)', () 
     'onTerminalClosed() missing early-return guard — double-callback risk if both paths fire');
 });
 
+check('claws-pty.ts win32 getForegroundProcess() returns shellPid without calling pgrep', () => {
+  const ptySrc = fs.readFileSync(
+    path.resolve(__dirname, '../src/backends/vscode/claws-pty.ts'),
+    'utf8',
+  );
+  assert.ok(
+    ptySrc.includes("process.platform === 'win32'"),
+    "claws-pty.ts must have win32 branch in getForegroundProcess() — pgrep absent on Windows",
+  );
+  const win32Idx = ptySrc.indexOf("process.platform === 'win32'");
+  // spawnSync('pgrep', ...) is the actual pgrep call — must come AFTER win32 early-return
+  const pgrepCallIdx = ptySrc.indexOf("spawnSync('pgrep'");
+  assert.ok(win32Idx !== -1, 'win32 branch not found in claws-pty.ts');
+  assert.ok(pgrepCallIdx !== -1, "spawnSync('pgrep', ...) call not found in claws-pty.ts");
+  assert.ok(
+    win32Idx < pgrepCallIdx,
+    `win32 early-return (offset ${win32Idx}) must appear before spawnSync('pgrep') call (offset ${pgrepCallIdx})`,
+  );
+});
+
 const pass = results.filter(r => r.ok).length;
 const fail = results.filter(r => !r.ok).length;
 console.log(`\nterminal-manager.test.js: ${pass}/${results.length} PASS`);

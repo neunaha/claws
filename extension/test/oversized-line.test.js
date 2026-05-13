@@ -219,6 +219,23 @@ function check(name, fn) {
   await ext.deactivate();
   await new Promise((r) => setTimeout(r, 100));
 
+  // Win32 source guard: verify transport.ts exports isNamedPipe() which server.ts
+  // uses to skip fs.unlink on Windows (named pipes auto-clean on process exit).
+  assertions.push((() => {
+    try {
+      const transportSrc = fs.readFileSync(
+        path.join(EXT_ROOT, 'src', 'transport.ts'),
+        'utf8',
+      );
+      if (!transportSrc.includes('export function isNamedPipe')) {
+        throw new Error('transport.ts missing isNamedPipe() — win32 cleanup guard absent');
+      }
+      return { name: 'transport.ts exports isNamedPipe() for win32 socket cleanup guard', ok: true };
+    } catch (e) {
+      return { name: 'transport.ts exports isNamedPipe() for win32 socket cleanup guard', ok: false, err: e.message };
+    }
+  })());
+
   for (const a of assertions) {
     console.log(`  ${a.ok ? '✓' : '✗'} ${a.name}${a.ok ? '' : ' — ' + a.err}`);
   }

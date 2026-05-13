@@ -149,8 +149,42 @@ export function detectElectronVersion({
     } catch { /* not available */ }
   }
 
+  if (platform === 'win32') {
+    // Read Electron version from VS Code's package.json in the standard install path.
+    // VS Code installer puts the app under %LOCALAPPDATA%\Programs\Microsoft VS Code\.
+    // Cursor installs under %LOCALAPPDATA%\Programs\cursor\.
+    const localAppData = process.env.LOCALAPPDATA || 'C:\\Users\\Default\\AppData\\Local';
+    const win32Candidates = [
+      { key: 'vscode',  pkg: `${localAppData}\\Programs\\Microsoft VS Code\\resources\\app\\package.json` },
+      { key: 'cursor',  pkg: `${localAppData}\\Programs\\cursor\\resources\\app\\package.json` },
+      { key: 'vscode',  pkg: `C:\\Program Files\\Microsoft VS Code\\resources\\app\\package.json` },
+    ];
+    let win32Tp = (termProgram || '').toLowerCase();
+    if (win32Tp === 'vscode' && cursorChannel) { win32Tp = 'cursor'; }
+    const sorted = [
+      ...win32Candidates.filter(c => win32Tp && c.key === win32Tp),
+      ...win32Candidates.filter(c => !(win32Tp && c.key === win32Tp)),
+    ];
+    for (const { pkg } of sorted) {
+      if (!existsFn(pkg)) continue;
+      try {
+        const appPkg = JSON.parse(require('fs').readFileSync(pkg, 'utf8'));
+        const v = appPkg.electronVersion || (appPkg.dependencies && appPkg.dependencies.electron);
+        if (v && typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v)) {
+          const clean = v.replace(/[^0-9.]/g, '').match(/\d+\.\d+\.\d+/)?.[0];
+          if (clean) {
+            log(`detected Electron ${clean} from ${pkg}`);
+            return { version: clean, source: pkg };
+          }
+        }
+      } catch {
+        // try next candidate
+      }
+    }
+  }
+
   // M-23: explicit warning when no editor was found — don't silently fall back.
-  if (platform === 'darwin' || platform === 'linux') {
+  if (platform === 'darwin' || platform === 'linux' || platform === 'win32') {
     process.stderr.write(
       '[bundle-native] WARNING: could not detect VS Code/Cursor/Windsurf Electron version.\n' +
       '[bundle-native] Set CLAWS_ELECTRON_VERSION=<version> to specify your editor\'s Electron version explicitly.\n',
@@ -303,7 +337,10 @@ function copyRuntimeSlice() {
   // 2. lib/** (runtime JS, minus tests and *.d.ts)
   copyLibTree(join(NODE_PTY_SRC, 'lib'), join(staging, 'lib'), totals);
 
-  // 3. build/Release/pty.node (native binary) and spawn-helper (Unix helper)
+  // 3. build/Release/pty.node (native binary) and spawn-helper (Unix only)
+  // On win32, ConPTY + Job Objects replace spawn-helper's process-group role;
+  // the binary does not exist in Windows node-pty builds so the existsSync guard
+  // below naturally skips it. Log explicitly to make the skip observable in CI.
   const ptyNode = join(NODE_PTY_SRC, 'build', 'Release', 'pty.node');
   if (!existsSync(ptyNode)) fail(`pty.node missing at ${ptyNode}`);
   copyFileSafe(ptyNode, join(staging, 'build', 'Release', 'pty.node'));

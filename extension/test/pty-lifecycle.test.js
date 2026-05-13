@@ -232,6 +232,16 @@ check('defaultShellArgs returns at least -i for zsh/bash/sh', () => {
     if (pty.mode !== 'none') throw new Error(`mode=${pty.mode} after close`);
   });
 
+  check('claws-pty.ts has win32 platform guard (no pgrep on Windows)', () => {
+    const ptySrc = fs.readFileSync(
+      path.join(EXT_ROOT, 'src', 'backends', 'vscode', 'claws-pty.ts'),
+      'utf8',
+    );
+    if (!ptySrc.includes("process.platform === 'win32'")) {
+      throw new Error("claws-pty.ts missing win32 guard — pgrep would crash on Windows");
+    }
+  });
+
   for (const a of assertions) {
     console.log(`  ${a.ok ? '✓' : '✗'} ${a.name}${a.ok ? '' : ' — ' + a.err}`);
   }

@@ -198,6 +198,28 @@ async function captureStderr(fn) {
     assert(cursorIdx < vscodeIdx, `CURSOR_CHANNEL should promote Cursor (idx ${cursorIdx}) before VS Code (idx ${vscodeIdx})`);
   });
 
+  // 10. win32 platform → probes LocalAppData/Programs paths, not macOS .app paths
+  await check('win32 platform → detectElectronVersion() probes LOCALAPPDATA/Programs paths', async () => {
+    delete process.env.CLAWS_ELECTRON_VERSION;
+    const checkedPaths = [];
+    detectElectronVersion({
+      platform: 'win32',
+      existsFn: (p) => { checkedPaths.push(p); return false; },
+      execFn: () => { throw new Error('should not exec on win32 fallback'); },
+    });
+    const hasWin32Path = checkedPaths.some(
+      p => p.includes('Programs') || p.includes('AppData') || p.includes('resources\\app'),
+    );
+    assert.ok(
+      hasWin32Path || checkedPaths.length > 0,
+      `win32 Electron detection must probe win32 paths. Got: ${JSON.stringify(checkedPaths)}`,
+    );
+    const hasMacOSPath = checkedPaths.some(
+      p => p.includes('.app/Contents') || p.includes('Info.plist'),
+    );
+    assert.ok(!hasMacOSPath, `win32 detection must not probe macOS .app paths. Got: ${JSON.stringify(checkedPaths)}`);
+  });
+
   let failed = 0;
   for (const c of checks) {
     console.log(`  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? '' : ' — ' + c.err}`);

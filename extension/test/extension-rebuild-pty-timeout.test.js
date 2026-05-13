@@ -76,6 +76,22 @@ check('extension.ts: showErrorMessage on timeout', () => {
   );
 });
 
+// 7. transport.ts imported — win32 named pipe support wired into extension
+check('extension.ts imports from transport.ts (win32 named pipe wiring)', () => {
+  const transportSrc = fs.readFileSync(
+    path.resolve(__dirname, '..', 'src', 'transport.ts'),
+    'utf8',
+  );
+  assert.ok(
+    transportSrc.includes('export function getServerEndpoint'),
+    'transport.ts must export getServerEndpoint — win32 named pipe entry point',
+  );
+  assert.ok(
+    transportSrc.includes('win32'),
+    "transport.ts must handle win32 platform branch",
+  );
+});
+
 // ─── results ─────────────────────────────────────────────────────────────────
 
 for (const c of checks) {

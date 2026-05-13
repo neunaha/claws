@@ -91,6 +91,30 @@ async function check(name, fn) {
     assert.strictEqual(sysctlCalled, false, 'sysctl should not be called for native arm64');
   });
 
+  // 7. win32 x64 → returns x64 (no Rosetta check on Windows)
+  await check('win32 x64 → stays x64 (sysctl not invoked on Windows)', async () => {
+    let sysctlCalledWin = false;
+    const result = detectTargetArch({
+      platform: 'win32',
+      arch: 'x64',
+      execFn: () => { sysctlCalledWin = true; return '1\n'; },
+    });
+    assert.strictEqual(result, 'x64', 'win32 x64 should stay x64 (no Rosetta on Windows)');
+    assert.strictEqual(sysctlCalledWin, false, 'sysctl must not be called on win32');
+  });
+
+  // 8. win32 arm64 → returns arm64 (no Rosetta check on Windows)
+  await check('win32 arm64 → stays arm64 (sysctl not invoked on Windows)', async () => {
+    let sysctlCalledWin = false;
+    const result = detectTargetArch({
+      platform: 'win32',
+      arch: 'arm64',
+      execFn: () => { sysctlCalledWin = true; return '1\n'; },
+    });
+    assert.strictEqual(result, 'arm64', 'win32 arm64 should stay arm64');
+    assert.strictEqual(sysctlCalledWin, false, 'sysctl must not be called on win32');
+  });
+
   let failed = 0;
   for (const c of checks) {
     console.log(`  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? '' : ' — ' + c.err}`);
