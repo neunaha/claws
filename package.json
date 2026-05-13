@@ -21,6 +21,7 @@
   "author": "Anish Neunaha",
   "license": "MIT",
   "scripts": {
-    "test:mcp": "node tests/mcp/worker.test.js"
+    "test:mcp": "node tests/mcp/worker.test.js",
+    "test:installer": "node --test test/installer-platform.test.js"
   }
 }
