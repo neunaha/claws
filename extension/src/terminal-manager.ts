@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { CaptureStore } from './capture-store';
-import { ClawsPty } from './claws-pty';
+import { ClawsPty } from './backends/vscode/claws-pty';
 import { TerminalDescriptor } from './protocol';
 import { VehicleStateName, TerminalCloseOrigin } from './event-schemas';
 

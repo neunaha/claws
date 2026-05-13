@@ -20,7 +20,7 @@ const fs = require('fs');
 const esbuild = require('esbuild');
 
 const EXT_ROOT = path.resolve(__dirname, '..');
-const SRC = path.join(EXT_ROOT, 'src', 'claws-pty.ts');
+const SRC = path.join(EXT_ROOT, 'src', 'backends', 'vscode', 'claws-pty.ts');
 const OUT = path.join(EXT_ROOT, 'dist', 'claws-pty-test.js');
 
 // ─── Mock vscode BEFORE requiring the compiled bundle ────────────────────

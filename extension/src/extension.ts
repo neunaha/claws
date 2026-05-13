@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { randomUUID } from 'crypto';
 import { CaptureStore } from './capture-store';
 import { TerminalManager } from './terminal-manager';
-import { ClawsPty, loadNodePtyStatus } from './claws-pty';
+import { ClawsPty, loadNodePtyStatus } from './backends/vscode/claws-pty';
 import { ClawsServer, IntrospectSnapshot } from './server';
 import {
   DEFAULT_EXEC_TIMEOUT_MS,
@@ -18,7 +18,7 @@ import {
   ServerConfig,
 } from './server-config';
 import { HistoryEvent } from './protocol';
-import { createStatusBar, StatusBarHandle } from './status-bar';
+import { createStatusBar, StatusBarHandle } from './backends/vscode/status-bar';
 import { registerUninstallCleanupCommand } from './uninstall-cleanup';
 
 interface PendingProfile {

@@ -32,7 +32,7 @@ const SCHEMAS       = fs.readFileSync(path.join(SRC,   'event-schemas.ts'), 'utf
 const STORE         = fs.readFileSync(path.join(SRC,   'lifecycle-store.ts'), 'utf8');
 const MCP           = fs.readFileSync(path.join(ROOT,  'mcp_server.js'), 'utf8');
 const STREAM_EVENTS = fs.readFileSync(path.join(ROOT,  'scripts/stream-events.js'), 'utf8');
-const CLAWS_PTY     = fs.readFileSync(path.join(SRC,   'claws-pty.ts'), 'utf8');
+const CLAWS_PTY     = fs.readFileSync(path.join(SRC,   'backends', 'vscode', 'claws-pty.ts'), 'utf8');
 const MCP_TOOLS_JSON = fs.readFileSync(path.join(ROOT, 'schemas/mcp-tools.json'), 'utf8');
 
 let passed = 0;

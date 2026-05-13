@@ -112,8 +112,8 @@ export class MockBackend extends EventEmitter implements TerminalBackend {
   on(event: 'terminal:created', listener: (ev: TerminalCreatedEvent) => void): this;
   on(event: 'terminal:closed',  listener: (ev: TerminalClosedEvent)  => void): this;
   on(event: 'terminal:data',    listener: (ev: TerminalDataEvent)    => void): this;
-  on(event: string, listener: (...args: unknown[]) => void): this;
-  on(event: string, listener: (...args: unknown[]) => void): this {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on(event: string, listener: (...args: any[]) => void): this {
     return super.on(event, listener);
   }
 
