@@ -130,6 +130,12 @@ function hookCmd(scriptName) {
     // Skips the sh -c wrapper to reduce fork overhead per hook invocation.
     return `node ${JSON.stringify(scriptPath)}`;
   }
+  // W7h-30A: Windows has no sh in PATH — emit direct node invocation.
+  // The fault-tolerance wrapper (misfire log) is Unix-only; on Windows, simpler
+  // direct node is correct and avoids "sh not found" errors breaking hooks silently.
+  if (process.platform === 'win32') {
+    return `node ${JSON.stringify(scriptPath)}`;
+  }
   // Non-canonical or partially-installed: wrap with file-exists guard + misfire logging.
   // Missing path: writes forensic entry to /tmp/claws-hook-misfire.log (2>/dev/null
   // suppresses errors when /tmp is unwritable) AND echoes to stderr so the event is
@@ -164,12 +170,14 @@ function makeHookEntry(matcher, scriptName) {
     // advisory-mechanism-audit Finding F32: highest-ROI hook fix. Workers that try
     // to skip pre-commit hooks (tests, lint, type checks) get a hard rejection.
     { event: 'PreToolUse', scriptName: 'pre-bash-no-verify-block.js', entry: makeHookEntry('Bash', 'pre-bash-no-verify-block.js') },
-    // T4 (v0.7.13): BUG-28 explicit MCP spawn-class PreToolUse matchers removed.
-    // Monitor-arm enforcement is now a server-side gate in mcp_server.js (claws_worker,
-    // claws_fleet via runBlockingWorker, claws_dispatch_subworker): a 5s grace setTimeout
-    // checks lifecycle.snapshot and logs T4-warn if no monitor is registered for the
-    // spawned terminal. Hook enforcement was per-user-fragile and used the wrong Bash
-    // matcher (BUG-28) — server gates are always-loaded and atomic with the call.
+    // W7h-30C / BUG-28: explicit MCP spawn-class PreToolUse matchers — belt-and-suspenders
+    // for Claude Code builds where '*' is not propagated to MCP tool calls. The server-side
+    // gate in mcp_server.js (T4) remains the primary enforcer; these hooks fire even when
+    // the '*' matcher misses, ensuring Monitor-arm enforcement on Windows and older builds.
+    { event: 'PreToolUse', scriptName: 'pre-tool-use-claws.js', entry: makeHookEntry('mcp__claws__claws_create',             'pre-tool-use-claws.js') },
+    { event: 'PreToolUse', scriptName: 'pre-tool-use-claws.js', entry: makeHookEntry('mcp__claws__claws_worker',             'pre-tool-use-claws.js') },
+    { event: 'PreToolUse', scriptName: 'pre-tool-use-claws.js', entry: makeHookEntry('mcp__claws__claws_fleet',              'pre-tool-use-claws.js') },
+    { event: 'PreToolUse', scriptName: 'pre-tool-use-claws.js', entry: makeHookEntry('mcp__claws__claws_dispatch_subworker', 'pre-tool-use-claws.js') },
     // Wave C: PostToolUse spawn-class matchers — fail-close the spawn → monitor race window.
     // Explicit per-tool matchers (belt-and-suspenders, same rationale as PreToolUse above).
     // After each successful spawn, waits up to ~5s for lifecycle.monitors to register the
