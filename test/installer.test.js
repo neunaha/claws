@@ -104,19 +104,19 @@ describe('installer — 11-scenario matrix', () => {
     const mcp = JSON.parse(fs.readFileSync(path.join(tmpProject, '.mcp.json'), 'utf8'));
     assert.ok(mcp.mcpServers && mcp.mcpServers.claws, '.mcp.json must have claws server entry');
 
-    // Global capabilities
-    const claudeDir = path.join(tmpHome, '.claude');
+    // Project-local capabilities (W7-6: install.js puts these under <project>/.claude/)
+    const projectDotClaude = path.join(tmpProject, '.claude');
     assert.ok(
-      fs.existsSync(path.join(claudeDir, 'commands', 'claws.md')),
-      '~/.claude/commands/claws.md must be installed'
+      fs.existsSync(path.join(projectDotClaude, 'commands', 'claws.md')),
+      '.claude/commands/claws.md must be installed project-locally'
     );
     assert.ok(
-      fs.existsSync(path.join(claudeDir, 'skills', 'claws-prompt-templates')),
-      '~/.claude/skills/claws-prompt-templates must be installed'
+      fs.existsSync(path.join(projectDotClaude, 'skills', 'claws-prompt-templates')),
+      '.claude/skills/claws-prompt-templates must be installed project-locally'
     );
     assert.ok(
-      fs.existsSync(path.join(claudeDir, 'rules', 'claws-default-behavior.md')),
-      '~/.claude/rules/claws-default-behavior.md must be installed'
+      fs.existsSync(path.join(projectDotClaude, 'rules', 'claws-default-behavior.md')),
+      '.claude/rules/claws-default-behavior.md must be installed project-locally'
     );
 
     // status command confirms
@@ -150,15 +150,15 @@ describe('installer — 11-scenario matrix', () => {
 
   // ── (c) Upgrade sweeps ───────────────────────────────────────────────────
   test('(c) upgrade: Bug 1 sweeps stale commands, Bug 2 sweeps stale skill dirs', () => {
-    // Seed stale commands (Bug 1)
-    const cmdDir = path.join(tmpHome, '.claude', 'commands');
+    // Seed stale commands in project-local .claude/ (W7-6: install targets projectRoot)
+    const cmdDir = path.join(tmpProject, '.claude', 'commands');
     fs.mkdirSync(cmdDir, { recursive: true });
     fs.writeFileSync(path.join(cmdDir, 'claws-v0714-stale.md'), '# stale', 'utf8');
     fs.writeFileSync(path.join(cmdDir, 'claws.md'), '# old-claws', 'utf8');
     fs.writeFileSync(path.join(cmdDir, 'user-custom.md'), '# keep', 'utf8');
 
-    // Seed stale skill dir (Bug 2)
-    const skillsDir = path.join(tmpHome, '.claude', 'skills');
+    // Seed stale skill dir in project-local .claude/skills/
+    const skillsDir = path.join(tmpProject, '.claude', 'skills');
     fs.mkdirSync(path.join(skillsDir, 'claws-stale-skill'), { recursive: true });
     fs.writeFileSync(path.join(skillsDir, 'claws-stale-skill', 'index.md'), '# stale', 'utf8');
     fs.mkdirSync(path.join(skillsDir, 'user-skill'), { recursive: true });
@@ -324,16 +324,16 @@ describe('installer — 11-scenario matrix', () => {
 
   // ── (i) status command ───────────────────────────────────────────────────
   test('(i) status command reports installed state correctly', () => {
-    // Manually create the expected installed artifacts
-    const claudeDir = path.join(tmpHome, '.claude');
+    // Manually create the expected installed artifacts — all project-local (W7-6 + W7h-5)
+    const projectDotClaude = path.join(tmpProject, '.claude');
     fs.mkdirSync(path.join(tmpProject, '.claws-bin'), { recursive: true });
     fs.writeFileSync(path.join(tmpProject, '.claws-bin', 'mcp_server.js'), '// stub', 'utf8');
     fs.writeFileSync(path.join(tmpProject, '.mcp.json'), '{"mcpServers":{}}', 'utf8');
-    fs.mkdirSync(path.join(claudeDir, 'commands'), { recursive: true });
-    fs.writeFileSync(path.join(claudeDir, 'commands', 'claws.md'), '# claws', 'utf8');
-    fs.mkdirSync(path.join(claudeDir, 'skills', 'claws-prompt-templates'), { recursive: true });
-    fs.mkdirSync(path.join(claudeDir, 'rules'), { recursive: true });
-    fs.writeFileSync(path.join(claudeDir, 'rules', 'claws-default-behavior.md'), '# rule', 'utf8');
+    fs.mkdirSync(path.join(projectDotClaude, 'commands'), { recursive: true });
+    fs.writeFileSync(path.join(projectDotClaude, 'commands', 'claws.md'), '# claws', 'utf8');
+    fs.mkdirSync(path.join(projectDotClaude, 'skills', 'claws-prompt-templates'), { recursive: true });
+    fs.mkdirSync(path.join(projectDotClaude, 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(projectDotClaude, 'rules', 'claws-default-behavior.md'), '# rule', 'utf8');
 
     const r = runCli(['status'], { tmpHome, tmpProject });
     assert.equal(r.status, 0, `status should exit 0 when installed:\n${r.stderr}`);
