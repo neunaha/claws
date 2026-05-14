@@ -12,6 +12,10 @@ Ship-readiness validation patches on top of the main v0.8 work. Four commits
 primary Windows + installer work was complete. Mac parity 8/8, extension suite
 all-pass, Windows VM MCP handshake 41/41 tools.
 
+### Added (Wave G)
+- **W7-4 — Windows shell banner (W7h-32 / PowerShell shell-hook parity)**: `scripts/shell-hook.ps1` — ASCII-only banner sourced from `$PROFILE` on Windows startup, guarded by `CLAWS_WRAPPED=1` so it only fires inside Claws-wrapped terminals. `lib/shell-hook.js` `injectShellHook()` now replaces the win32 no-op with `_injectPowershellHook()`: finds `$PROFILE` path via `getDefaultShellRcFile()`, backs up, strips prior block, and appends `. "<abs-path>\shell-hook.ps1"` with the canonical `# CLAWS terminal hook` marker. `_removePriorBlock` skip regex updated to `/shell-hook\.(sh|ps1)/` for idempotent cleanup on both platforms. Three new tests in `test/shell-hook.test.js` (d-1, d-2, d-3). Parity harness 8/8. Extension suite 0 failures.
+- **Wave G Part 1 — post-wave meta-audit**: `.local/audits/w7h-postwave-reaudit.md` confirms 28/32 W7h divergences resolved, 0 regressions introduced by Waves A–F, 4 items (W7h-19/22/23/30) remain as formally-deferred v0.9 candidates. Verdict: RESIDUAL-DRIFT.
+
 ### Critical fixes
 - **W7h-30A — win32 hookCmd non-canonical path** (`fc72142`): On Windows, `sh` is not in PATH, so the `sh -c` fault-tolerance wrapper in the non-canonical `hookCmd` path of `scripts/inject-settings-hooks.js` silently failed, breaking all lifecycle hooks. On `process.platform === 'win32'` now emits `node "<absolute-path>"` directly, matching the canonical-install fast path. `sh -c` wrapper is unchanged on Unix.
 - **W7h-30B — duplicate hooks/hooks/ path in installGlobalHooks** (`0beace5`): `installGlobalHooks()` in `lib/install.js` was returning `~/.claude/claws/hooks` as `CLAWS_BIN`, which `inject-settings-hooks.js` then passed through `path.join(CLAWS_BIN, 'hooks', scriptName)`, producing a doubled `~/.claude/claws/hooks/hooks/<script>.js` path. Fixed by returning the parent `~/.claude/claws` so the inject script correctly resolves `~/.claude/claws/hooks/<script>.js`.

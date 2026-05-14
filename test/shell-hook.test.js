@@ -2,7 +2,7 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { _removePriorBlock, _removeLegacyBlock } = require('../lib/shell-hook.js');
+const { _removePriorBlock, _removeLegacyBlock, _getStandardRcFiles } = require('../lib/shell-hook.js');
 
 const FAKE_INSTALL = '/fake/install';
 const HOOK_SH = `${FAKE_INSTALL}/scripts/shell-hook.sh`;
@@ -114,5 +114,39 @@ describe('shell-hook — marker format (W7h-1)', () => {
     ].join('\n');
     const result = _removeLegacyBlock(content);
     assert.ok(result.includes('# CLAWS terminal hook'), 'canonical marker untouched by legacy remover');
+  });
+
+  // (d-1) _removePriorBlock handles PowerShell dot-source line (W7h-32 / W7-4)
+  test('(d-1) _removePriorBlock removes canonical marker + PS1 dot-source line', () => {
+    const content = [
+      '$env:FOO = 1',
+      '# CLAWS terminal hook',
+      '. "/fake/install/scripts/shell-hook.ps1"',
+      '$env:BAR = 2',
+    ].join('\n');
+    const result = _removePriorBlock(content);
+    assert.ok(!result.includes('# CLAWS terminal hook'), 'marker must be removed');
+    assert.ok(!result.includes('shell-hook.ps1'), 'PS1 dot-source line must be removed');
+    assert.ok(result.includes('FOO'), 'pre-content preserved');
+    assert.ok(result.includes('BAR'), 'post-content preserved');
+  });
+
+  // (d-2) _removePriorBlock idempotent for PS1 form
+  test('(d-2) _removePriorBlock is idempotent for PS1 form', () => {
+    const HOOK_PS1 = '/fake/install/scripts/shell-hook.ps1';
+    const base = '$env:FOO = 1';
+    const withBlock = base + '\n# CLAWS terminal hook\n. "' + HOOK_PS1 + '"\n';
+    const afterOne = _removePriorBlock(withBlock);
+    const afterTwo = _removePriorBlock(afterOne);
+    assert.equal(afterOne, afterTwo, 'double removal equals single removal for PS1');
+    assert.ok(!afterOne.includes('shell-hook.ps1'), 'PS1 source line removed');
+  });
+});
+
+describe('shell-hook — win32 rc-file list (W7h-32)', () => {
+  // _getStandardRcFiles returns [] on win32 (PS injection handled separately)
+  test('win32 _getStandardRcFiles returns empty array', () => {
+    const files = _getStandardRcFiles({ platform: 'win32', home: '/home/test' });
+    assert.deepEqual(files, [], 'win32 must return [] (PS injection is handled by _injectPowershellHook)');
   });
 });
