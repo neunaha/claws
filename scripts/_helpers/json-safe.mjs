@@ -92,8 +92,10 @@ export function parseJsonSafe(input, opts = {}) {
       },
     };
   }
+  // Strip UTF-8 BOM (U+FEFF) that Windows editors sometimes write at file start.
+  const normalized = input.charCodeAt(0) === 0xFEFF ? input.slice(1) : input;
   const allowJsonc = opts.allowJsonc !== false;
-  const source = allowJsonc ? stripJsonc(input) : input;
+  const source = allowJsonc ? stripJsonc(normalized) : normalized;
 
   try {
     return { ok: true, data: JSON.parse(source) };
