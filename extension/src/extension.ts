@@ -642,19 +642,28 @@ function runHealthCheck(diag: DiagContext): void {
   }
   logger('');
 
-  // Check that node-pty binary is on disk at expected paths. The bundled copy
-  // under native/ is canonical; node_modules/ is dev-only.
+  // Check that node-pty binary is on disk at expected paths.
+  // Post-Wave-6X: prebuilds/<platform>-<arch>/pty.node is the primary location.
+  // build/Release/pty.node and node_modules/ are kept for dev-loop compatibility.
+  const prebuildsPath = path.join(diag.extensionPath, 'native', 'node-pty', 'prebuilds', `${process.platform}-${process.arch}`, 'pty.node');
   const bundledPath = path.join(diag.extensionPath, 'native', 'node-pty', 'build', 'Release', 'pty.node');
   const nodeModulesPath = path.join(diag.extensionPath, 'node_modules', 'node-pty', 'build', 'Release', 'pty.node');
   logger('pty.node binary search:');
   let found = false;
+  if (fs.existsSync(prebuildsPath)) {
+    const stat = fs.statSync(prebuildsPath);
+    logger(`  ✓ ${prebuildsPath}  (${stat.size} bytes)  [prebuilds: PRIMARY]`);
+    found = true;
+  } else {
+    logger(`  · ${prebuildsPath}  (not found)  [prebuilds: missing]`);
+  }
   const bundledExists = fs.existsSync(bundledPath);
   if (bundledExists) {
     const stat = fs.statSync(bundledPath);
-    logger(`  ✓ ${bundledPath}  (${stat.size} bytes)  [bundled: YES]`);
+    logger(`  ✓ ${bundledPath}  (${stat.size} bytes)  [bundled]`);
     found = true;
   } else {
-    logger(`  · ${bundledPath}  (not found)  [bundled: NO]`);
+    logger(`  · ${bundledPath}  (not found)`);
   }
   if (fs.existsSync(nodeModulesPath)) {
     const stat = fs.statSync(nodeModulesPath);
@@ -663,7 +672,7 @@ function runHealthCheck(diag: DiagContext): void {
   } else {
     logger(`  · ${nodeModulesPath}  (not found)`);
   }
-  if (!found) logger('  ✗ no pty.node on disk — run "Claws: Rebuild Native PTY"');
+  if (!found) logger('  ✗ no pty.node on disk — prebuilds path is primary (Wave 6X); run "Claws: Rebuild Native PTY" if missing');
 
   // Surface the metadata file written by scripts/bundle-native.mjs so we can
   // see which Electron ABI this binary was built for.
