@@ -6,21 +6,23 @@
 // Responsibilities:
 //   1. Detect VS Code's Electron version (macOS: read Electron Framework
 //      Info.plist CFBundleVersion from VS Code / Insiders / Cursor / Windsurf).
-//   2. Run @electron/rebuild against node_modules/node-pty so its native
-//      pty.node targets Electron's Node ABI.
+//   2. Try to find a pre-built pty.node in native/node-pty/prebuilt/<platform>-<arch>/;
+//      fall back to @electron/rebuild only when the toolchain is available.
 //   3. Verify node_modules/node-pty/build/Release/pty.node exists.
 //   4. Copy runtime-required pieces into <extension>/native/node-pty/.
 //   5. Write native/.metadata.json describing the build.
 //
 // CLI flags:
 //   --skip-rebuild   skip @electron/rebuild (CI / already-correct binaries)
+//   --strict         exit non-zero on soft-fail (no prebuilt + no toolchain)
 //
-// Phase 2 scope: darwin-arm64 only. Other platforms are a TODO — the script
-// still copies whatever pty.node exists under node_modules, so Linux / Windows
-// engineers can set CLAWS_ELECTRON_VERSION + --skip-rebuild and get a usable
-// bundle for their local dev loop.
+// Env vars:
+//   CLAWS_FORCE_REBUILD=1   bypass prebuilt and always rebuild from source
+//   CLAWS_ELECTRON_VERSION  pin a specific Electron version
+//   CLAWS_ELECTRON_ARCH     pin a specific target arch
 
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, statSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync, renameSync, chmodSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,11 +33,14 @@ const EXT_ROOT = resolve(__dirname, '..');
 
 const args = new Set(process.argv.slice(2));
 const SKIP_REBUILD = args.has('--skip-rebuild');
+const STRICT_MODE = args.has('--strict');
 
 const FALLBACK_ELECTRON = '39.8.5';
 const NODE_PTY_SRC = join(EXT_ROOT, 'node_modules', 'node-pty');
 const NATIVE_ROOT = join(EXT_ROOT, 'native');
 const NATIVE_DEST = join(NATIVE_ROOT, 'node-pty');
+const PREBUILT_ROOT = join(NATIVE_DEST, 'prebuilt');
+const MANIFEST_PATH = join(PREBUILT_ROOT, 'manifest.json');
 const METADATA_PATH = join(NATIVE_ROOT, '.metadata.json');
 
 function log(msg) {
@@ -263,6 +268,95 @@ export function runElectronRebuild(electronVersion, targetArch, { spawnFn = spaw
   log('@electron/rebuild completed');
 }
 
+// ─── Prebuilt helpers ─────────────────────────────────────────────────────────
+// Exported for testing.
+
+export function prebuiltPath(platform, arch) {
+  return join(PREBUILT_ROOT, `${platform}-${arch}`, 'pty.node');
+}
+
+export function verifySha256(file, expected) {
+  try {
+    const data = readFileSync(file);
+    return createHash('sha256').update(data).digest('hex') === expected;
+  } catch {
+    return false;
+  }
+}
+
+// Returns true when a Python interpreter is reachable on PATH.
+export function hasPython() {
+  const IS_WIN = process.platform === 'win32';
+  for (const cmd of ['python3', 'python']) {
+    try {
+      const r = spawnSync(cmd, ['--version'], { stdio: 'ignore', shell: IS_WIN, timeout: 5000 });
+      if (r.status === 0) return true;
+    } catch { /* not on PATH */ }
+  }
+  return false;
+}
+
+// Returns true when a C++ compiler is reachable (platform-aware).
+export function hasCompiler() {
+  const plat = process.platform;
+  const IS_WIN = plat === 'win32';
+
+  if (plat === 'darwin') {
+    return (
+      existsSync('/Library/Developer/CommandLineTools/usr/bin/clang') ||
+      existsSync('/Applications/Xcode.app/Contents/Developer/usr/bin/clang')
+    );
+  }
+
+  if (plat === 'linux') {
+    for (const cmd of ['cc', 'gcc', 'g++']) {
+      try {
+        const r = spawnSync('which', [cmd], { stdio: 'ignore', timeout: 3000 });
+        if (r.status === 0) return true;
+      } catch { /* not on PATH */ }
+    }
+    return false;
+  }
+
+  if (plat === 'win32') {
+    // Check well-known MSVC install roots before spawning.
+    for (const root of [
+      'C:\\Program Files\\Microsoft Visual Studio',
+      'C:\\Program Files (x86)\\Microsoft Visual Studio',
+    ]) {
+      if (existsSync(root)) return true;
+    }
+    try {
+      const r = spawnSync('where', ['cl'], { stdio: 'ignore', shell: IS_WIN, timeout: 5000 });
+      if (r.status === 0) return true;
+    } catch { /* not found */ }
+    return false;
+  }
+
+  return false;
+}
+
+function readManifest() {
+  if (!existsSync(MANIFEST_PATH)) return null;
+  try {
+    return JSON.parse(readFileSync(MANIFEST_PATH, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function softFailMessage(host) {
+  return (
+    `[bundle-native] WARNING: no prebuilt pty.node for ${host} and no build toolchain detected.\n` +
+    `[bundle-native] The Claws extension will run in pipe-mode (no native PTY capture).\n` +
+    `[bundle-native] To fix, choose one of:\n` +
+    `[bundle-native]   1. Install Python 3 + a C++ compiler (Xcode CLT on macOS, build-essential on\n` +
+    `[bundle-native]      Linux, or VS C++ Build Tools on Windows), then re-run: npm run build\n` +
+    `[bundle-native]   2. Set CLAWS_FORCE_REBUILD=1 to force a source rebuild once toolchain is ready.\n` +
+    `[bundle-native]   3. Open a GitHub issue requesting a prebuilt for ${host}.\n`
+  );
+}
+
 // ─── Step 3: verify rebuilt binary ───────────────────────────────────────────
 function verifyBinary() {
   const ptyNode = join(NODE_PTY_SRC, 'build', 'Release', 'pty.node');
@@ -368,6 +462,14 @@ function copyRuntimeSlice() {
     }
   }
 
+  // Preserve prebuilt/ — it's version-controlled inside NATIVE_DEST but not in node_modules.
+  // The atomic swap below would otherwise wipe committed prebuilt binaries. Copy them into
+  // staging so they survive the rename. Use a throwaway totals to keep the summary clean.
+  const prebuiltSrc = join(NATIVE_DEST, 'prebuilt');
+  if (existsSync(prebuiltSrc)) {
+    copyLibTree(prebuiltSrc, join(staging, 'prebuilt'), { files: 0, bytes: 0 });
+  }
+
   // M-40: atomic swap — staging → NATIVE_DEST via rename(2).
   // Kill before this point leaves NATIVE_DEST intact (old version).
   // Kill after renameSync(staging, NATIVE_DEST) leaves NATIVE_DEST correct (new version).
@@ -425,15 +527,65 @@ function main() {
   const { version: electronVersion, source: electronSource } = detectElectronVersion();
   log(`target Electron: ${electronVersion}`);
   const targetArch = detectTargetArch();
+  const host = `${process.platform}-${targetArch}`;
+  const FORCE_REBUILD = process.env.CLAWS_FORCE_REBUILD === '1';
 
-  if (!SKIP_REBUILD) {
+  // ── Decision tree (blueprint §Architecture) ──────────────────────────────
+  // 1. CLAWS_FORCE_REBUILD=1  → rebuild from source unconditionally
+  // 2. prebuilt exists        → verify sha256, stage into node_modules, skip rebuild
+  // 3. --skip-rebuild         → trust existing node_modules binary (old CI path)
+  // 4. hasPython && hasCompiler → rebuild from source
+  // 5. else                   → soft fail (exit 0 unless --strict)
+
+  let binarySource = 'rebuilt-from-source';
+
+  if (FORCE_REBUILD) {
+    log(`CLAWS_FORCE_REBUILD=1 — forcing rebuild from source for ${host}`);
     try {
       runElectronRebuild(electronVersion, targetArch);
     } catch (err) {
       fail(`@electron/rebuild invocation threw`, err);
     }
   } else {
-    log('--skip-rebuild set; assuming node_modules/node-pty binary is already correct');
+    const pb = prebuiltPath(process.platform, targetArch);
+    if (existsSync(pb)) {
+      log(`prebuilt found for ${host} — skipping @electron/rebuild`);
+      const manifest = readManifest();
+      const entry = manifest && manifest.binaries && manifest.binaries[host];
+      if (entry && entry.sha256) {
+        if (!verifySha256(pb, entry.sha256)) {
+          fail(
+            `prebuilt ${host}/pty.node sha256 mismatch (manifest: ${entry.sha256.slice(0, 16)}…). ` +
+            'Re-clone the repo or set CLAWS_FORCE_REBUILD=1 to rebuild from source.',
+          );
+        }
+        log(`sha256 verified for ${host}/pty.node`);
+      }
+      // Stage prebuilt into node_modules so verifyBinary() + copyRuntimeSlice() work unchanged.
+      const destDir = join(NODE_PTY_SRC, 'build', 'Release');
+      mkdirSync(destDir, { recursive: true });
+      copyFileSync(pb, join(destDir, 'pty.node'));
+      log(`staged prebuilt → node_modules/node-pty/build/Release/pty.node`);
+      binarySource = 'prebuilt';
+    } else if (SKIP_REBUILD) {
+      log(`no prebuilt for ${host} — --skip-rebuild set; trusting existing node_modules binary`);
+    } else if (hasPython() && hasCompiler()) {
+      log(`no prebuilt for ${host} — toolchain detected, rebuilding from source`);
+      try {
+        runElectronRebuild(electronVersion, targetArch);
+      } catch (err) {
+        fail(`@electron/rebuild invocation threw`, err);
+      }
+    } else {
+      process.stderr.write(softFailMessage(host));
+      if (STRICT_MODE) {
+        process.exit(1);
+      } else {
+        log('continuing without native PTY (pipe-mode). Pass --strict to make this a hard error.');
+        process.exit(0);
+      }
+      return;
+    }
   }
 
   verifyBinary();
@@ -452,7 +604,8 @@ function main() {
   writeMetadata(electronVersion, electronSource, nodePtyVersion, totals, targetArch);
 
   log('──── bundle summary ────');
-  log(`  target        : ${process.platform}-${targetArch}`);
+  log(`  target        : ${host}`);
+  log(`  source        : ${binarySource}`);
   log(`  electron      : ${electronVersion}`);
   log(`  node-pty      : ${nodePtyVersion}`);
   log(`  destination   : ${relative(EXT_ROOT, NATIVE_DEST)}`);

@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **v0.8 Wave 6A — bundle-native.mjs try-prebuilt-first + manifest scaffold** — `bundle-native.mjs` implements the decision tree from `v08-prebuilt-pty-binaries` blueprint: (1) `CLAWS_FORCE_REBUILD=1` → always rebuild from source; (2) `prebuilt/<platform>-<arch>/pty.node` exists → verify sha256 against manifest, stage into `node_modules`, skip `@electron/rebuild` entirely (~10 ms path); (3) `--skip-rebuild` → trust existing `node_modules` binary (old CI path preserved); (4) `hasPython() && hasCompiler()` → rebuild from source; (5) else → soft fail with remediation message, exit 0 (or exit 1 with new `--strict` flag). New exports: `prebuiltPath`, `verifySha256`, `hasPython`, `hasCompiler`. `copyRuntimeSlice()` now preserves `prebuilt/` through the atomic swap so committed binaries survive every build. Add `extension/native/node-pty/prebuilt/manifest.json` scaffold.
+
 ### Fixed
 - **P4b-W3-1 — suppress lib/install.js banner on win32** — `_printBanner()` now returns early on `process.platform === 'win32'`. `install.ps1` already prints an ASCII banner before delegating to node; the Node Unicode box-drawing banner garbled in CP437/CP1252 consoles and produced a double-banner. macOS/Linux banner unchanged.
 - **P4b-W3-2 — bundle-native.mjs spawnSync('npx') needs shell:true on win32** — `runElectronRebuild()` spawnSync call gains `shell: IS_WIN`. Without it, `spawnSync('npx', …)` fails with `ENOENT` on Windows because `npx` resolves as `npx.cmd`/`npx.ps1`, not a plain `.exe`. All other `spawnSync`/`execFileSync` calls in `bundle-native.mjs` invoke platform-native binaries (`plutil`, `electron`) that do not need a shell wrapper. Critical: was preventing VSIX build on any fresh Windows install.
