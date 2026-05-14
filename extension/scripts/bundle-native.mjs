@@ -228,6 +228,7 @@ export function detectTargetArch({ platform = process.platform, arch = process.a
 // Exported for testing (injectable spawnFn/failFn).
 export function runElectronRebuild(electronVersion, targetArch, { spawnFn = spawnSync, failFn = fail } = {}) {
   log(`running @electron/rebuild --version ${electronVersion} --arch ${targetArch} --only node-pty --force`);
+  const IS_WIN = process.platform === 'win32';
   const result = spawnFn(
     'npx',
     [
@@ -242,6 +243,7 @@ export function runElectronRebuild(electronVersion, targetArch, { spawnFn = spaw
       stdio: ['ignore', 'inherit', 'inherit'],
       env: process.env,
       timeout: 5 * 60 * 1000, // M-08: 5-minute ceiling — prevents indefinite hang on slow GitHub header fetch
+      shell: IS_WIN, // npx.cmd not found without shell on Windows
     },
   );
   if (result.error) failFn(`spawn of @electron/rebuild failed: ${result.error.message}`, result.error);
