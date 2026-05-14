@@ -50,7 +50,7 @@ printf '[parity] running bash install.sh in proj A...\n'
 printf '[parity] running node bin/cli.js install in proj B...\n'
 (
   cd "$B"
-  HOME="$HOME_B" \
+  HOME="$HOME_B" CLAWS_SKIP_EXTENSION_COPY=1 \
   node "$REPO/bin/cli.js" install --no-hooks 2>&1
 ) | grep -E '^\s*(✓|!|\[)' | head -20 || true
 
