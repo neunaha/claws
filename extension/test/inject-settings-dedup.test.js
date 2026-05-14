@@ -98,9 +98,8 @@ function runInject(home) {
   //    Claws entries per event (no duplicates, no missing).
   //    Counts reflect the current hook layout (v0.7.13+):
   //      SessionStart: 1  (* matcher — session-start-claws.js)
-  //      PreToolUse:   2  (* for general guard + Bash for --no-verify block)
-  //                       Note: per-tool spawn-class matchers were removed in v0.7.13 (T4)
-  //                       and enforcement moved server-side. PostToolUse handles spawn-class.
+  //      PreToolUse:   6  (* for general guard + Bash for --no-verify block +
+  //                        4 explicit MCP spawn-class matchers re-added in W7h-30C)
   //      PostToolUse:  4  (4 per-tool matchers — Wave C monitor gate)
   //      Stop:         1  (* matcher — stop-claws.js)
   await check('Claws hook idempotent: two runs → correct entry count per event', () => {
@@ -119,7 +118,7 @@ function runInject(home) {
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
       const expectedCounts = {
         SessionStart: 1,
-        PreToolUse:   2, // '*' for general guard + 'Bash' for --no-verify block (v0.7.13+)
+        PreToolUse:   6, // '*' + 'Bash' (no-verify block) + 4 MCP spawn-class (W7h-30C)
         PostToolUse:  4, // claws_create/worker/fleet/dispatch_subworker (Wave C monitor gate)
         Stop:         1,
       };
