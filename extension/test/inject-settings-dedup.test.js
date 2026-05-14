@@ -198,6 +198,177 @@ function runInject(home) {
     }
   });
 
+  // ── W7-2b: orphan hook cleanup tests ────────────────────────────────────────
+
+  // 5. Orphan entry (no _source, command contains Claws hook script filename) is removed
+  await check('W7-2b: orphan entry without _source + Claws hook filename is removed', () => {
+    const tmp = makeTmpDir();
+    try {
+      const claudeDir = path.join(tmp, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      const settingsPath = path.join(claudeDir, 'settings.json');
+
+      // Simulate a pre-fix install entry: no _source, old temp path
+      const orphanEntry = {
+        matcher: '*',
+        hooks: [{ type: 'command', command: 'node "/some/old/path/session-start-claws.js"' }],
+      };
+      // Also include a legitimate non-Claws hook that must be preserved
+      const thirdPartyHook = {
+        matcher: '*',
+        _source: 'my-other-tool',
+        hooks: [{ type: 'command', command: '/usr/local/bin/my-hook.sh' }],
+      };
+      const initial = { hooks: { SessionStart: [orphanEntry, thirdPartyHook] } };
+      fs.writeFileSync(settingsPath, JSON.stringify(initial, null, 2), 'utf8');
+
+      const r = runInject(tmp);
+      assert.strictEqual(r.status, 0, `Inject must succeed: ${r.stderr}`);
+
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      const sessionHooks = settings.hooks.SessionStart || [];
+
+      // Orphan must be gone
+      const orphanStillPresent = sessionHooks.some(e =>
+        !e._source && e.hooks && e.hooks[0] && e.hooks[0].command.includes('session-start-claws.js') &&
+        e.hooks[0].command.includes('/some/old/path/')
+      );
+      assert.ok(!orphanStillPresent, 'Orphan entry (no _source, old path) must be removed');
+
+      // Third-party hook must survive
+      const thirdPartyStillPresent = sessionHooks.some(e => e._source === 'my-other-tool');
+      assert.ok(thirdPartyStillPresent, 'Third-party hook must be preserved');
+
+      // The new flagged Claws entry must be present
+      const newClawsEntry = sessionHooks.find(e => e._source === 'claws');
+      assert.ok(newClawsEntry, 'New _source:claws entry must be added');
+    } finally {
+      cleanTmpDir(tmp);
+    }
+  });
+
+  // 6. Windows temp-dir orphan (command contains 'claws-install-') is removed
+  await check('W7-2b: Windows temp-dir orphan (claws-install- path) is removed', () => {
+    const tmp = makeTmpDir();
+    try {
+      const claudeDir = path.join(tmp, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      const settingsPath = path.join(claudeDir, 'settings.json');
+
+      const windowsOrphan = {
+        matcher: '*',
+        hooks: [{
+          type: 'command',
+          command: 'node "C:\\\\Users\\\\claws\\\\AppData\\\\Local\\\\Temp\\\\claws-install-dad9c4c0\\\\extract\\\\claws-0.8-alpha\\\\scripts\\\\hooks\\\\session-start-claws.js"',
+        }],
+      };
+      const initial = { hooks: { SessionStart: [windowsOrphan] } };
+      fs.writeFileSync(settingsPath, JSON.stringify(initial, null, 2), 'utf8');
+
+      const r = runInject(tmp);
+      assert.strictEqual(r.status, 0, `Inject must succeed: ${r.stderr}`);
+
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      const sessionHooks = settings.hooks.SessionStart || [];
+
+      const orphanStillPresent = sessionHooks.some(e =>
+        e.hooks && e.hooks[0] && e.hooks[0].command.includes('claws-install-')
+      );
+      assert.ok(!orphanStillPresent, 'Windows temp-dir orphan (claws-install-) must be removed');
+
+      // The new flagged Claws entry must be present
+      const newClawsEntry = sessionHooks.find(e => e._source === 'claws');
+      assert.ok(newClawsEntry, 'New _source:claws entry must be added after orphan removal');
+    } finally {
+      cleanTmpDir(tmp);
+    }
+  });
+
+  // 7. Settings with NO orphan entries → no-op (non-Claws hooks untouched)
+  await check('W7-2b: no orphans → unrelated non-Claws hook untouched (idempotent)', () => {
+    const tmp = makeTmpDir();
+    try {
+      const claudeDir = path.join(tmp, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      const settingsPath = path.join(claudeDir, 'settings.json');
+
+      // A hook that does NOT match any Claws pattern
+      const unrelatedHook = {
+        matcher: '*',
+        _source: 'my-formatter',
+        hooks: [{ type: 'command', command: '/usr/local/bin/prettier --write' }],
+      };
+      const initial = { hooks: { PostToolUse: [unrelatedHook] } };
+      fs.writeFileSync(settingsPath, JSON.stringify(initial, null, 2), 'utf8');
+
+      let r = runInject(tmp);
+      assert.strictEqual(r.status, 0, `First inject must succeed: ${r.stderr}`);
+      r = runInject(tmp);
+      assert.strictEqual(r.status, 0, `Second inject must succeed: ${r.stderr}`);
+
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      const postHooks = settings.hooks.PostToolUse || [];
+      const formatterHook = postHooks.find(e => e._source === 'my-formatter');
+      assert.ok(formatterHook, 'Unrelated non-Claws hook must survive two inject runs');
+      assert.strictEqual(
+        formatterHook.hooks[0].command,
+        unrelatedHook.hooks[0].command,
+        'Unrelated hook command must be unchanged'
+      );
+    } finally {
+      cleanTmpDir(tmp);
+    }
+  });
+
+  // 8. Multiple orphan types in same settings file: all removed, _source:claws entry added
+  await check('W7-2b: mixed pre-fix + new-fix + 3rd-party → only new-flagged + 3rd-party remain', () => {
+    const tmp = makeTmpDir();
+    try {
+      const claudeDir = path.join(tmp, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      const settingsPath = path.join(claudeDir, 'settings.json');
+
+      const orphanFilename = {
+        matcher: '*',
+        hooks: [{ type: 'command', command: 'node "/old/path/hooks/stop-claws.js"' }],
+      };
+      const orphanTempDir = {
+        matcher: '*',
+        hooks: [{
+          type: 'command',
+          command: 'node "C:\\\\Temp\\\\claws-install-abc123\\\\scripts\\\\hooks\\\\stop-claws.js"',
+        }],
+      };
+      const thirdParty = {
+        matcher: '*',
+        _source: 'lint-runner',
+        hooks: [{ type: 'command', command: '/opt/tools/lint.sh' }],
+      };
+      const initial = { hooks: { Stop: [orphanFilename, orphanTempDir, thirdParty] } };
+      fs.writeFileSync(settingsPath, JSON.stringify(initial, null, 2), 'utf8');
+
+      const r = runInject(tmp);
+      assert.strictEqual(r.status, 0, `Inject must succeed: ${r.stderr}`);
+
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      const stopHooks = settings.hooks.Stop || [];
+
+      // Both orphans must be gone
+      const anyOrphan = stopHooks.some(e => !e._source);
+      assert.ok(!anyOrphan, 'All entries without _source must be removed');
+
+      // Third-party hook preserved
+      const lintRunner = stopHooks.find(e => e._source === 'lint-runner');
+      assert.ok(lintRunner, 'Third-party lint-runner hook must be preserved');
+
+      // Exactly one Claws-flagged Stop entry
+      const clawsEntries = stopHooks.filter(e => e._source === 'claws');
+      assert.strictEqual(clawsEntries.length, 1, `Must have exactly 1 Claws Stop entry; got ${clawsEntries.length}`);
+    } finally {
+      cleanTmpDir(tmp);
+    }
+  });
+
   // Report
   const pass = assertions.filter(a => a.ok).length;
   const fail = assertions.filter(a => !a.ok).length;

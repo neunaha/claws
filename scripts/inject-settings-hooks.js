@@ -40,6 +40,36 @@ const REMOVE  = process.argv.includes('--remove');
 const UPDATE  = process.argv.includes('--update');
 const SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 const SOURCE_TAG    = 'claws';
+
+// W7-2b: conservative orphan-hook detection. Only entries that match the Claws
+// hook script filename pattern OR reference a Windows temp-dir install path are
+// considered orphans. Entries with _source === 'claws' are intentionally excluded
+// here — they are handled by the existing stale-dedup logic below.
+const CLAWS_HOOK_SCRIPT_RE = /(?:session-start|pre-tool-use|pre-bash-no-verify-block|post-tool-use|stop)-claws\.js/;
+
+function isOrphanHookEntry(entry) {
+  if (entry._source) return false; // any _source means it belongs to a known tool
+  const cmd = (entry.hooks && entry.hooks[0] && entry.hooks[0].command) || '';
+  return cmd.includes('claws-install-') || CLAWS_HOOK_SCRIPT_RE.test(cmd);
+}
+
+function removeOrphanHooks(cfg) {
+  if (!cfg.hooks) return 0;
+  let count = 0;
+  for (const [event, arr] of Object.entries(cfg.hooks)) {
+    if (!Array.isArray(arr)) continue;
+    cfg.hooks[event] = arr.filter(entry => {
+      if (!isOrphanHookEntry(entry)) return true;
+      const cmd = entry.hooks[0].command;
+      const truncated = cmd.length > 80 ? cmd.slice(0, 77) + '...' : cmd;
+      console.log(`  removed orphan ${event}: ${truncated}`);
+      count++;
+      return false;
+    });
+  }
+  return count;
+}
+
 // F5: advisory exclusive lock — prevents concurrent inject-settings-hooks
 // invocations (e.g. install.sh + update.sh race) from producing a torn write.
 // 15 attempts × 100ms backoff = 1.5s max wait; handles bursts of concurrent writers.
@@ -163,6 +193,7 @@ function makeHookEntry(matcher, scriptName) {
     }
     const cfg = parsed.data;
     if (!cfg.hooks) cfg.hooks = {};
+    removeOrphanHooks(cfg);
     for (const { event, scriptName, entry } of HOOKS_TO_ADD) {
       if (!cfg.hooks[event]) cfg.hooks[event] = [];
       const arr = cfg.hooks[event];
@@ -188,6 +219,7 @@ function makeHookEntry(matcher, scriptName) {
     let removed = 0;
     const result = await withLock(() => mergeIntoFile(SETTINGS_PATH, (cfg) => {
       if (!cfg.hooks) return;
+      removed += removeOrphanHooks(cfg);
       for (const [event, arr] of Object.entries(cfg.hooks)) {
         if (!Array.isArray(arr)) continue;
         const filtered = arr.filter(e => e._source !== SOURCE_TAG);
@@ -228,6 +260,8 @@ function makeHookEntry(matcher, scriptName) {
         }
       }
       if (!cfg.hooks) cfg.hooks = {};
+      // W7-2b: clean orphan hooks before the remove+add cycle
+      removed += removeOrphanHooks(cfg);
       // Step 1: remove all existing Claws hooks
       for (const [event, arr] of Object.entries(cfg.hooks)) {
         if (!Array.isArray(arr)) continue;
@@ -269,6 +303,8 @@ function makeHookEntry(matcher, scriptName) {
       }
     }
     if (!cfg.hooks) cfg.hooks = {};
+    // W7-2b: remove orphan entries from pre-fix installs before dedup logic
+    removeOrphanHooks(cfg);
     for (const { event, scriptName, entry } of HOOKS_TO_ADD) {
       if (!cfg.hooks[event]) cfg.hooks[event] = [];
       const arr = cfg.hooks[event];
