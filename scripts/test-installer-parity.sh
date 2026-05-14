@@ -112,7 +112,24 @@ RC_B="$(grep -rh 'shell-hook\.sh' "$HOME_B"/.zshrc "$HOME_B"/.bashrc 2>/dev/null
 if [ -n "$RC_A" ] && [ -n "$RC_B" ]; then _ok "shell rc-file (shell-hook.sh sourced in both)"
 else _fail "shell rc-file: bash='${RC_A:-MISSING}' node='${RC_B:-MISSING}'"; fi
 
+# (f) Project-local .claude/rules/ and .claude/skills/ — W7-6 regression guard
+# Both installers must write claws-default-behavior.md into <project>/.claude/rules/
+# and at least one skill dir into <project>/.claude/skills/.
+RULES_A="$([ -d "$A/.claude/rules" ] && echo "Y" || echo "N")"
+RULES_B="$([ -d "$B/.claude/rules" ] && echo "Y" || echo "N")"
+SKILLS_A="$([ -d "$A/.claude/skills" ] && echo "Y" || echo "N")"
+SKILLS_B="$([ -d "$B/.claude/skills" ] && echo "Y" || echo "N")"
+if [ "$RULES_A" = "Y" ] && [ "$RULES_B" = "Y" ]; then _ok ".claude/rules/ project-local (both)"
+else _fail ".claude/rules/ project-local: bash=$RULES_A node=$RULES_B"; fi
+if [ "$SKILLS_A" = "Y" ] && [ "$SKILLS_B" = "Y" ]; then _ok ".claude/skills/ project-local (both)"
+else _fail ".claude/skills/ project-local: bash=$SKILLS_A node=$SKILLS_B"; fi
+# Guard: neither installer should put rules/skills into the fake HOME
+RULES_HOME_A="$([ -d "$HOME_A/.claude/rules" ] && echo "Y" || echo "N")"
+RULES_HOME_B="$([ -d "$HOME_B/.claude/rules" ] && echo "Y" || echo "N")"
+if [ "$RULES_HOME_A" = "N" ] && [ "$RULES_HOME_B" = "N" ]; then _ok ".claude/rules/ not leaked to HOME (both)"
+else _fail ".claude/rules/ leaked to HOME: bash=$RULES_HOME_A node=$RULES_HOME_B"; fi
+
 printf '\n[parity] '
-[ "$FAIL" -eq 0 ] && printf '\033[32mPASS\033[0m — all %d checks green\n' 5 || \
+[ "$FAIL" -eq 0 ] && printf '\033[32mPASS\033[0m — all %d checks green\n' 8 || \
   printf '\033[31mFAIL\033[0m — %d check(s) failed\n' "$FAIL"
 [ "$FAIL" -eq 0 ] && exit 0 || exit 1
