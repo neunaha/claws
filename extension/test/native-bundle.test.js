@@ -13,7 +13,7 @@ const path = require('path');
 const EXT_ROOT = path.resolve(__dirname, '..');
 const NATIVE_ROOT = path.join(EXT_ROOT, 'native');
 const NODE_PTY_DIR = path.join(NATIVE_ROOT, 'node-pty');
-const PTY_NODE = path.join(NODE_PTY_DIR, 'build', 'Release', 'pty.node');
+const PREBUILDS_ROOT = path.join(NODE_PTY_DIR, 'prebuilds');
 const METADATA = path.join(NATIVE_ROOT, '.metadata.json');
 const PKG_JSON = path.join(NODE_PTY_DIR, 'package.json');
 
@@ -33,22 +33,25 @@ function check(name, fn) {
   }
 }
 
-check('native/node-pty/build/Release/pty.node exists', () => {
-  if (!fs.existsSync(PTY_NODE)) throw new Error(`not found at ${PTY_NODE}`);
-  const st = fs.statSync(PTY_NODE);
-  if (st.size === 0) throw new Error('pty.node is zero bytes');
+check('native/node-pty/prebuilds/ directory exists with at least one platform', () => {
+  if (!fs.existsSync(PREBUILDS_ROOT)) throw new Error(`not found at ${PREBUILDS_ROOT}`);
+  const entries = fs.readdirSync(PREBUILDS_ROOT);
+  if (entries.length === 0) throw new Error('prebuilds/ is empty');
 });
 
 check('native/.metadata.json exists', () => {
   if (!fs.existsSync(METADATA)) throw new Error(`not found at ${METADATA}`);
 });
 
-check('metadata has required fields', () => {
+check('metadata has required fields (Wave 6X format)', () => {
   const raw = fs.readFileSync(METADATA, 'utf8');
   const meta = JSON.parse(raw);
-  const required = ['electronVersion', 'platform', 'arch', 'nodePtyVersion'];
+  const required = ['node_pty_version', 'copied_at', 'platforms_included'];
   for (const field of required) {
     if (!meta[field]) throw new Error(`missing field: ${field} (got ${JSON.stringify(meta)})`);
+  }
+  if (!Array.isArray(meta.platforms_included) || meta.platforms_included.length === 0) {
+    throw new Error('platforms_included must be a non-empty array');
   }
 });
 
@@ -60,13 +63,12 @@ check('bundled package.json parses', () => {
   if (!pkg.main) throw new Error('no main field');
 });
 
-check('metadata.arch is a known architecture string (arm64 or x64 — win32/mac/linux compatible)', () => {
-  if (!fs.existsSync(METADATA)) throw new Error(`metadata not found at ${METADATA}`);
-  const meta = JSON.parse(fs.readFileSync(METADATA, 'utf8'));
-  const known = ['arm64', 'x64'];
-  if (!known.includes(meta.arch)) {
-    throw new Error(`unexpected arch '${meta.arch}' — expected one of ${known.join('/')}`);
-  }
+check('host platform prebuild contains pty.node (non-zero)', () => {
+  const hostPlat = `${process.platform}-${process.arch}`;
+  const ptyNode = path.join(PREBUILDS_ROOT, hostPlat, 'pty.node');
+  if (!fs.existsSync(ptyNode)) throw new Error(`not found: prebuilds/${hostPlat}/pty.node`);
+  const st = fs.statSync(ptyNode);
+  if (st.size === 0) throw new Error(`pty.node is zero bytes at prebuilds/${hostPlat}/`);
 });
 
 let failed = 0;
