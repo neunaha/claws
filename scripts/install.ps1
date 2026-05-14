@@ -7,6 +7,12 @@
 
 $ErrorActionPreference = 'Stop'
 
+# ─── PowerShell 5.1 IWR slowness fix ──────────────────────────────────────────
+# Without SilentlyContinue, Invoke-WebRequest in PS 5.1 redraws the progress bar
+# every chunk and runs 20-50x slower than expected. This single line turns a
+# 5-minute download into a 5-second one.
+$ProgressPreference = 'SilentlyContinue'
+
 # ─── Branch override (PS 5.1: no ?? operator) ─────────────────────────────────
 if ($env:CLAWS_BRANCH) {
   $BRANCH = $env:CLAWS_BRANCH
