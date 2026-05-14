@@ -21,6 +21,7 @@ import { schemaForTopic } from './topic-registry';
 import { EventLogWriter, EventLogReader, parseCursor } from './event-log';
 import { PipelineRegistry } from './pipeline-registry';
 import { WebSocketTransport } from './websocket-transport';
+import { getServerEndpoint, isNamedPipe } from './transport';
 
 /**
  * Per-connection context threaded into `handle()`. Holds the raw socket
@@ -392,9 +393,15 @@ export class ClawsServer {
    * on bind completion.
    */
   start(): Promise<void> {
-    const socketRel = this.opts.socketRel || DEFAULT_SOCKET_REL;
-    this.socketPath = path.join(this.opts.workspaceRoot, socketRel);
-    fs.mkdirSync(path.dirname(this.socketPath), { recursive: true });
+    if (process.platform === 'win32') {
+      // Named pipes are kernel objects — use the computed pipe name derived
+      // from the workspace root.  The socketRel config option is Unix-only.
+      this.socketPath = getServerEndpoint(this.opts.workspaceRoot);
+    } else {
+      const socketRel = this.opts.socketRel || DEFAULT_SOCKET_REL;
+      this.socketPath = path.join(this.opts.workspaceRoot, socketRel);
+      fs.mkdirSync(path.dirname(this.socketPath), { recursive: true });
+    }
 
     // NB: this promise resolves on success OR failure — failure is captured
     // in `startError` for the caller to inspect. Returning a never-rejecting
@@ -555,7 +562,7 @@ export class ClawsServer {
     // stream.end() drain is async but VS Code deactivation gives it time.
     this.eventLog.close().catch(() => { /* best-effort */ });
     try { this.server?.close(); } catch { /* ignore */ }
-    try { if (this.socketPath) fs.unlinkSync(this.socketPath); } catch { /* ignore */ }
+    try { if (this.socketPath && !isNamedPipe(this.socketPath)) fs.unlinkSync(this.socketPath); } catch { /* ignore */ }
     this.server = null;
     this.peers.clear();
     this.subscriptionIndex.clear();
@@ -573,6 +580,18 @@ export class ClawsServer {
    * VS Code windows race each other into client confusion.
    */
   private async prepareSocket(sockPath: string): Promise<void> {
+    if (isNamedPipe(sockPath)) {
+      // Named pipes are kernel objects — no filesystem cleanup needed.
+      // Probe by connecting: if something answers, another server is live.
+      const occupied = await this.probeSocket(sockPath);
+      if (occupied) {
+        throw new Error(
+          `refusing to start: another server is already listening on ${sockPath}. ` +
+          `Close the other VS Code window.`,
+        );
+      }
+      return;
+    }
     if (!fs.existsSync(sockPath)) return;
     const occupied = await this.probeSocket(sockPath);
     if (occupied) {
@@ -613,16 +632,20 @@ export class ClawsServer {
     return new Promise<void>((resolve, reject) => {
       this.server = net.createServer((socket) => this.handleConnection(socket));
 
+      const namedPipe = isNamedPipe(sockPath);
       // Restrict file mode from birth by tightening umask around the bind.
       // On macOS & Linux net.Server.listen creates the inode with
       // (0o777 & ~umask), so umask(0o077) yields 0700 on the socket — good
       // enough to prevent other-user access. We belt-and-brace with an
       // explicit chmod in the listen callback in case VS Code's umask is
       // unusual under Electron.
-      const prevUmask = process.umask(0o077);
+      // Named pipes (Windows) are kernel objects — umask and chmod are no-ops.
+      const prevUmask = namedPipe ? null : process.umask(0o077);
       try {
         this.server.once('listening', () => {
-          try { fs.chmodSync(sockPath, 0o600); } catch { /* ignore */ }
+          if (!namedPipe) {
+            try { fs.chmodSync(sockPath, 0o600); } catch { /* ignore */ }
+          }
           this.opts.logger(`[claws] listening on ${sockPath}`);
           resolve();
         });
@@ -632,7 +655,7 @@ export class ClawsServer {
         });
         this.server.listen(sockPath);
       } finally {
-        process.umask(prevUmask);
+        if (prevUmask !== null) process.umask(prevUmask);
       }
     });
   }
