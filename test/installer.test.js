@@ -351,6 +351,72 @@ describe('installer — 11-scenario matrix', () => {
     );
   });
 
+  // ── (l) Global hooks installed to ~/.claude/claws/hooks/ (W7h-2) ──────────
+  test('(l) install creates ~/.claude/claws/hooks/ with hook scripts', () => {
+    const r = runCli(['install'], {
+      tmpHome, tmpProject,
+      extraEnv: { CLAWS_VSCODE_CLI: stubCli },
+    });
+    assert.equal(r.status, 0, `install failed:\n${r.stderr}`);
+
+    const globalHooksDir = path.join(tmpHome, '.claude', 'claws', 'hooks');
+    assert.ok(
+      fs.existsSync(globalHooksDir),
+      '~/.claude/claws/hooks/ must be created by install'
+    );
+    // At least session-start-claws.js must be present
+    assert.ok(
+      fs.existsSync(path.join(globalHooksDir, 'session-start-claws.js')),
+      'session-start-claws.js must be copied to global hooks dir'
+    );
+
+    // settings.json hook commands must reference the global hooks dir, NOT .claws-bin/
+    const settingsPath = path.join(tmpHome, '.claude', 'settings.json');
+    if (fs.existsSync(settingsPath)) {
+      const raw = fs.readFileSync(settingsPath, 'utf8');
+      assert.ok(
+        raw.includes('.claude/claws/hooks'),
+        'settings.json hook commands must reference ~/.claude/claws/hooks path'
+      );
+      assert.ok(
+        !raw.includes('.claws-bin/hooks'),
+        'settings.json must NOT reference project-local .claws-bin/hooks path'
+      );
+    }
+  });
+
+  // ── (m) Hooks survive project deletion — global path is stable (W7h-2) ────
+  test('(m) hooks registered in settings.json point at stable global path (survives project delete)', () => {
+    const r = runCli(['install'], {
+      tmpHome, tmpProject,
+      extraEnv: { CLAWS_VSCODE_CLI: stubCli },
+    });
+    assert.equal(r.status, 0, `install failed:\n${r.stderr}`);
+
+    const settingsPath = path.join(tmpHome, '.claude', 'settings.json');
+    if (!fs.existsSync(settingsPath)) return; // hooks registration skipped (e.g. CI env)
+
+    const rawBefore = fs.readFileSync(settingsPath, 'utf8');
+
+    // Simulate project deletion
+    fs.rmSync(path.join(tmpProject, '.claws-bin'), { recursive: true, force: true });
+
+    // After project deletion, the global hooks dir must still exist
+    const globalHooksDir = path.join(tmpHome, '.claude', 'claws', 'hooks');
+    assert.ok(
+      fs.existsSync(globalHooksDir),
+      'global hooks dir must survive project deletion'
+    );
+
+    // settings.json hook commands must still reference the global path
+    const rawAfter = fs.readFileSync(settingsPath, 'utf8');
+    assert.equal(rawBefore, rawAfter, 'settings.json must be unchanged after project deletion');
+    assert.ok(
+      rawAfter.includes('.claude/claws/hooks'),
+      'hook commands must still reference stable global path after project deletion'
+    );
+  });
+
   // ── (k) Preflight failure → no partial state ─────────────────────────────
   test('(k) preflight failure aborts install cleanly — no partial state written', () => {
     // Create an empty bin dir to use as PATH — git won't be found
