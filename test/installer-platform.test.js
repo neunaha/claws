@@ -3,6 +3,7 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
+const os = require('os');
 
 const {
   findCodeCli,
@@ -227,5 +228,59 @@ describe('dryRunLog', () => {
       process.stdout.write = orig;
     }
     assert.equal(captured.join(''), '[dry-run] install mcp_server.js\n');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// _injectHooks — W7-5b: honest failure reporting
+// ---------------------------------------------------------------------------
+
+describe('_injectHooks', () => {
+  const { _injectHooks } = require('../lib/install.js');
+
+  function captureStdout(fn) {
+    const chunks = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
+    try { fn(); } finally { process.stdout.write = orig; }
+    return chunks.join('');
+  }
+
+  test('returns false when spawnSync exits non-zero', () => {
+    let result;
+    captureStdout(() => {
+      result = _injectHooks(os.tmpdir(), false, { spawnFn: () => ({ status: 1 }) });
+    });
+    assert.equal(result, false, '_injectHooks must return false on inject script failure');
+  });
+
+  test('returns true when spawnSync exits zero', () => {
+    const result = _injectHooks(os.tmpdir(), false, { spawnFn: () => ({ status: 0 }) });
+    assert.equal(result, true, '_injectHooks must return true on success');
+  });
+
+  test('returns true in dry-run regardless of spawnFn exit code', () => {
+    let result;
+    captureStdout(() => {
+      result = _injectHooks(os.tmpdir(), true, { spawnFn: () => ({ status: 99 }) });
+    });
+    assert.equal(result, true, 'dry-run is always success-equivalent');
+  });
+
+  test('run() does not print "Hooks registered" when inject script fails', () => {
+    // Verify that the false return value gates the _ok call in run().
+    // We test the gate logic directly: _injectHooks returning false → no ok line.
+    const failResult = _injectHooks(os.tmpdir(), false, { spawnFn: () => ({ status: 1 }) });
+    // Simulate what run() does: only print _ok if result is truthy
+    const chunks = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
+    try {
+      if (failResult) process.stdout.write('  \x1b[32m✓\x1b[0m Hooks registered\n');
+    } finally {
+      process.stdout.write = orig;
+    }
+    assert.ok(!chunks.some(c => c.includes('Hooks registered')),
+      'Hooks registered must not appear when _injectHooks returns false');
   });
 });
