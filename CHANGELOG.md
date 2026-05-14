@@ -5,6 +5,25 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0-alpha] - 2026-05-15
+
+Ship-readiness validation patches on top of the main v0.8 work. Four commits
+(`da1d8d2`, `fc72142`, `0beace5`, `f515c25`) landed on `v0.8-alpha` after the
+primary Windows + installer work was complete. Mac parity 8/8, extension suite
+all-pass, Windows VM MCP handshake 41/41 tools.
+
+### Critical fixes
+- **W7h-30A — win32 hookCmd non-canonical path** (`fc72142`): On Windows, `sh` is not in PATH, so the `sh -c` fault-tolerance wrapper in the non-canonical `hookCmd` path of `scripts/inject-settings-hooks.js` silently failed, breaking all lifecycle hooks. On `process.platform === 'win32'` now emits `node "<absolute-path>"` directly, matching the canonical-install fast path. `sh -c` wrapper is unchanged on Unix.
+- **W7h-30B — duplicate hooks/hooks/ path in installGlobalHooks** (`0beace5`): `installGlobalHooks()` in `lib/install.js` was returning `~/.claude/claws/hooks` as `CLAWS_BIN`, which `inject-settings-hooks.js` then passed through `path.join(CLAWS_BIN, 'hooks', scriptName)`, producing a doubled `~/.claude/claws/hooks/hooks/<script>.js` path. Fixed by returning the parent `~/.claude/claws` so the inject script correctly resolves `~/.claude/claws/hooks/<script>.js`.
+
+### Regressions resolved
+- **W7h-30C — re-add PreToolUse MCP spawn-class matchers (BUG-28 parity)** (`f515c25`): PreToolUse entries with explicit matchers for `mcp__claws__claws_create`, `mcp__claws__claws_worker`, `mcp__claws__claws_fleet`, and `mcp__claws__claws_dispatch_subworker` were removed in v0.7.13 in favor of the server-side Monitor gate. Re-added as belt-and-suspenders for Claude Code builds where the `*` wildcard is not propagated to MCP tool calls (observed on Windows and some older builds). Server-side gate in `mcp_server.js` remains the primary enforcer. Test `inject-settings-dedup` updated: PreToolUse expected count 2 → 6.
+
+### High UX
+- **W7h-31 — isDevTree checks projectRoot + parity harness CLAWS_SKIP_EXTENSION_COPY** (`da1d8d2`): `isDevTree()` detection in `lib/install.js` now checks `projectRoot` (matching `install.sh`'s `$PROJECT_ROOT` check) instead of `REPO_ROOT`, so non-repo installs don't incorrectly trigger dev-hooks. Parity test now passes `CLAWS_SKIP_EXTENSION_COPY=1` to the Node installer to match the bash installer's skip flag, restoring 8/8 parity checks green (was 5/5 before W7-6 extension-copy checks were added).
+
+---
+
 ## [0.8.0] - 2026-05-13
 
 ### Changed
