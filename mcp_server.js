@@ -2573,18 +2573,28 @@ async function _dispatchTool(name, args, sock) {
     }
     // detach default flipped to true in v0.7.10 — blocking mode unsafe over MCP stdio
     const detach = args.detach !== false;
+    log(`fleet: enter workers=${fleetWorkers.length} detach=${detach}`);
     const sharedDefaults = {};
     for (const k of ['cwd', 'model', 'timeout_ms', 'boot_wait_ms', 'poll_interval_ms', 'harvest_lines', 'close_on_complete']) {
       if (args[k] !== undefined) sharedDefaults[k] = args[k];
     }
     const fleetStartedAt = Date.now();
     const fleetPromise = Promise.allSettled(
-      fleetWorkers.map((w) => {
+      fleetWorkers.map((w, _fi) => {
         const wClean = {};
         for (const [k, v] of Object.entries(w)) {
           if (v !== undefined) wClean[k] = v;
         }
-        return runBlockingWorker(sock, { ...sharedDefaults, ...wClean, ...(detach ? { detach: true } : {}) });
+        log(`fleet: worker[${_fi}] spawn-begin name=${wClean.name || 'unnamed'} mission-len=${(wClean.mission || '').length}`);
+        return runBlockingWorker(sock, { ...sharedDefaults, ...wClean, ...(detach ? { detach: true } : {}) })
+          .then((r) => {
+            log(`fleet: worker[${_fi}] spawn-ok terminal=${r && r.terminal_id} status=${r && r.status}`);
+            return r;
+          })
+          .catch((e) => {
+            log(`fleet: worker[${_fi}] spawn-error ${e && e.message || String(e)}`);
+            throw e;
+          });
       }),
     ).then((settled) => {
       const results = settled.map((s) => s.status === 'fulfilled'
@@ -2616,9 +2626,11 @@ async function _dispatchTool(name, args, sock) {
         monitor_arm_command: 'arm one monitor_arm_command per worker entry above',
         events_log_path: fleetEventsLogPath,
       };
+      log(`fleet: exit wall=${summary.wall_clock_ms}ms workers=${results.length}`);
       return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
     });
     // Detach:true (default) returns quickly; detach:false legacy path gets the guard.
+    log(`fleet: dispatched detach=${detach}`);
     return detach
       ? fleetPromise
       : withMaxHold(fleetPromise, 8000, () => ({
