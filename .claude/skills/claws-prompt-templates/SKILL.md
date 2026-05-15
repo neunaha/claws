@@ -8,15 +8,25 @@ type: skill
 
 Patterns for crafting mission text sent to Claws workers. The boot mechanics are handled by `claws_worker` / `claws_fleet` — these templates are about what you put in the `mission` field.
 
+## NEVER write the literal completion marker inside mission text
+
+**Hard rule:** the literal all-caps `__CLAWS` + `_DONE__` string must not appear anywhere inside the `mission` field you pass to `claws_worker` / `claws_fleet` / `claws_dispatch_subworker`. The pty marker scanner can fire on those bytes during the bracketed-paste of the mission itself, closing the worker terminal before Claude has read the mission. Wave L (`_sendAndSubmitMission` post-paste `markerScanFrom` snapshot) makes this much less likely, but the protocol-level rule remains universal.
+
+**Safe placements** (these run AFTER the mission is delivered, so the scanner is past the paste window):
+- F4 shell command: `printf '%s\n' '__CLAWS_DONE__'` — Bash command, not pasted text.
+- F5 chat-narration final line — emitted by Claude after the worker has fully processed the mission.
+
+**Inside the mission body, always paraphrase**: "the standard Claws completion sentinel", "the all-caps completion marker", "the `__CLAWS` prefix + `_DONE__` suffix", "the canonical worker-done marker". Templates below use those paraphrases.
+
 ## Core rules for every mission
 
-1. **End with a completion marker**: `print __CLAWS_DONE__ when done. go.`
+1. **End with a paraphrased completion-marker instruction**: `print the standard Claws completion sentinel when done. go.`
 2. **Include F1–F5 final actions** for missions that commit code:
    - F1: `git status --short` — verify clean working tree
    - F2: `git log --oneline -5` — verify commits landed
    - F3 (PRIMARY): `claws_done()` — zero-arg MCP completion (publishes system.worker.completed and closes terminal)
-   - F4 (BACKUP): `printf '%s\n' '__CLAWS_DONE__'` — pty-visible completion signal
-   - F5 (BACKUP): end final assistant message with `__CLAWS_DONE__` on its own line
+   - F4 (BACKUP): `printf '%s\n' '__CLAWS_DONE__'` — shell command (executes after mission, so the marker bytes appear post-paste; safe)
+   - F5 (BACKUP): end final assistant message with the all-caps completion marker on its own line
 3. **Set hard gates**: "all tests must pass before commit", "zero tsc errors", "no --no-verify"
 4. **Scope constraints explicitly**: list what files are off-limits
 
@@ -41,8 +51,8 @@ final actions:
 F1: git status --short
 F2: git log --oneline -5
 F3: claws_done()
-F4: printf '%s\n' '__CLAWS_DONE__'
-F5: end final message with __CLAWS_DONE__ on its own line
+F4: printf '%s\n' '__CLAWS_DONE__'   ← shell command; safe (post-paste)
+F5: end final message with the all-caps completion marker on its own line
 
 constraints:
 - do not edit files outside [scope]
@@ -50,7 +60,7 @@ constraints:
 - all tests must pass before committing
 - zero tsc errors after any .ts edit
 
-print __CLAWS_DONE__ when done. go.
+print the standard Claws completion sentinel when done. go.
 ```
 
 ---
@@ -82,10 +92,10 @@ constraints:
 F1: git status --short
 F2: git log --oneline -3
 F3: claws_done()
-F4: printf '%s\n' '__CLAWS_DONE__'
-F5: end final message with __CLAWS_DONE__ on its own line
+F4: printf '%s\n' '__CLAWS_DONE__'   ← shell command; safe (post-paste)
+F5: end final message with the all-caps completion marker on its own line
 
-print __CLAWS_DONE__ when done. go.
+print the standard Claws completion sentinel when done. go.
 ```
 
 ---
@@ -112,14 +122,14 @@ if a commit fails verification after 3 retries, write [slug]-FAILED.status and s
 F1: git status --short
 F2: git log --oneline -5
 F3: claws_done()
-F4: printf '%s\n' '__CLAWS_DONE__'
-F5: end final message with __CLAWS_DONE__ on its own line
+F4: printf '%s\n' '__CLAWS_DONE__'   ← shell command; safe (post-paste)
+F5: end final message with the all-caps completion marker on its own line
 
 constraints:
 - do not push
 - no --no-verify
 
-print __CLAWS_DONE__ when done. go.
+print the standard Claws completion sentinel when done. go.
 ```
 
 ---
@@ -145,10 +155,10 @@ constraints:
 F1: git status --short
 F2: git log --oneline -3
 F3: claws_done()
-F4: printf '%s\n' '__CLAWS_DONE__'
-F5: end final message with __CLAWS_DONE__ on its own line
+F4: printf '%s\n' '__CLAWS_DONE__'   ← shell command; safe (post-paste)
+F5: end final message with the all-caps completion marker on its own line
 
-print __CLAWS_DONE__ when done. go.
+print the standard Claws completion sentinel when done. go.
 ```
 
 ---
@@ -179,5 +189,15 @@ fix the KeyError at auth.ts:87. do not commit. do not push. edit only auth.ts.
 do the thing and tell me when done
 
 # GOOD
-...print MARK_FIX_AUTH_OK when done. go.
+...print the standard Claws completion sentinel when done. go.
 ```
+
+**Literal marker in mission body** — pty scanner fires mid-paste, terminal closes before Claude reads the mission:
+```
+# BAD
+do the thing then print __CLAWS_DONE__ to exit. go.
+
+# GOOD
+do the thing then print the standard Claws completion sentinel to exit. go.
+```
+Reason: the bracketed-paste of the mission echoes those bytes through the pty, and the marker scanner can match before `markerScanFrom` is updated post-paste. The literal marker is safe in F4 (shell command) and F5 (chat narration after mission processing) — never in the mission body itself.
