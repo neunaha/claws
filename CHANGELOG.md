@@ -12,6 +12,9 @@ Ship-readiness validation patches on top of the main v0.8 work. Four commits
 primary Windows + installer work was complete. Mac parity 8/8, extension suite
 all-pass, Windows VM MCP handshake 41/41 tools.
 
+### Critical fixes (Wave J)
+- **W8j-1 — monitor_arm_command timeout_ms capped at Monitor max**: All five spawn-response builders (`claws_worker` blocking path, `claws_create`, `claws_worker` detach path, `claws_fleet` per-worker, `claws_dispatch_subworker`) were emitting `timeout_ms=7200000` in their `monitor_arm_command` suggestion string. The Monitor tool caps at `3600000`; Claude Code threw `InputValidationError` on Windows VM when users copy-pasted the command verbatim. Changed to `3600000` across all five occurrences.
+
 ### Critical fixes (Wave I)
 - **W7-5 — mcp_server.js process-level unhandledRejection+uncaughtException guards**: Under Node ≥ 15, any unhandled rejection causes silent process exit, producing the "MCP error -32000: Connection closed" symptom on Windows. Added `process.on('unhandledRejection', ...)` and `process.on('uncaughtException', ...)` handlers that log the cause to stderr and keep the bridge alive, so Claude Code receives a per-tool JSON-RPC error instead of a disconnected bridge.
 - **W7-5 — safeInvoke per-tool error boundary in handleTool**: Added `safeInvoke` helper and applied it as an error boundary in `handleTool`'s catch path, converting thrown handler exceptions into JSON-RPC error responses rather than re-throwing. Covers all 41 tools uniformly. Failure telemetry publish (`tool.${name}.failed`) is preserved.
