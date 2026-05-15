@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0-alpha] - 2026-05-15
 
+### Tests (Wave Q)
+- **W8q-1 — regression tests for Waves I–M in worker-fixes-v079**: Added 8 static-analysis checks to `extension/test/worker-fixes-v079.test.js` locking in the correctness invariants from Waves I (top-level error guards + `safeInvoke`), J (`timeout_ms` clamp + `_eventsLogPath` win32 path), K/L (`_sendAndSubmitMission` shared helper + `claws_dispatch_subworker` delegation), and M (`STREAM_EVENTS_JS_FOR_CMD` constant usage). Suite grows from 17 to 25 checks, all green.
+
 Ship-readiness validation patches on top of the main v0.8 work. Four commits
 (`da1d8d2`, `fc72142`, `0beace5`, `f515c25`) landed on `v0.8-alpha` after the
 primary Windows + installer work was complete. Mac parity 8/8, extension suite

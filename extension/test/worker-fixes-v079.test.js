@@ -179,6 +179,50 @@ check(
   /detectCompletion\(scanText,\s*detect/.test(MCP),
 );
 
+// ─── Wave I — top-level error guards + safeInvoke (v0.7.9 / W7-5) ───────────
+
+check(
+  'W7-5a unhandledRejection top-level handler exists',
+  /process\.on\(['"]unhandledRejection['"]/.test(MCP),
+);
+check(
+  'W7-5b uncaughtException top-level handler exists',
+  /process\.on\(['"]uncaughtException['"]/.test(MCP),
+);
+check(
+  'W7-5c safeInvoke helper defined',
+  /(function|const)\s+safeInvoke\b/.test(MCP),
+);
+
+// ─── Wave J — Monitor timeout clamp + eventsLogPath win32 (W8j) ──────────────
+
+check(
+  'W8j-1 Monitor timeout clamped to 3600000 in spawn responses (at least 5)',
+  (MCP.match(/timeout_ms=3600000/g) || []).length >= 5,
+);
+check(
+  'W8j-2 _eventsLogPath helper exists and handles win32',
+  /function\s+_eventsLogPath\s*\([^)]*\)\s*\{[\s\S]{0,500}win32/.test(MCP),
+);
+
+// ─── Wave K/L — _sendAndSubmitMission shared helper (W8k) ────────────────────
+
+check(
+  'W8k-1 _sendAndSubmitMission helper exists with bracketed paste + 300ms + explicit \\r',
+  /async function _sendAndSubmitMission[\s\S]{0,2000}paste:\s*true[\s\S]{0,500}sleep\(300\)[\s\S]{0,500}text:\s*['"]\\r['"]/.test(MCP),
+);
+check(
+  'W8k-2 claws_dispatch_subworker uses shared _sendAndSubmitMission helper',
+  /claws_dispatch_subworker[\s\S]{0,5000}_sendAndSubmitMission/.test(MCP),
+);
+
+// ─── Wave M — STREAM_EVENTS_JS_FOR_CMD constant (W8m) ────────────────────────
+
+check(
+  'W8m-1 STREAM_EVENTS_JS_FOR_CMD declared and used in spawn responses (1 decl + 4+ usages)',
+  /const\s+STREAM_EVENTS_JS_FOR_CMD/.test(MCP) && (MCP.match(/STREAM_EVENTS_JS_FOR_CMD/g) || []).length >= 5,
+);
+
 // ─── Final report ────────────────────────────────────────────────────────────
 
 let pass = 0;
