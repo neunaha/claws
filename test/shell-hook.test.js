@@ -2,7 +2,12 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { _removePriorBlock, _removeLegacyBlock, _getStandardRcFiles } = require('../lib/shell-hook.js');
+const fs   = require('fs');
+const os   = require('os');
+const path = require('path');
+const {
+  _removePriorBlock, _removeLegacyBlock, _getStandardRcFiles, _injectPowershellHook,
+} = require('../lib/shell-hook.js');
 
 const FAKE_INSTALL = '/fake/install';
 const HOOK_SH = `${FAKE_INSTALL}/scripts/shell-hook.sh`;
@@ -148,5 +153,81 @@ describe('shell-hook — win32 rc-file list (W7h-32)', () => {
   test('win32 _getStandardRcFiles returns empty array', () => {
     const files = _getStandardRcFiles({ platform: 'win32', home: '/home/test' });
     assert.deepEqual(files, [], 'win32 must return [] (PS injection is handled by _injectPowershellHook)');
+  });
+});
+
+describe('shell-hook — W7-4B: PS hook sourced from stable ~/.claude/claws/ path', () => {
+  function makeTmp() {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'w74b-'));
+  }
+  // Suppress powershell fallback for all tests in this suite.
+  const noExec = () => { throw new Error('powershell not available'); };
+
+  // (e-1) _injectPowershellHook copies hook to stable dir and $PROFILE references stable path.
+  test('(e-1) $PROFILE references stable ~/.claude/claws/shell-hook.ps1, not installDir', () => {
+    const tmp = makeTmp();
+    try {
+      const installDir = path.join(tmp, 'install');
+      const homeDir    = path.join(tmp, 'home');
+      fs.mkdirSync(path.join(installDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(installDir, 'scripts', 'shell-hook.ps1'), '# hook', 'utf8');
+
+      _injectPowershellHook(installDir, false, { home: homeDir, execFn: noExec });
+
+      const stableHook  = path.join(homeDir, '.claude', 'claws', 'shell-hook.ps1');
+      const profilePath = path.join(homeDir, 'Documents', 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1');
+      assert.ok(fs.existsSync(stableHook),          'shell-hook.ps1 must exist at stable location');
+      const content = fs.readFileSync(profilePath, 'utf8');
+      assert.ok(content.includes(stableHook),       '$PROFILE must reference stable path');
+      assert.ok(!content.includes(installDir),      '$PROFILE must NOT reference installDir');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // (e-2) re-install strips orphan claws-install-* temp-path block and injects stable path.
+  test('(e-2) re-install removes orphan claws-install-* temp path and injects stable path', () => {
+    const tmp = makeTmp();
+    try {
+      const installDir = path.join(tmp, 'install');
+      const homeDir    = path.join(tmp, 'home');
+      fs.mkdirSync(path.join(installDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(installDir, 'scripts', 'shell-hook.ps1'), '# hook', 'utf8');
+
+      // Simulate an existing $PROFILE with the orphan temp-dir line from a prior bad install.
+      const profileDir  = path.join(homeDir, 'Documents', 'WindowsPowerShell');
+      const profilePath = path.join(profileDir, 'Microsoft.PowerShell_profile.ps1');
+      fs.mkdirSync(profileDir, { recursive: true });
+      const orphan = '. "C:\\Users\\claws\\AppData\\Local\\Temp\\2\\claws-install-71aab029\\extract\\claws-0.8-alpha\\scripts\\shell-hook.ps1"';
+      fs.writeFileSync(profilePath, `# CLAWS terminal hook\n${orphan}\n`, 'utf8');
+
+      _injectPowershellHook(installDir, false, { home: homeDir, execFn: noExec });
+
+      const content = fs.readFileSync(profilePath, 'utf8');
+      assert.ok(!content.includes('claws-install-'), 'orphan claws-install-* path must be removed');
+      const stableHook = path.join(homeDir, '.claude', 'claws', 'shell-hook.ps1');
+      assert.ok(content.includes(stableHook), '$PROFILE must reference stable path after re-install');
+      assert.equal((content.match(/# CLAWS terminal hook/g) || []).length, 1, 'exactly one marker after re-install');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // (e-3) dryRun does not write any files.
+  test('(e-3) dryRun writes nothing to disk', () => {
+    const tmp = makeTmp();
+    try {
+      const installDir = path.join(tmp, 'install');
+      const homeDir    = path.join(tmp, 'home');
+      fs.mkdirSync(path.join(installDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(installDir, 'scripts', 'shell-hook.ps1'), '# hook', 'utf8');
+
+      _injectPowershellHook(installDir, true, { home: homeDir, execFn: noExec });
+
+      const stableHook = path.join(homeDir, '.claude', 'claws', 'shell-hook.ps1');
+      assert.ok(!fs.existsSync(stableHook), 'dryRun must not copy hook to stable location');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
