@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0-alpha] - 2026-05-15
 
+### Critical fixes (Wave W)
+- **W8w-1 — preflight `python` fallback on Windows (W8Q3-5)**: `lib/preflight.js` probed only `python3 --version`; on Windows Python 3 ships as `python`, so users with a valid Python 3 install received a spurious "python3 not found" warning on every install. Added a fallback: if `python3` probe fails, try `python --version`, read both stdout and stderr (Python 2.x printed version to stderr), and suppress the warning only when the combined output contains "Python 3". Python 2 or a missing `python` still emits the existing warning unchanged. Audit: `.local/audits/w8q3-paranoid-windows-audit.md`.
+
 ### Critical fixes (Wave V)
 - **W8v-1 — Windows sidecar dedup via pid-file (W8Q3-3)**: On win32, `spawnSync('pgrep', ...)` returns `status=null` (ENOENT — pgrep is unavailable), so the existing GAP-A1 adoption branch in `_spawnAndVerifySidecar` was always skipped. When the SessionStart hook had already spawned a sidecar, a second sidecar was spawned on the first `_ensureSidecar` call, causing 2–4× event duplication in `events.log` (both processes subscribed to `**`). Fix: inserted a win32-only pid-file dedup branch that fires immediately before the pgrep call. On adoption it reads `.claws/sidecar.pid`, probes liveness via `process.kill(pid, 0)`, and returns early if alive (removing a stale file otherwise). On fresh spawn the `child.pid` is written to the pid-file; the `child.on('exit')` handler removes it. Non-win32 path is byte-identical (`pidFile === null`, all win32 blocks are platform-gated). Source: `.local/audits/w8q3-paranoid-windows-audit.md`.
 
