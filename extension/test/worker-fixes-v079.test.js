@@ -223,6 +223,30 @@ check(
   /const\s+STREAM_EVENTS_JS_FOR_CMD/.test(MCP) && (MCP.match(/STREAM_EVENTS_JS_FOR_CMD/g) || []).length >= 5,
 );
 
+// ─── Wave R — Windows sidecar eventsLog + fileExec + wrapShellCommand (W8Q3) ─
+
+check(
+  'W8Q3-1 _spawnAndVerifySidecar uses _eventsLogPath(socketPath) for events.log',
+  /const eventsLogFilePath = _eventsLogPath\(socketPath\)/.test(MCP),
+);
+check(
+  'W8Q3-2 fileExec branches to PowerShell wrapper on win32',
+  /process\.platform === ['"]win32['"][\s\S]{0,200}\*>/.test(MCP) &&
+  /Out-File -FilePath '\$\{donePath\}'/.test(MCP),
+);
+check(
+  'W8Q3-4 wrapShellCommand branches to Write-Output on win32',
+  /process\.platform === ['"]win32['"][\s\S]{0,200}Write-Output '\[CLAWS_PUB\]/.test(MCP),
+);
+
+// ─── Wave V — Windows sidecar pid-file dedup (W8Q3-3) ────────────────────────
+
+check(
+  'W8Q3-3 _spawnAndVerifySidecar has win32 pid-file dedup branch',
+  /process\.platform === ['"]win32['"][\s\S]{0,400}sidecar\.pid/.test(MCP) &&
+  /process\.kill\(existingPid, 0\)/.test(MCP),
+);
+
 // ─── Final report ────────────────────────────────────────────────────────────
 
 let pass = 0;
