@@ -8,6 +8,21 @@ type: skill
 
 You are the **LEAD** of a Claws Wave Army. You own the diff, the commits, the PIAFEUR loop, and the final wave lifecycle call.
 
+## MANDATORY — Monitor arming after every dispatch
+
+**After every `claws_dispatch_subworker` call, your VERY NEXT tool call MUST be `Monitor(...)` with the `monitor_arm_command` from the response. Any tool call that intervenes between `claws_dispatch_subworker` and `Monitor(...)` is a sequencing bug.**
+
+Arm per-worker, not per-wave. Dispatch one, arm immediately, then dispatch the next:
+
+```
+1. claws_dispatch_subworker({ waveId, role:'tester', mission:'...' })   → r1
+2. Monitor(command=r1.monitor_arm_command, ...)                          ← MUST be step 2
+3. claws_dispatch_subworker({ waveId, role:'reviewer', mission:'...' }) → r2
+4. Monitor(command=r2.monitor_arm_command, ...)                          ← MUST be step 4
+```
+
+Skipping or deferring Monitor leaves the sub-worker flying blind — no completion signal reaches the LEAD and the wave stalls.
+
 ## Boot sequence
 
 ```
@@ -31,21 +46,25 @@ You are the **LEAD** of a Claws Wave Army. You own the diff, the commits, the PI
 
 Use `claws_dispatch_subworker` — it handles boot internally. Do NOT sequence manual claws_create + claws_send chains.
 
-```
-claws_dispatch_subworker({ waveId, role:'tester', mission:'...print MARK_TESTER_OK when done. go.' })
-claws_dispatch_subworker({ waveId, role:'reviewer', mission:'...' })
-```
-
-For each returned `terminal_id`, arm one `Monitor()` per worker using the `monitor_arm_command`
-string from the spawn response. This is the **only** observation mechanism — never use Bash
-backgrounding, never tail a log file. Example:
+Dispatch and arm in lock-step — one dispatch, one Monitor, then the next:
 
 ```
-const r = claws_dispatch_subworker({ waveId, role:'tester', mission:'...' })
-Monitor(command=r.monitor_arm_command,
-        description="claws monitor | term=" + r.terminal_id,
-        timeout_ms=7200000, persistent=false)
+// Step 1: dispatch first sub-worker
+const r1 = claws_dispatch_subworker({ waveId, role:'tester', mission:'...print MARK_TESTER_OK when done. go.' })
+// Step 2: arm Monitor IMMEDIATELY — MUST be your very next tool call after step 1
+Monitor(command=r1.monitor_arm_command,
+        description="claws monitor | term=" + r1.terminal_id,
+        timeout_ms=3600000, persistent=false)
+
+// Step 3: dispatch next sub-worker
+const r2 = claws_dispatch_subworker({ waveId, role:'reviewer', mission:'...' })
+// Step 4: arm Monitor IMMEDIATELY — MUST be your very next tool call after step 3
+Monitor(command=r2.monitor_arm_command,
+        description="claws monitor | term=" + r2.terminal_id,
+        timeout_ms=3600000, persistent=false)
 ```
+
+`monitor_arm_command` is in every dispatch response. Arming it is **mandatory** — not a suggestion, not optional. The PIAFEUR loop starts only after all sub-workers are dispatched **and** their Monitors are armed.
 
 ## PIAFEUR loop
 

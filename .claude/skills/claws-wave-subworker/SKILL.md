@@ -28,7 +28,7 @@ You are a **sub-worker** in a Claws Wave Army. Your role is one of: `tester` | `
 ## Boot sequence
 
 ```
-0. Arm Monitor on .claws/events.log via Bash run_in_background BEFORE any other action
+0. (Sidecar already running via SessionStart hook — do NOT spawn another or tail events.log; the LEAD arms Monitor for you)
 1. claws_hello({ role:'worker', peerName:'<waveId>-<role>', waveId, subWorkerRole:'<role>', capabilities:['push'] })
    // Save returned peerId — use it for all subsequent publish topics (worker.<peerId>.*)
 2. Publish wave.<waveId>.<role>.boot
