@@ -1625,6 +1625,30 @@ async function _spawnAndVerifySidecar(maxWaitMs = 3000) {
   // GAP-A1: detect existing auto-sidecar (spawned by session-start hook) to avoid
   // two concurrent sidecars both writing to events.log, causing 4x event duplication.
   const socketPath = getSocket();
+
+  // W8Q3-3: on win32 pgrep is unavailable (ENOENT); use a pid-file instead.
+  const pidFile = process.platform === 'win32'
+    ? path.join(
+        process.env.CLAWS_WORKSPACE_ROOT
+          || _findWorkspaceRoot(process.cwd())
+          || _findWorkspaceRoot(__dirname)
+          || os.tmpdir(),
+        '.claws', 'sidecar.pid')
+    : null;
+  if (process.platform === 'win32' && pidFile && fs.existsSync(pidFile)) {
+    try {
+      const existingPid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+      process.kill(existingPid, 0); // signal 0: liveness probe — throws if dead
+      log('[sidecar] adopting via pid-file pid=' + existingPid + ' (W8Q3-3 dedup)');
+      _sidecarPid        = existingPid;
+      _sidecarSubscribed = true;
+      return;
+    } catch {
+      // stale pidfile — remove and fall through to spawn
+      try { fs.unlinkSync(pidFile); } catch {}
+    }
+  }
+
   const escapedSocket = socketPath.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
   const pgResult = spawnSync('pgrep', ['-f', `stream-events\\.js.*--auto-sidecar.*${escapedSocket}`], { encoding: 'utf8' });
   if (pgResult.status === 0) {
@@ -1652,6 +1676,10 @@ async function _spawnAndVerifySidecar(maxWaitMs = 3000) {
   if (!child.pid) throw new Error('sidecar spawn returned no pid (ENOENT or permission denied)');
   _sidecarPid    = child.pid;
   _sidecarStdout = child.stdout;
+  if (process.platform === 'win32' && pidFile) {
+    try { fs.mkdirSync(path.dirname(pidFile), { recursive: true }); } catch {}
+    fs.writeFileSync(pidFile, String(child.pid));
+  }
 
   // Named drain — removed after verification so stdout can be piped to events.log.
   function drainHandler() {}
@@ -1659,6 +1687,7 @@ async function _spawnAndVerifySidecar(maxWaitMs = 3000) {
   child.on('exit', (code) => {
     log(`[sidecar] exited code=${code}`);
     eventsLogStream.end();
+    if (process.platform === 'win32' && pidFile) { try { fs.unlinkSync(pidFile); } catch {} }
     _sidecarPid        = null;
     _sidecarSubscribed = false;
     _sidecarStdout     = null;
