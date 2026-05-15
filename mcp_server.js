@@ -1898,6 +1898,20 @@ function _lifecycleErrMsg(rawErr) {
   return rawErr;
 }
 
+// Per-tool error boundary: converts a thrown exception into a JSON-RPC error
+// response so one handler bug cannot propagate and kill the bridge process.
+// Applied at the handleTool dispatch level, covering all 41 tools uniformly.
+async function safeInvoke(handler, args) {
+  try {
+    return await handler(args);
+  } catch (err) {
+    return {
+      content: [{ type: 'text', text: '[claws-mcp][error] ' + (err && err.stack || String(err)) }],
+      isError: true,
+    };
+  }
+}
+
 async function handleTool(name, args) {
   const sock = getSocket();
   _ensureSidecarOrThrow(2000).catch(() => {}); // best-effort warm-up
@@ -1914,7 +1928,10 @@ async function handleTool(name, args) {
       await _pconnEnsureRegistered(sock);
       await _pconnWriteOrThrow({ cmd: 'publish', protocol: 'claws/2', topic: `tool.${name}.failed`, payload: { duration_ms: Date.now() - _t0, error: _te && _te.message || String(_te) } });
     } catch (_pe) { /* best-effort */ }
-    throw _te;
+    // Return error response instead of re-throwing so the bridge stays alive.
+    // process.on('unhandledRejection') is the outer safety net; this is the
+    // per-tool net that converts handler exceptions to proper JSON-RPC errors.
+    _r = await safeInvoke(() => { throw _te; });
   }
   try {
     await _pconnEnsureRegistered(sock);
