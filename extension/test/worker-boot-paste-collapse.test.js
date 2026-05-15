@@ -83,9 +83,12 @@ assert.ok(/text:\s*payload,\s*newline:\s*false,\s*paste:\s*true/.test(MCP) ||
 assert.ok(/await\s+sleep\(300\)/.test(MCP),
   'mcp_server.js: 300ms sleep between paste and \\r must be preserved');
 
-// ─── 7. runBlockingWorker proven baseline preserved ───────────────────────
-assert.ok(/text:\s*payload,\s*newline:\s*true,\s*paste:\s*true/.test(MCP),
-  'mcp_server.js: runBlockingWorker baseline (paste:true newline:true) must be preserved');
+// ─── 7. _sendAndSubmitMission shared helper uses correct baseline ──────────
+// W8k-1: runBlockingWorker now delegates to _sendAndSubmitMission which uses
+// newline:false + explicit \r — the proven pattern that works on Windows ConPTY.
+// The old newline:true (internal 30ms CR) left fleet missions unsubmitted on ConPTY.
+assert.ok(/async function _sendAndSubmitMission[\s\S]{0,800}newline:\s*false,\s*paste:\s*true/.test(MCP),
+  'mcp_server.js: _sendAndSubmitMission must use newline:false + explicit \\r (W8k-1 ConPTY fix)');
 
 // ─── 8. dispatch_subworker paste-collapse recovery (LH-3 parity) ─────────
 //

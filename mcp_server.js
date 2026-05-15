@@ -1154,6 +1154,67 @@ function _setupDetachWatcher({ sock, termId, corrId, opt, markerScanFrom, hbStat
   return intervalId;
 }
 
+// W8k-1: shared mission-delivery helper used by both runBlockingWorker (fleet path)
+// and the claws_worker fast path. Guarantees identical send timing on Mac pty and
+// Windows ConPTY. Proven sequence (line 1380):
+//   bracketed-paste (newline:false) → 300ms gap → explicit \r → SUBMITS ✓
+// Using newline:true (internal 30ms CR) fails on Windows ConPTY — mission sits
+// unsubmitted in the prompt buffer until the user manually presses Enter.
+async function _sendAndSubmitMission(sock, termId, payload, launchClaude) {
+  let markerScanFrom = 0;
+  if (!payload) return markerScanFrom;
+
+  if (launchClaude) {
+    // BUG-C: record log offset BEFORE mission send so detectCompletion never
+    // false-positives on marker strings embedded in the mission body itself.
+    const _preSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+    const _preLen = (_preSnap.ok && typeof _preSnap.bytes === 'string') ? _preSnap.bytes.length : 0;
+
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: false, paste: true });
+    await sleep(300);
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+
+    // Event-driven submit verification — robust against paste-collapse.
+    // Claude TUI collapses pastes >~30 lines into "[Pasted text #N +M lines]"
+    // placeholder — retry CR every 2s up to 5 times over a 15s deadline.
+    const _submitDeadline = Date.now() + 15000;
+    let _submitVerified = false;
+    let _lastNudgeAt = Date.now();
+    let _nudges = 0;
+    while (Date.now() < _submitDeadline) {
+      await sleep(200);
+      const _vs = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+      const _txt = (_vs.ok && typeof _vs.bytes === 'string') ? _vs.bytes : '';
+      const _grewBig = _txt.length > _preLen + payload.length + 200;
+      const _placeholderGone = !/\[Pasted text #\d+/.test(_txt);
+      const _claudeResponded = /●|⏺|in:\s*\d+/.test(_txt);
+      if (_grewBig || (_placeholderGone && _claudeResponded)) { _submitVerified = true; break; }
+      if (Date.now() - _lastNudgeAt >= 2000 && _nudges < 5) {
+        await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+        _nudges++;
+        _lastNudgeAt = Date.now();
+      }
+    }
+    if (!_submitVerified) {
+      log(`_sendAndSubmitMission: submit verification FAILED after 15s — nudges=${_nudges} payload_len=${payload.length}`);
+    }
+    // Snapshot post-mission log size for markerScanFrom.
+    try {
+      const _postSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 1024 });
+      markerScanFrom = (_postSnap.ok && typeof _postSnap.totalSize === 'number')
+        ? _postSnap.totalSize
+        : (_postSnap.ok && typeof _postSnap.bytes === 'string' ? _postSnap.bytes.length : 0);
+    } catch (e) { /* non-fatal — defaults to 0, degraded but safe */ }
+  } else {
+    // Bare shell command: no paste needed; trailing \n submits via the prompt.
+    // BUG-26 analog: markerScanFrom stays 0 so the watcher scans the full log —
+    // the marker fires synchronously after the command exits.
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: true });
+  }
+
+  return markerScanFrom;
+}
+
 async function runBlockingWorker(sock, args) {
   const DEFAULTS = {
     timeout_ms: 5 * 60 * 1000,
@@ -1372,88 +1433,10 @@ async function runBlockingWorker(sock, args) {
                 : hasCommand ? wrapShellCommand(args.command, termId)
                 : '';
 
-  if (payload) {
-    if (launchClaude) {
-      // Bracketed paste + writeInjected internal 30ms CR.
-      // VERIFIED 2026-05-02 by manual claws_create + claws_send test:
-      //   • single-line: paste:true + newline:true → text wrapped in
-      //     \x1b[200~...\x1b[201~, then \r 30ms later → SUBMITS ✓
-      //   • multi-line:  same pattern → SUBMITS ✓ (Claude paste-collapses or
-      //     accepts whole bracketed paste atomically; \r 30ms later submits)
-      //
-      // Without paste:true, multi-line text is typed raw and each \n becomes
-      // newline-within-input (Claude's multi-line input mode). Single \r at
-      // end then ALSO becomes newline-within-input, never submitting.
-      await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: true, paste: true });
-    } else {
-      // Bare shell command: no paste needed; trailing \n submits via the prompt.
-      await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: true });
-    }
-  }
-
-  // Bulletproof marker scan offset: poll for TUI evidence that the mission
-  // was acknowledged (paste-collapse placeholder, thinking spinner, or
-  // significant buffer growth past pre-send length), then capture offset.
-  // The 400ms fixed sleep was timing-fragile — Claude Code v2.x sometimes
-  // delays input echo past that window.
-  // BUG-26: settle scan is Claude TUI boot detection only. For bare shell
-  // commands (launch_claude=false) the complete_marker may print before the
-  // first poll tick — setting markerScanFrom past the marker causes the detach
-  // watcher to never find it. Skip settle for non-Claude paths; markerScanFrom
-  // stays 0 so the watcher scans the full log from the start.
-  let markerScanFrom = 0;
-  if (launchClaude) {
-    try {
-      const preSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
-      const preLen = (preSnap.ok && typeof preSnap.bytes === 'string') ? preSnap.bytes.length : 0;
-      const settleDeadline = Date.now() + 5000;
-      const settleIndicator = /Pasted text|tokens|thinking|Synthesizing|Combobulating|Prestidigitating|Brewed|Cogitated|Crunched|Ideating/;
-      while (Date.now() < settleDeadline) {
-        await sleep(200);
-        const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
-        if (snap.ok && typeof snap.bytes === 'string') {
-          const text = snap.bytes;
-          const newRegion = text.slice(preLen);
-          if (text.length > preLen + 200 || settleIndicator.test(newRegion)) {
-            markerScanFrom = text.length;
-            break;
-          }
-        }
-      }
-      if (markerScanFrom === 0) {
-        const finalSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
-        if (finalSnap.ok && typeof finalSnap.bytes === 'string') {
-          markerScanFrom = finalSnap.bytes.length;
-        }
-      }
-    } catch (e) { /* keep markerScanFrom=0; degraded but not fatal */ }
-
-    // PASTE-COLLAPSE RECOVERY: the settle loop above accepts "[Pasted text...]"
-    // placeholder as a settle indicator, but placeholder VISIBLE != submission
-    // SUCCEEDED. If MCP modal is interfering or TUI ate the implicit \r, the
-    // mission sits in the input box forever. Detect this case and retry submit
-    // with up to 5 explicit CR nudges over 15s. Cheap when not needed (one
-    // readLog + early exit). Same defensive pattern as the fast-path fix.
-    try {
-      const _rbDeadline = Date.now() + 15000;
-      let _rbNudges = 0;
-      let _rbLastNudgeAt = Date.now();
-      while (Date.now() < _rbDeadline) {
-        await sleep(300);
-        const _rbSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
-        const _rbTxt = (_rbSnap.ok && typeof _rbSnap.bytes === 'string') ? _rbSnap.bytes : '';
-        const _rbPlaceholderGone = !/\[Pasted text #\d+/.test(_rbTxt);
-        const _rbClaudeResponded = /●|⏺|in:\s*\d+/.test(_rbTxt);
-        if (_rbPlaceholderGone || _rbClaudeResponded) break; // submission verified
-        if (Date.now() - _rbLastNudgeAt >= 2000 && _rbNudges < 5) {
-          await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
-          _rbNudges++;
-          _rbLastNudgeAt = Date.now();
-        }
-      }
-      if (_rbNudges > 0) log(`runBlockingWorker paste-collapse recovery: sent ${_rbNudges} CR nudges`);
-    } catch (e) { /* recovery failure must never break the watcher path */ }
-  }
+  // W8k-1: delegate to shared helper — same proven sequence as claws_worker fast path.
+  // newline:false + 300ms + explicit \r submits reliably on Mac pty and Windows ConPTY;
+  // the old newline:true (internal 30ms CR) left fleet missions unsubmitted on ConPTY.
+  const markerScanFrom = await _sendAndSubmitMission(sock, termId, payload, launchClaude);
 
   // 5. Detach shortcut — register background watcher that runs the SAME poll
   // body as the blocking path so [CLAWS_PUB] scanner, system.worker.completed
@@ -2480,71 +2463,9 @@ async function _dispatchTool(name, args, sock) {
     const payload = hasMission
       ? (_fpPhase4Header + args.mission).replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '')
       : hasCommand ? wrapShellCommand(args.command, termId) : '';
-    // BUG-A: track log offset after mission injection so detectCompletion never
-    // false-positives on marker strings embedded in the mission body itself.
-    let _fpMarkerScanFrom = 0;
-    if (payload) {
-      // Proven pattern from claws_dispatch_subworker (which submits reliably):
-      //   paste:true newline:false  →  sleep(300)  →  explicit \r
-      // The EXPLICIT CR after a 300ms gap is what actually submits — gives
-      // Claude's React/Ink renderer time to close paste-mode state, then the
-      // discrete \r registers as Enter (not as newline-within-input).
-      const _missionPreSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
-      const _missionPreLen = (_missionPreSnap.ok && typeof _missionPreSnap.bytes === 'string') ? _missionPreSnap.bytes.length : 0;
-      await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: false, paste: true });
-      await sleep(300);
-      await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
-      if (launchClaude) {
-        // Event-driven submit verification — robust against paste-collapse.
-        // Claude TUI collapses pastes >~30 lines into "[Pasted text #N +M lines]"
-        // placeholder. Old byte-count check (payload.length + 200) NEVER passed
-        // for collapsed pastes because rendered placeholder is ~50 bytes. We now
-        // check two stronger signals: (a) placeholder DISAPPEARED, OR (b) Claude
-        // rendered output (●, ⏺, "in: <N>"). Retries CR every 2s up to 5 times,
-        // 15s total deadline. Latent bug — exists in v0.7.11 too.
-        const _submitDeadline = Date.now() + 15000;
-        let _submitVerified = false;
-        let _lastNudgeAt = Date.now();
-        let _nudges = 0;
-        while (Date.now() < _submitDeadline) {
-          await sleep(200);
-          const _vs = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
-          const _txt = (_vs.ok && typeof _vs.bytes === 'string') ? _vs.bytes : '';
-          const _grewBig = _txt.length > _missionPreLen + payload.length + 200;
-          const _placeholderGone = !/\[Pasted text #\d+/.test(_txt);
-          const _claudeResponded = /●|⏺|in:\s*\d+/.test(_txt);
-          if (_grewBig || (_placeholderGone && _claudeResponded)) {
-            _submitVerified = true; break;
-          }
-          if (Date.now() - _lastNudgeAt >= 2000 && _nudges < 5) {
-            await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
-            _nudges++;
-            _lastNudgeAt = Date.now();
-          }
-        }
-        if (!_submitVerified) {
-          log(`mission submit verification FAILED after 15s: nudges=${_nudges}, payload_len=${payload.length}`);
-        }
-        // BUG-A: snapshot post-mission log size so _fpTick scans only what comes
-        // after the mission text — prevents false-positive completion when the
-        // mission body itself contains the marker string.
-        try {
-          const _postMissionSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 1024 });
-          _fpMarkerScanFrom = (_postMissionSnap.ok && typeof _postMissionSnap.totalSize === 'number')
-            ? _postMissionSnap.totalSize
-            : (_postMissionSnap.ok && typeof _postMissionSnap.bytes === 'string' ? _postMissionSnap.bytes.length : 0);
-        } catch (e) { /* non-fatal — defaults to 0, degraded but safe */ }
-      }
-      // BUG-26 analog (Bug 8 fix): shell workers (launch_claude=false) skip
-      // both blocks above. wrapShellCommand appends `; printf '%s\n' '__CLAWS_DONE__'`
-      // at the end of the command — the marker fires synchronously after the
-      // user's command exits. Setting _fpMarkerScanFrom past it would cause the
-      // watcher to never find it. Keeping _fpMarkerScanFrom=0 lets the watcher
-      // scan the full log; findStandaloneMarker's strict regex rejects the
-      // marker as it appears in the typed command echo (because the wrapped
-      // command isn't on its own line). This mirrors runBlockingWorker's
-      // BUG-26 fix at line 1099-1104.
-    }
+    // W8k-1: delegate to shared helper — this fast path proved the sequence;
+    // runBlockingWorker (fleet path) now reuses it verbatim. Returns markerScanFrom.
+    const _fpMarkerScanFrom = await _sendAndSubmitMission(sock, termId, payload, launchClaude);
 
     // BUG-24+25: register detach watcher so system.worker.completed is published
     // and auto-close fires when complete_marker is detected — mirrors the

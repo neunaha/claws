@@ -50,10 +50,11 @@ check(
 );
 check(
   'markerScanFrom is captured AFTER the payload send (so the mission echo is excluded from the scan)',
-  // The capture block must appear AFTER the `if (payload)` send block. We
-  // match this structurally: there's a "send" call wrapped in `if (payload)`,
-  // then the poll-for-settle block (settleDeadline + markerScanFrom assignment).
-  /if\s*\(\s*payload\s*\)[\s\S]*?cmd:\s*'send'[\s\S]*?settleDeadline[\s\S]*?markerScanFrom\s*=\s*text\.length/.test(MCP),
+  // W8k-1 refactor: send + markerScanFrom now live inside _sendAndSubmitMission.
+  // The invariant is the same — markerScanFrom is set after the mission is sent.
+  // We verify: (a) the helper function exists, (b) it sends the payload, and
+  // (c) it sets markerScanFrom from the post-mission log snapshot.
+  /async function _sendAndSubmitMission[\s\S]{0,3000}cmd:\s*'send'[\s\S]{0,2000}markerScanFrom\s*=/.test(MCP),
 );
 check(
   'poll loop scans scanText slice for completion marker (NOT the full text)',
@@ -144,8 +145,13 @@ check(
 );
 check(
   'markerScanFrom uses poll-for-settle (NOT a fixed 400ms sleep)',
-  /settleDeadline\s*=\s*Date\.now\(\)\s*\+\s*5000/.test(MCP) &&
-  /settleIndicator/.test(MCP),
+  // W8k-1 refactor: settle logic moved into _sendAndSubmitMission.
+  // Invariant: submission is verified by a deadline-based polling loop, not a
+  // fixed sleep. We check: (a) helper exists, (b) it uses a deadline variable,
+  // (c) it uses a verified flag instead of a blind wait.
+  /_sendAndSubmitMission/.test(MCP) &&
+  /_submitDeadline\s*=\s*Date\.now\(\)\s*\+\s*15000/.test(MCP) &&
+  /_submitVerified/.test(MCP),
 );
 
 // claws_fleet must NOT pass undefined keys through to runBlockingWorker.
