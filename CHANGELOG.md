@@ -12,6 +12,9 @@ Ship-readiness validation patches on top of the main v0.8 work. Four commits
 primary Windows + installer work was complete. Mac parity 8/8, extension suite
 all-pass, Windows VM MCP handshake 41/41 tools.
 
+### Critical fixes (Wave L)
+- **W8k-2 — claws_dispatch_subworker submits missions via shared helper**: `claws_dispatch_subworker` had its own inline mission-send loop that used `newline:true` (internal 30ms CR), which fails on Windows ConPTY leaving sub-worker missions unsubmitted in the prompt buffer. Refactored the handler to call the shared `_sendAndSubmitMission()` helper (proven sequence: bracketed-paste `newline:false` → 300ms gap → explicit `\r` → 15s CR-nudge loop). Restores parity with `claws_worker` / `claws_fleet`. Regression test updated to verify delegation.
+
 ### Critical fixes (Wave K)
 - **W8k-1 — claws_fleet submits missions like claws_worker**: `claws_fleet` spawned workers and delivered missions into their prompt buffers but never submitted them — the user had to press Enter manually. Root cause: `runBlockingWorker` (used by fleet) sent missions with `newline:true`, relying on an internal 30ms CR that works on Mac pty but silently fails on Windows ConPTY. The `claws_worker` fast path (which submitted correctly) used `newline:false` + explicit 300ms delay + separate `\r`. Fix: extracted shared `_sendAndSubmitMission()` helper using the proven fast-path sequence. Both `runBlockingWorker` and the `claws_worker` fast path now delegate to it, guaranteeing identical timing on Mac and Windows. Static-analysis tests updated to verify the new shared-helper structure.
 

@@ -1174,9 +1174,10 @@ async function _sendAndSubmitMission(sock, termId, payload, launchClaude) {
     await sleep(300);
     await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
 
-    // Event-driven submit verification — robust against paste-collapse.
+    // PASTE-COLLAPSE RECOVERY — Event-driven submit verification; robust against paste-collapse.
     // Claude TUI collapses pastes >~30 lines into "[Pasted text #N +M lines]"
     // placeholder — retry CR every 2s up to 5 times over a 15s deadline.
+    // Shared by claws_worker, claws_fleet, AND claws_dispatch_subworker (W8k-2).
     const _submitDeadline = Date.now() + 15000;
     let _submitVerified = false;
     let _lastNudgeAt = Date.now();
@@ -2981,35 +2982,10 @@ async function _dispatchTool(name, args, sock) {
         if (!bootOk) log(`claws_dispatch_subworker: Claude TUI ready signal not seen for ${workerName} — continuing anyway`);
         await sleep(5000);
         // GAP-D1: _dswMission already sanitized above — send as-is.
-        // BUG-C fix: record log offset before mission send to prevent false-positive marker detection.
-        const _dswPreMissionSnap = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, limit: 64 * 1024 });
-        let _dswMarkerScanFrom = (_dswPreMissionSnap.ok && typeof _dswPreMissionSnap.bytes === 'string') ? _dswPreMissionSnap.bytes.length : 0;
-        await clawsRpc(_dswSock, { cmd: 'send', id: termId, text: _dswMission, newline: true, paste: true });
-
-        // PASTE-COLLAPSE RECOVERY (LH-3 parity with runBlockingWorker):
-        // If the mission is large enough to trigger Claude TUI paste-collapse (~30-50 lines),
-        // the mission text sits in the input box with a "[Pasted text #N]" placeholder and
-        // the implicit newline=true submit may not fire (auth modal or MCP slowness). Poll
-        // for 15 s; if the placeholder is still present, nudge with CR up to 5 times.
-        try {
-          const _dswRbDeadline = Date.now() + 15000;
-          let _dswRbNudges = 0;
-          let _dswRbLastNudgeAt = Date.now();
-          while (Date.now() < _dswRbDeadline) {
-            await sleep(300);
-            const _dswRbSnap = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
-            const _dswRbTxt = (_dswRbSnap.ok && typeof _dswRbSnap.bytes === 'string') ? _dswRbSnap.bytes : '';
-            const _dswRbPlaceholderGone = !/\[Pasted text #\d+/.test(_dswRbTxt);
-            const _dswRbClaudeResponded = /●|⏺|in:\s*\d+/.test(_dswRbTxt);
-            if (_dswRbPlaceholderGone || _dswRbClaudeResponded) break;
-            if (Date.now() - _dswRbLastNudgeAt >= 2000 && _dswRbNudges < 5) {
-              await clawsRpc(_dswSock, { cmd: 'send', id: termId, text: '\r', newline: false });
-              _dswRbNudges++;
-              _dswRbLastNudgeAt = Date.now();
-            }
-          }
-          if (_dswRbNudges > 0) log(`dispatch_subworker paste-collapse recovery: sent ${_dswRbNudges} CR nudges`);
-        } catch (e) { /* recovery failure must never break the watcher path */ }
+        // W8k-2: delegate to shared helper — pre-snapshot (BUG-C), bracketed-paste (newline:false),
+        // 300ms gap, explicit \r submit, 15s CR-nudge loop, markerScanFrom snapshot.
+        // Restores parity with claws_worker / fleet; newline:true failed on Windows ConPTY.
+        const _dswMarkerScanFrom = await _sendAndSubmitMission(_dswSock, termId, _dswMission, true);
 
         // BUG-09: register auto-close watcher via shared _setupDetachWatcher helper.
         const _dswStartedAt = Date.now();

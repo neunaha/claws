@@ -71,8 +71,8 @@ assert.ok(!/Date\.now\(\)\s*\+\s*5000/.test(fastPathBody),
   'fast-path: 5000ms deadline is the broken pattern; must be 15000ms');
 
 // ─── 5. Diagnostic logging on verification failure ────────────────────────
-assert.ok(/mission submit verification FAILED/.test(MCP) || /paste-collapse recovery: sent/.test(MCP),
-  'mcp_server.js: must log diagnostic when submit verification fails or fires nudges');
+assert.ok(/submit verification FAILED/.test(MCP),
+  'mcp_server.js: must log diagnostic when submit verification fails (_sendAndSubmitMission: submit verification FAILED)');
 
 // ─── 6. Proven baseline preserved (paste:true → sleep(300) → \r) ──────────
 //
@@ -90,29 +90,29 @@ assert.ok(/await\s+sleep\(300\)/.test(MCP),
 assert.ok(/async function _sendAndSubmitMission[\s\S]{0,800}newline:\s*false,\s*paste:\s*true/.test(MCP),
   'mcp_server.js: _sendAndSubmitMission must use newline:false + explicit \\r (W8k-1 ConPTY fix)');
 
-// ─── 8. dispatch_subworker paste-collapse recovery (LH-3 parity) ─────────
+// ─── 8. dispatch_subworker paste-collapse recovery (W8k-2: delegated to _sendAndSubmitMission) ────
 //
-// Extract the dispatch_subworker watcher section, starting from the LH-3
-// recovery comment block (anchored after the _dswMission paste-send) down
-// to the first occurrence of '_setupDetachWatcher' (the watcher setup that
-// follows the recovery block). '_dswTick' was the original terminator but was
-// replaced by the shared _setupDetachWatcher helper in a later refactor.
-const dswBlockMatch = MCP.match(/PASTE-COLLAPSE RECOVERY \(LH-3[\s\S]{0,3000}_setupDetachWatcher/);
+// W8k-2 refactored dispatch_subworker to call _sendAndSubmitMission instead of
+// inlining a copy of the paste-collapse recovery loop. The shared helper carries
+// the proven LH-3 sequence for all three dispatch paths (worker / fleet / dispatch_subworker).
+// These checks verify: (a) W8k-2 delegation comment is present, (b) the call is correctly
+// wired with launchClaude=true, (c) the old inline _dswRb* variables are gone (no revert).
+assert.ok(/W8k-2: delegate to shared helper/.test(MCP),
+  'mcp_server.js: dispatch_subworker must have W8k-2 delegation comment (not the old inline loop)');
+
+const dswBlockMatch = MCP.match(/if \(name === 'claws_dispatch_subworker'\)[\s\S]{0,20000}_setupDetachWatcher/);
 assert.ok(dswBlockMatch,
-  'mcp_server.js: dispatch_subworker block must contain LH-3 paste-collapse recovery section');
+  'mcp_server.js: dispatch_subworker block must contain _setupDetachWatcher');
 const dswBlock = dswBlockMatch[0];
 
-assert.ok(/_dswRbPlaceholderGone/.test(dswBlock) || /_dswRb/.test(dswBlock),
-  'dispatch_subworker: recovery loop must use _dswRb* prefix variables (_dswRbPlaceholderGone)');
+assert.ok(/_sendAndSubmitMission\(_dswSock/.test(dswBlock),
+  'dispatch_subworker: must call _sendAndSubmitMission (W8k-2 delegation — not inline loop)');
 
-assert.ok(/_dswRbClaudeResponded/.test(dswBlock),
-  'dispatch_subworker: recovery loop must check _dswRbClaudeResponded signal');
+assert.ok(/_sendAndSubmitMission\(_dswSock,\s*termId,\s*_dswMission,\s*true\)/.test(dswBlock),
+  'dispatch_subworker: _sendAndSubmitMission must be called with launchClaude=true');
 
-assert.ok(/Date\.now\(\)\s*\+\s*15000/.test(dswBlock),
-  'dispatch_subworker: paste-collapse recovery deadline must be 15000ms');
+assert.ok(!/_dswRbPlaceholderGone/.test(dswBlock),
+  'dispatch_subworker: inline _dswRbPlaceholderGone must NOT exist (inlined loop replaced by _sendAndSubmitMission)');
 
-assert.ok(/text:\s*'\\r'/.test(dswBlock) && /_dswRbNudges\s*<\s*5/.test(dswBlock),
-  'dispatch_subworker: recovery must send CR (\\r) up to 5 times (_dswRbNudges < 5)');
-
-console.log('worker-boot-paste-collapse.test.js: 16/16 PASS');
+console.log('worker-boot-paste-collapse.test.js: 19/19 PASS');
 console.log('  worker boot paste-collapse fix is LOCKED IN — must never regress');
