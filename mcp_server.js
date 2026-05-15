@@ -1838,6 +1838,20 @@ function _findWorkspaceRoot(startDir) {
   return null;
 }
 
+// Return the filesystem path to .claws/events.log regardless of platform.
+// On win32 sock is a named pipe (\\.\pipe\...), not a filesystem path, so we
+// derive the workspace root via env var or directory walk instead.
+function _eventsLogPath(sock) {
+  if (process.platform === 'win32') {
+    const root = process.env.CLAWS_WORKSPACE_ROOT
+      || _findWorkspaceRoot(process.cwd())
+      || _findWorkspaceRoot(__dirname)
+      || process.cwd();
+    return path.join(root, '.claws', 'events.log');
+  }
+  return path.join(path.dirname(path.resolve(sock)), 'events.log');
+}
+
 function getSocket() {
   // Absolute override wins immediately.
   const envSock = process.env.CLAWS_SOCKET;
@@ -1981,7 +1995,7 @@ async function _dispatchTool(name, args, sock) {
       cwd: (typeof args.cwd === 'string' && args.cwd.length > 0) ? args.cwd : process.cwd(), wrapped: args.wrapped !== false, show: true,
     });
     if (!resp.ok) return toolError(`ERROR: ${_lifecycleErrMsg(resp.error)}`);
-    const eventsLogPath = path.join(path.dirname(path.resolve(sock)), 'events.log');
+    const eventsLogPath = _eventsLogPath(sock);
     const _createTermId = resp.id;
     const _createMonitorCmd = `Monitor(command="node ${STREAM_EVENTS_JS} --wait ${_createCorrId} --keep-alive-on ${_createTermId}", description="claws monitor | term=${_createTermId} | corr=${_createCorrId.slice(0,8)} | sess=${new Date().toISOString().slice(0,13)}", timeout_ms=3600000, persistent=false)`;
     // D+F: register spawn + monitor atomically before returning. Best-effort (lifecycle may not be in active mission).
@@ -2550,7 +2564,7 @@ async function _dispatchTool(name, args, sock) {
     });
 
     const run_token = randomUUID().slice(0, 12);
-    const workerEventsLogPath = path.join(path.dirname(path.resolve(sock)), 'events.log');
+    const workerEventsLogPath = _eventsLogPath(sock);
     return {
       content: [{ type: 'text', text: JSON.stringify({
         ok: true, terminal_id: termId,
@@ -2600,7 +2614,7 @@ async function _dispatchTool(name, args, sock) {
       const results = settled.map((s) => s.status === 'fulfilled'
         ? s.value
         : { status: 'error', error: String(s.reason && s.reason.message || s.reason || 'unknown') });
-      const fleetEventsLogPath = path.join(path.dirname(path.resolve(sock)), 'events.log');
+      const fleetEventsLogPath = _eventsLogPath(sock);
       const summary = {
         fleet_size: results.length,
         detach,
@@ -3089,7 +3103,7 @@ async function _dispatchTool(name, args, sock) {
       } catch (e) { log('claws_dispatch_subworker background boot error: ' + (e && e.message || e)); }
     });
 
-    const dswEventsLogPath = path.join(path.dirname(path.resolve(sock)), 'events.log');
+    const dswEventsLogPath = _eventsLogPath(sock);
     return {
       content: [{
         type: 'text',
