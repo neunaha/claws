@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0-alpha] - 2026-05-15
 
+### Performance fixes (Wave X)
+- **W8x-1 — replace install spin-wait with Atomics.wait (W8Q3-6)**: `_cleanStaleExtensionDirs` in `lib/install.js` polled for the new VS Code extension dir with a busy-spin loop (`while (Date.now() < end)`) that pinned one CPU core to 100% for up to 1 second per install. On Windows under AV scanning the spin could expire before VS Code finished extracting the VSIX, leaving stale extension dirs. Replaced with a module-level `_sleepSync(ms)` helper backed by `Atomics.wait` on a `SharedArrayBuffer`-based `Int32Array` — a synchronous, zero-CPU kernel-level sleep available on all Node ≥ 11 main threads. The outer poll loop (5×200 ms) and all error/warning paths are unchanged. Audit: `.local/audits/w8q3-paranoid-windows-audit.md`.
+
 ### Critical fixes (Wave W)
 - **W8w-1 — preflight `python` fallback on Windows (W8Q3-5)**: `lib/preflight.js` probed only `python3 --version`; on Windows Python 3 ships as `python`, so users with a valid Python 3 install received a spurious "python3 not found" warning on every install. Added a fallback: if `python3` probe fails, try `python --version`, read both stdout and stderr (Python 2.x printed version to stderr), and suppress the warning only when the combined output contains "Python 3". Python 2 or a missing `python` still emits the existing warning unchanged. Audit: `.local/audits/w8q3-paranoid-windows-audit.md`.
 
