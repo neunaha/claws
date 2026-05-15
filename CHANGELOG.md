@@ -12,6 +12,9 @@ Ship-readiness validation patches on top of the main v0.8 work. Four commits
 primary Windows + installer work was complete. Mac parity 8/8, extension suite
 all-pass, Windows VM MCP handshake 41/41 tools.
 
+### Critical fixes (Wave I)
+- **W7-5 — mcp_server.js process-level unhandledRejection+uncaughtException guards**: Under Node ≥ 15, any unhandled rejection causes silent process exit, producing the "MCP error -32000: Connection closed" symptom on Windows. Added `process.on('unhandledRejection', ...)` and `process.on('uncaughtException', ...)` handlers that log the cause to stderr and keep the bridge alive, so Claude Code receives a per-tool JSON-RPC error instead of a disconnected bridge.
+
 ### Added (Wave H)
 - **W7-4B — PowerShell shell-hook stable path**: `_injectPowershellHook()` now copies `scripts/shell-hook.ps1` to `$HOME/.claude/claws/shell-hook.ps1` and injects that stable path into `$PROFILE` instead of the install-time path. Eliminates "term not recognized" errors on every new PowerShell terminal when the install temp dir is deleted post-install (`install.ps1:111 Remove-Item -Recurse -Force $TempDir`). Re-install migration: existing orphan `claws-install-*` blocks are stripped by the existing `_removePriorBlock` canonical cleanup; new stable entry is injected. `_injectPowershellHook` now accepts optional `opts.home`/`opts.execFn` for testability. Three new tests (e-1, e-2, e-3) in `test/shell-hook.test.js`; 13/13 pass, parity 8/8.
 

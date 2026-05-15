@@ -100,6 +100,18 @@ function log(msg) {
   process.stderr.write('[claws-mcp] ' + msg + '\n');
 }
 
+// Keep the bridge alive on unexpected async failures.
+// Under Node ≥ 15 the default for unhandled rejections is throw → process exit,
+// which causes the "MCP error -32000: Connection closed" symptom. These handlers
+// log the cause and keep the process running so Claude Code receives a per-tool
+// JSON-RPC error instead of a disconnected bridge.
+process.on('unhandledRejection', (reason, _p) => {
+  process.stderr.write('[claws-mcp][FATAL] unhandledRejection: ' + (reason && reason.stack || String(reason)) + '\n');
+});
+process.on('uncaughtException', (err) => {
+  process.stderr.write('[claws-mcp][FATAL] uncaughtException: ' + (err && err.stack || String(err)) + '\n');
+});
+
 // L2 investigation helper — writes to stderr AND .claws/l2-debug.log for file-based capture.
 function _logL2File(sockPath, msg) {
   // Named pipes are kernel objects with no filesystem directory — skip on win32.
