@@ -494,7 +494,9 @@ async function fileExec(sockPath, termId, command, timeoutMs = 180000) {
   fs.mkdirSync(base, { recursive: true });
   const outPath = path.join(base, `${execId}.out`);
   const donePath = path.join(base, `${execId}.done`);
-  const wrapper = `{ ${command}; } > ${outPath} 2>&1; echo $? > ${donePath}`;
+  const wrapper = process.platform === 'win32'
+    ? `& { ${command} } *> '${outPath}' ; $LASTEXITCODE | Out-File -FilePath '${donePath}' -Encoding ascii`
+    : `{ ${command}; } > ${outPath} 2>&1; echo $? > ${donePath}`;
   await clawsRpc(sockPath, { cmd: 'send', id: termId, text: wrapper, newline: true });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -533,7 +535,10 @@ function wrapShellCommand(rawCommand, terminalId) {
   const sep = (trimmed.endsWith(';') || trimmed.endsWith('&')) ? ' ' : ' ; ';
   const tid = String(terminalId);
   // Use semicolons (not &&) so wrapping fires even if user's command exits non-zero.
-  return `${rawCommand}${sep}printf '[CLAWS_PUB] topic=worker.${tid}.complete data={"ok":true}\\n' ; printf '%s\\n' '__CLAWS_DONE__'`;
+  const suffix = process.platform === 'win32'
+    ? `${sep}Write-Output '[CLAWS_PUB] topic=worker.${tid}.complete data={"ok":true}' ; Write-Output '__CLAWS_DONE__'`
+    : `${sep}printf '[CLAWS_PUB] topic=worker.${tid}.complete data={"ok":true}\\n' ; printf '%s\\n' '__CLAWS_DONE__'`;
+  return `${rawCommand}${suffix}`;
 }
 
 // Find marker only when it appears in tool/output context — never in prose.
@@ -1634,8 +1639,7 @@ async function _spawnAndVerifySidecar(maxWaitMs = 3000) {
 
   // Open events.log for appending — after verification confirmed, stdout is
   // piped here so every sidecar push frame is persisted for tail-F monitoring.
-  const eventsLogDir = path.dirname(path.resolve(socketPath));
-  const eventsLogFilePath = path.join(eventsLogDir, 'events.log');
+  const eventsLogFilePath = _eventsLogPath(socketPath);
   const eventsLogStream = fs.createWriteStream(eventsLogFilePath, { flags: 'a' });
 
   // GAP-A1: pass --auto-sidecar + socketPath as args so session-start pgrep can detect us.
