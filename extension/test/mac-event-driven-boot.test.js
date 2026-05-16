@@ -167,16 +167,12 @@ check(
   })(),
 );
 
-// ─── I5: _waitForWorkerReady 8s default budget for claude type ────────────────
+// ─── I5: _waitForWorkerReady uses a generous safety ceiling (AE-6.b) ─────────
 
-// I5.a — claude type default timeoutMs is 8000 (no silent bump)
+// I5.a — ceilingMs default is >= 60000 (generous for slow VMs; NOT a tight boot budget)
 check(
-  "I5.a: _waitForWorkerReady default timeoutMs for type:'claude' is 8000 (no silent bump)",
-  (function () {
-    const body = extractTopLevelFn(src, 'async function _waitForWorkerReady');
-    if (!body) return false;
-    return /opts\.type === ['"]claude['"]\s*\?\s*8000/.test(body);
-  })(),
+  'I5.a: _waitForWorkerReady ceilingMs default is >= 60000 (AE-6.b event-driven ceiling)',
+  /const ceilingMs\s*=\s*opts\.timeoutMs\s*\|\|\s*(6[0-9]{4}|[1-9][0-9]{5,})/.test(src),
 );
 
 // ─── Report ───────────────────────────────────────────────────────────────────

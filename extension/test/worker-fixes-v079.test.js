@@ -209,7 +209,8 @@ check(
 
 check(
   'W8k-1 _sendAndSubmitMission helper exists with bracketed paste + 300ms + explicit \\r',
-  /async function _sendAndSubmitMission[\s\S]{0,2000}paste:\s*true[\s\S]{0,500}sleep\(300\)[\s\S]{0,500}text:\s*['"]\\r['"]/.test(MCP),
+  // text: '\r' may appear directly or via a _submitKey variable — either is correct.
+  /async function _sendAndSubmitMission[\s\S]{0,2000}paste:\s*true[\s\S]{0,500}sleep\(300\)[\s\S]{0,500}['"]\\r['"]/.test(MCP),
 );
 check(
   'W8k-2 claws_dispatch_subworker uses shared _sendAndSubmitMission helper',
@@ -326,9 +327,11 @@ check(
 );
 
 check(
-  'W8ac-2 fast-path boot_wait_ms default aligned to 8000',
-  /args\.boot_wait_ms\s*\|\|\s*8000/.test(MCP) &&
-  !/args\.boot_wait_ms\s*\|\|\s*25000/.test(MCP),
+  'AE-6.b fast-path boot gate has no hardcoded sub-ceiling fallback (event-driven)',
+  // After AE-6.b the fast path passes args.boot_wait_ms as-is; no platform branch or
+  // hardcoded fallback — the 120s safety ceiling lives in _waitForWorkerReady.
+  /timeoutMs:\s*args\.boot_wait_ms/.test(MCP) &&
+  !/args\.boot_wait_ms\s*\|\|\s*(?:\d{1,4}|process\.platform)/.test(MCP),
 );
 
 // ─── Wave AC-1.1 — spawn-helper executable mode (W8ac-1.1) ───────────────────

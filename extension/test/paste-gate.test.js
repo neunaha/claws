@@ -15,7 +15,8 @@
 //   6. system.worker.boot_failed topic published with required payload fields.
 //   7. AE-1: regex/pty-log fallback REMOVED from helper body — no claudeMarkers / shellErrorMarkers / pty_tail.
 //   8. AE-1: mcp_server.js main() has eager-hello block guarded on CLAWS_TERMINAL_CORR_ID.
-//   9. boot_wait_ms: 8000 unchanged in DEFAULTS.
+//   9. AE-6.b: boot_wait_ms is NOT a low time-based DEFAULTS — no sub-10000 hardcoded default.
+//  10. AE-6: _submitKey is '\r' with NO win32 platform branch in _sendAndSubmitMission.
 //
 // Run: node extension/test/paste-gate.test.js
 // Exits 0 on all-pass, 1 on any failure.
@@ -169,21 +170,24 @@ check(
   })(),
 );
 
-// 9. boot_wait_ms: 8000 unchanged in DEFAULTS (no silent bump).
+// 9. AE-6.b: boot_wait_ms is NOT set to a low time-based default in DEFAULTS.
+// No sub-10000 hardcoded value — 120s ceiling lives in _waitForWorkerReady.
 check(
-  'defaults: boot_wait_ms is 8000 in DEFAULTS',
-  /boot_wait_ms:\s*8000/.test(src),
+  'AE-6.b: boot_wait_ms is NOT a low time-based default (no sub-10000 hardcoded value in source)',
+  !/boot_wait_ms:\s*[0-9]{1,4}\b/.test(src),
 );
 
-// 10. AE-4: process.platform === 'win32' branch present in _sendAndSubmitMission for submit keystroke.
+// 10. AE-4.1 (reverts AE-4): _submitKey is '\r' with NO win32 platform branch in _sendAndSubmitMission.
 check(
-  'AE-4: win32 submit-key branch present in _sendAndSubmitMission',
+  "AE-4.1: _submitKey is '\\r' and no win32 branch in _sendAndSubmitMission",
   (function () {
     const fnStart = src.indexOf('async function _sendAndSubmitMission');
     if (fnStart === -1) return false;
     const nextFn = src.indexOf('\nasync function ', fnStart + 1);
     const body = nextFn === -1 ? src.slice(fnStart) : src.slice(fnStart, nextFn);
-    return /process\.platform\s*===\s*['"]win32['"]/.test(body);
+    const hasRkey = /const\s+_submitKey\s*=\s*'\\r'\s*;/.test(body);
+    const hasWin32Branch = /process\.platform\s*===\s*['"]win32['"]/.test(body);
+    return hasRkey && !hasWin32Branch;
   })(),
 );
 

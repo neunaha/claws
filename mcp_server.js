@@ -328,6 +328,13 @@ function _pconnHandleData(data) {
             waiterResolve(entry.payload);
           }
         }
+        // AE-6.b: fire cancel-key listeners when worker lifecycle ends before boot signal.
+        if ((entry.topic === 'system.terminal.closed' || entry.topic === 'system.worker.terminated')
+            && entry.payload && entry.payload.correlation_id) {
+          const cancelKey = `${entry.topic}:${entry.payload.correlation_id}`;
+          const cancelFn = _workerReadyWaiters.get(cancelKey);
+          if (cancelFn) cancelFn();
+        }
         if (_eventBuffer.ring.length > _eventBuffer.maxSize) {
           _eventBuffer.ring.shift();
           // Emit ring-overflow once per eviction so callers know events were dropped.
@@ -1199,11 +1206,10 @@ async function _sendAndSubmitMission(sock, termId, payload, launchClaude) {
 
     await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: false, paste: true });
     await sleep(300);
-    // AE-4: ConPTY on Windows does not trigger Ink's Enter handler when '\r' is written
-    // programmatically via pty.write() after a bracketed-paste sequence — manual keyboard
-    // Enter works but '\r' injection does not. '\n' bypasses the ConPTY processing quirk.
-    // See .local/audits/windows-mission-submit-probe.md for full probe methodology.
-    const _submitKey = process.platform === 'win32' ? '\n' : '\r';
+    // AE-6 (reverts AE-4): events.log term 26 (corr 269d37df) showed '\n' wrote literal blank
+    // lines into the prompt buffer — mission text rendered with extra newlines, never submitted.
+    // '\r' is the correct universal submit key. ConPTY accepts '\r'; '\n' was a misdiagnosis.
+    const _submitKey = '\r';
     await clawsRpc(sock, { cmd: 'send', id: termId, text: _submitKey, newline: false });
 
     // PASTE-COLLAPSE RECOVERY — Event-driven submit verification; robust against paste-collapse.
@@ -1248,24 +1254,37 @@ async function _sendAndSubmitMission(sock, termId, payload, launchClaude) {
   return markerScanFrom;
 }
 
-// W8ac-2: event-driven boot signal. Resolves when the matching bus event fires for corrId,
-// or rejects after timeoutMs — caller logs + proceeds (best-effort, no abort on version skew).
-// Uses _workerReadyWaiters populated by _pconnHandleData as the one-shot listener store.
+// W8ac-2 + AE-6.b: event-driven boot signal. Resolves when the matching bus event fires
+// for corrId. Uses _workerReadyWaiters populated by _pconnHandleData as the one-shot listener store.
+// AE-6.b: ceilingMs is a SAFETY CEILING for true hangs, NOT a boot budget. Default 120s —
+// generous enough that no real device (slow VMs, ARM laptops, first-boot cold caches) races
+// against it. We abort early if the worker's lifecycle ends (terminated/closed) before the
+// ready event arrives.
 async function _waitForWorkerReady(sock, corrId, opts) {
-  const topic = opts.type === 'claude'
-    ? 'system.peer.connected'
-    : 'system.terminal.ready';
-  const timeoutMs = opts.timeoutMs || (opts.type === 'claude' ? 8000 : 3000);
+  const topic = opts.type === 'claude' ? 'system.peer.connected' : 'system.terminal.ready';
+  const ceilingMs = opts.timeoutMs || 120000;
   return new Promise((resolve, reject) => {
     const waiterKey = `${topic}:${corrId}`;
-    const timer = setTimeout(() => {
-      _workerReadyWaiters.delete(waiterKey);
-      reject(new Error(`worker ready timeout (${opts.type}, ${timeoutMs}ms)`));
-    }, timeoutMs);
-    _workerReadyWaiters.set(waiterKey, (event) => {
+    const cancelKeys = [
+      `system.terminal.closed:${corrId}`,
+      `system.worker.terminated:${corrId}`,
+    ];
+    const cleanup = () => {
       clearTimeout(timer);
-      resolve(event);
-    });
+      _workerReadyWaiters.delete(waiterKey);
+      for (const k of cancelKeys) _workerReadyWaiters.delete(k);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`worker ready ceiling hit (${opts.type}, ${ceilingMs}ms) — likely worker hung pre-boot`));
+    }, ceilingMs);
+    _workerReadyWaiters.set(waiterKey, (event) => { cleanup(); resolve(event); });
+    for (const k of cancelKeys) {
+      _workerReadyWaiters.set(k, () => {
+        cleanup();
+        reject(new Error(`worker lifecycle ended before ready signal (${k})`));
+      });
+    }
   });
 }
 
@@ -1277,13 +1296,13 @@ async function _waitForWorkerReady(sock, corrId, opts) {
 // by user 2026-05-16 as fragile across platforms — see audit
 // .local/audits/peer-connected-blackout-root-cause.md).
 async function _gatePasteOnClaudeClaim(sock, termId, corrId, opts) {
-  const timeoutMs = opts.timeoutMs || 8000;
+  const ceilingMs = (opts && opts.timeoutMs) || 120000;
   try {
-    await _waitForWorkerReady(sock, corrId, { type: 'claude', timeoutMs });
+    await _waitForWorkerReady(sock, corrId, { type: 'claude', timeoutMs: opts && opts.timeoutMs });
     await sleep(200); // event fires before paste pipeline is fully open
     return { booted: true, source: 'event' };
   } catch (e) {
-    log(`paste-gate term=${termId} corr=${corrId}: BOOT FAILED — system.peer.connected not received in ${timeoutMs}ms`);
+    log(`paste-gate term=${termId} corr=${corrId}: BOOT FAILED — ${(e && e.message) || ('no event in ' + ceilingMs + 'ms')}`);
     try {
       await _pconnEnsureRegistered(sock);
       await _pconnWriteOrThrow({
@@ -1293,7 +1312,7 @@ async function _gatePasteOnClaudeClaim(sock, termId, corrId, opts) {
           terminal_id: String(termId),
           correlation_id: corrId,
           cause: 'event_driven_boot_timeout',
-          timeout_ms: timeoutMs,
+          timeout_ms: ceilingMs,
           ts: new Date().toISOString(),
         },
       });
@@ -1305,7 +1324,8 @@ async function _gatePasteOnClaudeClaim(sock, termId, corrId, opts) {
 async function runBlockingWorker(sock, args) {
   const DEFAULTS = {
     timeout_ms: 5 * 60 * 1000,
-    boot_wait_ms: 8000,
+    // AE-6.b: boot_wait_ms intentionally absent from DEFAULTS. _waitForWorkerReady uses a
+    // 120s safety ceiling — not a boot budget. Callers may pass explicit boot_wait_ms to override.
     // v0.7.9: was 'Claude Code' (with a space) — never matched the ANSI-stripped
     // Claude Code v2.x banner ("ClaudeCodev2.1.123" — no space). Worker burned the
     // full boot_wait_ms on every spawn before falling through. 'bypass permissions'
@@ -1442,10 +1462,9 @@ async function runBlockingWorker(sock, args) {
   // 2. Give shell a moment to emit prompt
   await sleep(400);
 
-  // 3. Optional claude boot + detection — single attempt, best-effort.
+  // 3. Optional claude boot + detection — single attempt, event-driven.
   // Sends the launch command ONCE, waits for system.peer.connected event keyed
-  // by _bCorrId. Falls back after boot_wait_ms with a log — no abort, preserves
-  // best-effort semantics on extension/orchestrator version skew.
+  // by _bCorrId. AE-6.b: 120s safety ceiling, early-abort on terminal.closed/terminated.
   let booted = !launchClaude;
   if (launchClaude) {
     await clawsRpc(sock, {
@@ -2542,7 +2561,7 @@ async function _dispatchTool(name, args, sock) {
         text: `${getClaudeBin(args && args.cwd)} --dangerously-skip-permissions --model ${model}`, newline: true,
       });
       // AD-1: gate mission paste on confirmed pty-claim.
-      const _gate = await _gatePasteOnClaudeClaim(sock, termId, _fpCorrId, { timeoutMs: args.boot_wait_ms || 8000 });
+      const _gate = await _gatePasteOnClaudeClaim(sock, termId, _fpCorrId, { timeoutMs: args.boot_wait_ms });
       if (!_gate.booted) {
         if (args.close_on_complete !== false) { try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {} }
         return toolError(`boot failed: ${_gate.cause} | terminal_id=${termId} | corr=${_fpCorrId}`);
@@ -3054,7 +3073,7 @@ async function _dispatchTool(name, args, sock) {
           text: `${getClaudeBin(_dswCwd)} --model claude-sonnet-4-6 --dangerously-skip-permissions`, newline: true,
         });
         // AD-1: gate mission paste on confirmed pty-claim.
-        const _gate = await _gatePasteOnClaudeClaim(_dswSock, termId, _dswCorrId, { timeoutMs: 8000 });
+        const _gate = await _gatePasteOnClaudeClaim(_dswSock, termId, _dswCorrId, { timeoutMs: args.boot_wait_ms });
         if (!_gate.booted) {
           if (_dswCloseOnComplete) { try { await clawsRpc(_dswSock, { cmd: 'close', id: termId }); } catch {} }
           return; // abort — L2 grace will publish unarmed naturally
