@@ -1264,33 +1264,21 @@ async function _waitForWorkerReady(sock, corrId, opts) {
   });
 }
 
-// AD-1: gate mission paste on confirmed pty-claim. Wraps _waitForWorkerReady with a
-// pty-log fallback so a timed-out boot either recovers gracefully (claude banner present)
-// or aborts cleanly (no banner / shell error) instead of blindly proceeding.
-// Tri-platform: claudeMarkers and shellErrorMarkers cover darwin/linux/win32 — no platform branches.
+// AD-1 + AE-1: gate mission paste on event-driven pty-claim signal.
+// The signal is system.peer.connected{correlation_id} — published by the
+// extension when the worker's child mcp_server.js hellos (now eagerly at
+// startup; see AE-1 block in main()). On timeout, we abort cleanly and
+// publish system.worker.boot_failed. NO regex / pty-log fallback (rejected
+// by user 2026-05-16 as fragile across platforms — see audit
+// .local/audits/peer-connected-blackout-root-cause.md).
 async function _gatePasteOnClaudeClaim(sock, termId, corrId, opts) {
   const timeoutMs = opts.timeoutMs || 8000;
   try {
     await _waitForWorkerReady(sock, corrId, { type: 'claude', timeoutMs });
-    await sleep(200); // existing 200ms safety buffer
+    await sleep(200); // event fires before paste pipeline is fully open
     return { booted: true, source: 'event' };
   } catch (e) {
-    // Fallback pty-log inspection (tri-platform signatures)
-    const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
-    const bytes = (snap.ok && typeof snap.bytes === 'string') ? snap.bytes : '';
-    const claudeMarkers = /(bypass permissions|Claude Code v|ClaudeCode v|\? for shortcuts)/i;
-    const shellErrorMarkers = /(command not found|is not recognized as|bad pattern:|cannot execute|No such file or directory)/i;
-
-    if (claudeMarkers.test(bytes) && !shellErrorMarkers.test(bytes.slice(-2048))) {
-      // Slow event but claude clearly took the pty — give it more breathing room.
-      log(`paste-gate term=${termId} corr=${corrId}: event timed out but claude banner present in pty — proceeding with 600ms safety`);
-      await sleep(600);
-      return { booted: true, source: 'pty-log' };
-    }
-
-    // Clearly NOT running — abort.
-    const cause = shellErrorMarkers.test(bytes) ? 'shell_exec_failure' : 'claude_did_not_claim_pty';
-    log(`paste-gate term=${termId} corr=${corrId}: BOOT FAILED cause=${cause}`);
+    log(`paste-gate term=${termId} corr=${corrId}: BOOT FAILED — system.peer.connected not received in ${timeoutMs}ms`);
     try {
       await _pconnEnsureRegistered(sock);
       await _pconnWriteOrThrow({
@@ -1299,14 +1287,13 @@ async function _gatePasteOnClaudeClaim(sock, termId, corrId, opts) {
         payload: {
           terminal_id: String(termId),
           correlation_id: corrId,
-          cause,
+          cause: 'event_driven_boot_timeout',
           timeout_ms: timeoutMs,
-          pty_tail: bytes.slice(-512),
           ts: new Date().toISOString(),
         },
       });
     } catch (_pe) { /* best-effort */ }
-    return { booted: false, source: 'aborted', cause, pty_tail: bytes.slice(-512) };
+    return { booted: false, source: 'aborted', cause: 'event_driven_boot_timeout' };
   }
 }
 
@@ -1460,11 +1447,11 @@ async function runBlockingWorker(sock, args) {
       cmd: 'send', id: termId,
       text: `${getClaudeBin(args && args.cwd)} --dangerously-skip-permissions --model ${opt.model}`, newline: true,
     });
-    // AD-1: gate mission paste on confirmed pty-claim.
+    // AD-1 + AE-1: gate mission paste on confirmed event-driven pty-claim.
     const _gate = await _gatePasteOnClaudeClaim(sock, termId, _bCorrId, { timeoutMs: opt.boot_wait_ms });
     if (!_gate.booted) {
       if (opt.close_on_complete) { try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {} }
-      return { status: 'error', error: `boot failed: ${_gate.cause}`, terminal_id: termId, correlation_id: _bCorrId, pty_tail: _gate.pty_tail };
+      return { status: 'error', error: `boot failed: ${_gate.cause}`, terminal_id: termId, correlation_id: _bCorrId };
     }
     booted = true;
     // BUG-07: secondary MCP auth check — bypass banner can appear before /mcp auth resolves.
@@ -3227,6 +3214,25 @@ async function _dispatchTool(name, args, sock) {
 async function main() {
   process.stdin.resume();
   log('MCP server started, socket: ' + getSocket());
+
+  // AE-1: Eager hello when running as a worker's child mcp_server.js.
+  // CLAWS_TERMINAL_CORR_ID is set by the extension when creating the wrapped pty
+  // (claws-pty.ts:256). Its presence in our env means we are inside a worker
+  // terminal, not the user's root orchestrator. Eagerly hello so the bus
+  // confirms we are alive and so system.peer.connected{correlation_id} fires
+  // for the parent orchestrator's _gatePasteOnClaudeClaim to release on.
+  // Without this, hello is lazy (first tool call only) — an idle Claude TUI
+  // at the empty prompt never hellos and event-driven boot detection times out.
+  if (process.env.CLAWS_TERMINAL_CORR_ID) {
+    const _aeSock = getSocket();
+    if (_aeSock && fs.existsSync(_aeSock)) {
+      setImmediate(() => {
+        _pconnEnsureRegistered(_aeSock).catch((e) => {
+          log(`AE-1: eager hello failed (will retry lazily): ${e && e.message || e}`);
+        });
+      });
+    }
+  }
 
   while (true) {
     const msg = await readMessage();

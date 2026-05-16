@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// AD-2 — paste-gate regression suite (static analysis).
+// AD-2 + AE-1 — paste-gate regression suite (static analysis).
 //
-// Locks in the AD-1 anti-pattern absence + helper presence without requiring
-// a live claude binary. Runs against mcp_server.js only — extension files are
-// untouched by AD-1.
+// Locks in event-driven boot detection (AE-1) — the regex/pty-log fallback
+// path was removed 2026-05-16 after user rejected it as "not stable across
+// platforms" (see .local/audits/peer-connected-blackout-root-cause.md §4).
 //
-// Eight assertions:
+// Assertions:
 //   1. Helper _gatePasteOnClaudeClaim defined, takes (sock, termId, corrId, opts),
 //      references _waitForWorkerReady.
 //   2. Anti-pattern absent — NO "best-effort: assume booted, proceed" comment.
@@ -13,8 +13,9 @@
 //   4. Fast path (claws_worker) uses helper with _fpCorrId exactly once.
 //   5. Dispatch path (claws_dispatch_subworker) uses helper with _dswCorrId/_dswSock exactly once.
 //   6. system.worker.boot_failed topic published with required payload fields.
-//   7. Tri-platform fallback regex covers darwin/linux/win32 signatures.
-//   8. boot_wait_ms: 8000 unchanged in DEFAULTS.
+//   7. AE-1: regex/pty-log fallback REMOVED from helper body — no claudeMarkers / shellErrorMarkers / pty_tail.
+//   8. AE-1: mcp_server.js main() has eager-hello block guarded on CLAWS_TERMINAL_CORR_ID.
+//   9. boot_wait_ms: 8000 unchanged in DEFAULTS.
 //
 // Run: node extension/test/paste-gate.test.js
 // Exits 0 on all-pass, 1 on any failure.
@@ -101,25 +102,18 @@ check(
 check(
   'boot_failed: payload contains cause field',
   (function () {
-    const topicIdx = src.indexOf('system.worker.boot_failed');
+    const topicMatch = src.match(/topic:\s*['"]system\.worker\.boot_failed['"]/);
+    const topicIdx = topicMatch ? topicMatch.index : -1;
     if (topicIdx === -1) return false;
     const snippet = src.slice(topicIdx, topicIdx + 800);
     return /\bcause\b/.test(snippet);
   })(),
 );
 check(
-  'boot_failed: payload contains pty_tail field',
-  (function () {
-    const topicIdx = src.indexOf('system.worker.boot_failed');
-    if (topicIdx === -1) return false;
-    const snippet = src.slice(topicIdx, topicIdx + 800);
-    return /pty_tail/.test(snippet);
-  })(),
-);
-check(
   'boot_failed: payload contains timeout_ms field',
   (function () {
-    const topicIdx = src.indexOf('system.worker.boot_failed');
+    const topicMatch = src.match(/topic:\s*['"]system\.worker\.boot_failed['"]/);
+    const topicIdx = topicMatch ? topicMatch.index : -1;
     if (topicIdx === -1) return false;
     const snippet = src.slice(topicIdx, topicIdx + 800);
     return /timeout_ms/.test(snippet);
@@ -128,36 +122,54 @@ check(
 check(
   'boot_failed: payload contains correlation_id field',
   (function () {
-    const topicIdx = src.indexOf('system.worker.boot_failed');
+    const topicMatch = src.match(/topic:\s*['"]system\.worker\.boot_failed['"]/);
+    const topicIdx = topicMatch ? topicMatch.index : -1;
     if (topicIdx === -1) return false;
     const snippet = src.slice(topicIdx, topicIdx + 800);
     return /correlation_id/.test(snippet);
   })(),
 );
-
-// 7. Tri-platform fallback regex covers darwin/linux/win32 signatures.
 check(
-  'tri-platform: claudeMarkers regex includes "bypass permissions"',
-  /claudeMarkers\s*=.*bypass permissions/.test(src),
-);
-check(
-  'tri-platform: claudeMarkers regex includes "Claude Code v"',
-  /claudeMarkers\s*=.*Claude Code v/.test(src),
-);
-check(
-  'tri-platform: shellErrorMarkers regex includes "command not found"',
-  /shellErrorMarkers\s*=.*command not found/.test(src),
-);
-check(
-  'tri-platform: shellErrorMarkers regex includes "is not recognized as" (win32)',
-  /shellErrorMarkers\s*=.*is not recognized as/.test(src),
-);
-check(
-  'tri-platform: shellErrorMarkers regex includes "bad pattern:" (zsh)',
-  /shellErrorMarkers\s*=.*bad pattern:/.test(src),
+  'boot_failed: cause is event_driven_boot_timeout (AE-1)',
+  /cause:\s*['"]event_driven_boot_timeout['"]/.test(src),
 );
 
-// 8. boot_wait_ms: 8000 unchanged in DEFAULTS (no silent bump).
+// 7. AE-1: regex/pty-log fallback REMOVED from helper body.
+check(
+  'AE-1 fallback removed: no claudeMarkers regex in mcp_server.js',
+  !/\bclaudeMarkers\s*=/.test(src),
+);
+check(
+  'AE-1 fallback removed: no shellErrorMarkers regex in mcp_server.js',
+  !/\bshellErrorMarkers\s*=/.test(src),
+);
+check(
+  'AE-1 fallback removed: helper no longer references pty_tail',
+  (function () {
+    const helperStart = src.indexOf('async function _gatePasteOnClaudeClaim');
+    if (helperStart === -1) return false;
+    const helperEnd = src.indexOf('\nasync function ', helperStart + 1);
+    const body = helperEnd === -1 ? src.slice(helperStart) : src.slice(helperStart, helperEnd);
+    return !/pty_tail/.test(body);
+  })(),
+);
+
+// 8. AE-1: mcp_server.js main() has eager-hello block guarded on CLAWS_TERMINAL_CORR_ID.
+check(
+  'AE-1 eager-hello: main() block guarded on process.env.CLAWS_TERMINAL_CORR_ID',
+  /process\.env\.CLAWS_TERMINAL_CORR_ID[\s\S]{0,400}_pconnEnsureRegistered/.test(src),
+);
+check(
+  'AE-1 eager-hello: block uses setImmediate (non-blocking startup)',
+  (function () {
+    const mainIdx = src.indexOf('async function main()');
+    if (mainIdx === -1) return false;
+    const tail = src.slice(mainIdx, mainIdx + 4000);
+    return /CLAWS_TERMINAL_CORR_ID[\s\S]{0,800}setImmediate/.test(tail);
+  })(),
+);
+
+// 9. boot_wait_ms: 8000 unchanged in DEFAULTS (no silent bump).
 check(
   'defaults: boot_wait_ms is 8000 in DEFAULTS',
   /boot_wait_ms:\s*8000/.test(src),

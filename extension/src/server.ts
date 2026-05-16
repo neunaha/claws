@@ -1238,7 +1238,17 @@ export class ClawsServer {
         }
       }
 
-      if (r.role === 'orchestrator' && !r.waveId && this.hasRootOrchestrator()) {
+      // AE-1: exempt orchestrators carrying a correlation_id from the
+      // rootOrchestrator gate. They are nested-by-terminal — a worker's child
+      // mcp_server.js eager-hellos with the worker terminal's corr_id (see
+      // mcp_server.js main() block guarded on process.env.CLAWS_TERMINAL_CORR_ID).
+      // Without this exemption every such hello is rejected as a second root,
+      // the corr_id is never stored, and system.peer.connected never fires —
+      // breaking the event-driven boot detection chain.
+      if (r.role === 'orchestrator'
+          && !r.waveId
+          && !(typeof r.correlation_id === 'string' && r.correlation_id.length > 0)
+          && this.hasRootOrchestrator()) {
         return { ok: false, error: 'root orchestrator already registered' };
       }
 
