@@ -131,6 +131,9 @@ export interface ClawsPtyOptions {
   onOpenHook?: () => void;
   /** Called on the first byte of output from the spawned process. */
   onFirstOutputHook?: () => void;
+  /** AC-1: when present, set as CLAWS_TERMINAL_CORR_ID env var on the spawned pty process.
+   *  Uses cross-platform {env: {...}} option on node-pty spawn — identical on darwin/linux/win32. */
+  correlationId?: string;
 }
 
 export class ClawsPty implements vscode.Pseudoterminal {
@@ -229,7 +232,8 @@ export class ClawsPty implements vscode.Pseudoterminal {
     const nodePty = loadNodePty(this.opts.logger);
     if (nodePty) {
       try {
-        const ptyEnv = { ...env, CLAWS_WRAPPED: '1', CLAWS_TERMINAL_ID: this.opts.terminalId };
+        const ptyEnv: NodeJS.ProcessEnv = { ...env, CLAWS_WRAPPED: '1', CLAWS_TERMINAL_ID: this.opts.terminalId };
+        if (this.opts.correlationId) ptyEnv.CLAWS_TERMINAL_CORR_ID = this.opts.correlationId;
         this.ptyProc = nodePty.spawn(shell, args, { cols, rows, cwd, env: ptyEnv, name: 'xterm-256color' });
         this.ptyProc.onData((data) => this.handleOutput(data));
         this.ptyProc.onExit(({ exitCode }) => this.handleExit(exitCode));
@@ -245,7 +249,8 @@ export class ClawsPty implements vscode.Pseudoterminal {
     // yellow banner into the terminal so the user sees it both ways.
     try {
       // Mark pipe-mode explicitly so the shell hook can warn.
-      const pipeEnv = { ...env, CLAWS_PIPE_MODE: '1', CLAWS_TERMINAL_ID: this.opts.terminalId };
+      const pipeEnv: NodeJS.ProcessEnv = { ...env, CLAWS_PIPE_MODE: '1', CLAWS_TERMINAL_ID: this.opts.terminalId };
+      if (this.opts.correlationId) pipeEnv.CLAWS_TERMINAL_CORR_ID = this.opts.correlationId;
       this.childProc = spawn(shell, args, { cwd, env: pipeEnv, stdio: ['pipe', 'pipe', 'pipe'] });
       this.childProc.stdout.on('data', (d: Buffer) => this.handleOutput(d.toString('utf8')));
       this.childProc.stderr.on('data', (d: Buffer) => this.handleOutput(d.toString('utf8')));

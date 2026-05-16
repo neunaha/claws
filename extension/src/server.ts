@@ -268,6 +268,15 @@ export class ClawsServer {
       };
       void this.emitSystemEvent(`vehicle.${id}.content`, payload);
     });
+    // AC-1: translate backend terminal:ready → system.terminal.ready bus event.
+    opts.backend.on('terminal:ready', (ev) => {
+      void this.emitSystemEvent('system.terminal.ready', {
+        terminal_id: ev.id,
+        correlation_id: ev.correlationId,
+        ts: new Date().toISOString(),
+      });
+    });
+
     opts.backend.on('terminal:closed', (ev) => {
       const { id, origin } = ev;
       // LH-10: look up correlation_id from lifecycle state so per-worker Monitors
@@ -1018,6 +1027,7 @@ export class ClawsServer {
         env?: Record<string, string>; show?: boolean; preserveFocus?: boolean;
         // BUG-09: explicit wave affiliation for dispatch_subworker path (fallback when peer has no waveId)
         waveId?: string; waveRole?: string;
+        correlation_id?: string;
       };
       // Wave affiliation from the calling peer's stored waveId (registered via hello).
       const callerPeerId3 = ctx.getPeerId();
@@ -1025,7 +1035,19 @@ export class ClawsServer {
       const callerWaveId = callerPeer3?.waveId ?? r.waveId;
       const callerRole = (callerPeer3?.subWorkerRole ?? r.waveRole) as SubWorkerRole | undefined;
 
-      const { id, logPath } = await backend.createTerminal(r);
+      // AC-1: accept correlation_id; validate it's a non-empty string if present.
+      const corrIdForCreate = typeof r.correlation_id === 'string' && r.correlation_id.length > 0
+        ? r.correlation_id
+        : undefined;
+
+      const { id, logPath } = await backend.createTerminal({
+        name: r.name,
+        cwd: r.cwd,
+        wrapped: r.wrapped,
+        shellPath: r.shellPath,
+        env: r.env,
+        correlationId: corrIdForCreate,
+      });
       if (callerWaveId) this.waveRegistry.trackTerminal(callerWaveId, String(id), callerRole);
       return { ok: true, id, logPath: logPath ?? null, wrapped: r.wrapped === true };
     }
@@ -1220,6 +1242,18 @@ export class ClawsServer {
         return { ok: false, error: 'root orchestrator already registered' };
       }
 
+      // AC-1: validate correlation_id uniqueness — reject if already registered to a live peer.
+      const corrIdForHello = typeof r.correlation_id === 'string' && r.correlation_id.length > 0
+        ? r.correlation_id
+        : undefined;
+      if (corrIdForHello) {
+        for (const existingPeer of this.peers.values()) {
+          if (existingPeer.correlationId === corrIdForHello) {
+            return { ok: false, error: `correlation_id ${corrIdForHello} already registered to peer ${existingPeer.peerId}` };
+          }
+        }
+      }
+
       // Compute stable fingerprint when instanceNonce is provided.
       const fingerprint = r.instanceNonce
         ? fingerprintPeer(r.peerName ?? 'unnamed', r.role, r.instanceNonce)
@@ -1252,6 +1286,7 @@ export class ClawsServer {
         lastSeen: Date.now(),
         connectedAt: Date.now(),
         fingerprint,
+        correlationId: corrIdForHello,
       };
       this.peers.set(peerId, peer);
       this.socketToPeer.set(ctx.socket, peerId);
@@ -1295,6 +1330,18 @@ export class ClawsServer {
       // Bug-6 Layer 2: if the peer declares a monitorCorrelationId, record the claim.
       if (r.monitorCorrelationId) {
         this.peerRegistry.recordMonitorClaim(peerId, r.monitorCorrelationId);
+      }
+
+      // AC-1: publish system.peer.connected when correlation_id is present.
+      // Enables event-driven boot detection in mcp_server.js (Wave AC-2).
+      if (corrIdForHello) {
+        void this.emitSystemEvent('system.peer.connected', {
+          peer_id: peerId,
+          correlation_id: corrIdForHello,
+          peer_name: peer.peerName,
+          role: peer.role,
+          ts: new Date().toISOString(),
+        });
       }
 
       return {

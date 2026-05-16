@@ -40,6 +40,10 @@ export interface CreateOptions {
   env?: Record<string, string>;
   show?: boolean;
   preserveFocus?: boolean;
+  /** AC-1: propagated as CLAWS_TERMINAL_CORR_ID env var to the spawned pty. */
+  correlationId?: string;
+  /** AC-1: called on the first pty byte; used by VsCodeBackend to emit terminal:ready. */
+  onFirstOutput?: (id: string) => void;
 }
 
 // If VS Code never calls our Pseudoterminal.open() hook within this window
@@ -243,6 +247,7 @@ export class TerminalManager {
       shellPath: options.shellPath,
       cwd: options.cwd,
       env: options.env,
+      correlationId: options.correlationId,
       captureStore: this.captureStore,
       logger: this.logger,
       // When VS Code calls open() on the Pseudoterminal, flip to READY and
@@ -251,6 +256,7 @@ export class TerminalManager {
         this.transitionState(rec, 'READY');
         this.startContentDetection(rec);
       },
+      onFirstOutputHook: options.onFirstOutput ? () => options.onFirstOutput!(id) : undefined,
     });
     rec.pty = pty;
 

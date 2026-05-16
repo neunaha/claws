@@ -17,6 +17,9 @@ export interface BackendCreateOptions {
   shellPath?: string;
   shellArgs?: string[];
   env?: Record<string, string>;
+  /** AC-1: when present, propagated as CLAWS_TERMINAL_CORR_ID env var to the spawned pty
+   *  and used to emit system.terminal.ready on the first pty byte. */
+  correlationId?: string;
 }
 
 /** Snapshot of one terminal as seen by the backend. */
@@ -83,6 +86,13 @@ export interface TerminalDataEvent {
   id: string;
   /** Raw pty bytes (may contain ANSI codes). */
   data: string;
+}
+
+/** AC-1: emitted by a backend on the first pty byte of a wrapped terminal that was created
+ *  with a correlationId. Subscribers (server.ts) translate this into system.terminal.ready. */
+export interface TerminalReadyEvent {
+  id: string;
+  correlationId: string;
 }
 
 export interface ForegroundProcessInfo {
@@ -158,6 +168,8 @@ export interface TerminalBackend {
   on(event: 'terminal:created', listener: (ev: TerminalCreatedEvent) => void): this;
   on(event: 'terminal:closed',  listener: (ev: TerminalClosedEvent)  => void): this;
   on(event: 'terminal:data',    listener: (ev: TerminalDataEvent)    => void): this;
+  /** AC-1: first pty byte for a wrapped terminal created with correlationId. */
+  on(event: 'terminal:ready',   listener: (ev: TerminalReadyEvent)   => void): this;
   off(event: string, listener: (...args: unknown[]) => void): this;
 
   // ── Optional capabilities ──────────────────────────────────────────────

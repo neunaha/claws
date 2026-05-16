@@ -52,6 +52,9 @@ export interface PeerConnection {
    * Used to restore subscriptions and tasks on reconnect.
    */
   fingerprint?: string;
+  /** AC-1: lifecycle correlation id supplied by the peer at hello time (from CLAWS_TERMINAL_CORR_ID env).
+   *  Used for event-driven boot detection and audit-trail correlation. */
+  correlationId?: string;
 }
 
 /**

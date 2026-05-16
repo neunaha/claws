@@ -5,6 +5,11 @@ All notable changes to Claws will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0-alpha] - 2026-05-16
+
+### Infrastructure (Wave AC-1)
+- **W8ac-1 — correlation_id event substrate: system.terminal.ready + system.peer.connected**: Adds the AC-1 substrate layer enabling event-driven worker lifecycle observability keyed on `correlation_id`. Changes are extension-side only; no behavioural change until Wave AC-2 (mcp_server.js boot rewire). (1) `protocol.ts`: optional `correlation_id` on `CreateRequest` and `HelloRequest`. (2) `claws-pty.ts`: `CLAWS_TERMINAL_CORR_ID` env var injected into both pty-mode and pipe-mode spawns when `correlationId` is present — uses cross-platform `{env:{...}}` option on node-pty, identical on darwin/linux/win32. (3) `vscode-backend.ts`: wires `onFirstOutput` callback → emits `terminal:ready` event on first pty byte, exactly once per terminal (guarded by `ClawsPty.firstOutputFired`). (4) `server.ts`: `create` handler accepts and validates `correlation_id`, forwards as `correlationId` to backend; `hello` handler validates uniqueness across live peers (rejects duplicate corr_ids), stores on peer record, publishes `system.peer.connected {peer_id, correlation_id, peer_name, role, ts}` when present; listens for `terminal:ready` and translates to `system.terminal.ready {terminal_id, correlation_id, ts}`. (5) `peer-registry.ts`: `PeerConnection.correlationId` optional field. Tests: new `claws-v2-correlation-events.test.js` (10 checks — static env injection, runtime hello→bus event, duplicate rejection, exactly-once guard, no-event-without-corr-id); `worker-fixes-v079.test.js` extended with 5 W8ac-1 regression assertions. Blueprint: `.local/blueprints/v08-lifecycle-correlation-events.md`.
+
 ## [0.8.0-alpha] - 2026-05-15
 
 ### Performance fixes (Wave X)

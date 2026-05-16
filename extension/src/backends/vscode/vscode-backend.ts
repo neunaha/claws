@@ -20,6 +20,7 @@ import type {
   TerminalCreatedEvent,
   TerminalClosedEvent,
   TerminalDataEvent,
+  TerminalReadyEvent,
   ForegroundProcessInfo,
 } from '../../terminal-backend';
 
@@ -85,11 +86,20 @@ export class VsCodeBackend extends EventEmitter implements TerminalBackend {
 
   async createTerminal(opts: BackendCreateOptions): Promise<{ id: string; logPath: string | null }> {
     if (opts.wrapped) {
+      const corrId = opts.correlationId;
       const { id } = this.tm.createWrapped({
         name: opts.name,
         cwd: opts.cwd,
         shellPath: opts.shellPath,
         env: opts.env,
+        correlationId: corrId,
+        // AC-1: emit terminal:ready on first pty byte, exactly once, only when corrId is set.
+        onFirstOutput: corrId
+          ? (termId: string) => {
+              const ev: TerminalReadyEvent = { id: termId, correlationId: corrId };
+              this.emit('terminal:ready', ev);
+            }
+          : undefined,
       });
       const ev: TerminalCreatedEvent = { id, name: opts.name ?? `Claws ${id}`, wrapped: true, logPath: null };
       this.emit('terminal:created', ev);
@@ -204,6 +214,8 @@ export class VsCodeBackend extends EventEmitter implements TerminalBackend {
   on(event: 'terminal:created', listener: (ev: TerminalCreatedEvent) => void): this;
   on(event: 'terminal:closed',  listener: (ev: TerminalClosedEvent)  => void): this;
   on(event: 'terminal:data',    listener: (ev: TerminalDataEvent)    => void): this;
+  /** AC-1: first pty byte for a wrapped terminal created with correlationId. */
+  on(event: 'terminal:ready',   listener: (ev: TerminalReadyEvent)   => void): this;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, listener: (...args: any[]) => void): this {
     return super.on(event, listener);

@@ -247,6 +247,53 @@ check(
   /process\.kill\(existingPid, 0\)/.test(MCP),
 );
 
+// ─── Wave AA — runBlockingWorker boot_wait_ms alignment (W8aa) ───────────────
+
+check(
+  'W8aa-1 runBlockingWorker boot_wait_ms matches fast-path default (25000)',
+  /DEFAULTS\s*=\s*\{[\s\S]{0,800}boot_wait_ms:\s*25000/.test(MCP) &&
+  /args\.boot_wait_ms\s*\|\|\s*25000/.test(MCP),
+);
+
+// ─── Wave AC-1 — correlation_id event substrate (W8ac-1) ─────────────────────
+
+(function () {
+  const EXT_SRC = path.join(__dirname, '..', 'src');
+  const clawsPtySrc   = fs.readFileSync(path.join(EXT_SRC, 'backends', 'vscode', 'claws-pty.ts'), 'utf8');
+  const vscodeBkSrc   = fs.readFileSync(path.join(EXT_SRC, 'backends', 'vscode', 'vscode-backend.ts'), 'utf8');
+  const serverSrc     = fs.readFileSync(path.join(EXT_SRC, 'server.ts'), 'utf8');
+  const peerRegSrc    = fs.readFileSync(path.join(EXT_SRC, 'peer-registry.ts'), 'utf8');
+  const protocolSrc   = fs.readFileSync(path.join(EXT_SRC, 'protocol.ts'), 'utf8');
+
+  check(
+    'W8ac-1 correlation_id substrate present in extension — protocol fields (CreateRequest + HelloRequest)',
+    // CreateRequest must have the field
+    /correlation_id\?:\s*string/.test(protocolSrc) &&
+    // HelloRequest must also have the field (appears after the monitorCorrelationId block)
+    (protocolSrc.match(/correlation_id\?:\s*string/g) || []).length >= 2,
+  );
+  check(
+    'W8ac-1 correlation_id substrate present in extension — claws-pty.ts CLAWS_TERMINAL_CORR_ID injection',
+    /CLAWS_TERMINAL_CORR_ID/.test(clawsPtySrc) &&
+    /correlationId/.test(clawsPtySrc),
+  );
+  check(
+    'W8ac-1 correlation_id substrate present in extension — vscode-backend.ts terminal:ready emission',
+    /terminal:ready/.test(vscodeBkSrc) &&
+    /onFirstOutput/.test(vscodeBkSrc),
+  );
+  check(
+    'W8ac-1 correlation_id substrate present in extension — peer-registry.ts PeerConnection.correlationId field',
+    /correlationId\?:\s*string/.test(peerRegSrc),
+  );
+  check(
+    'W8ac-1 correlation_id substrate present in extension — server.ts system.peer.connected + system.terminal.ready emission',
+    /system\.peer\.connected/.test(serverSrc) &&
+    /system\.terminal\.ready/.test(serverSrc) &&
+    /corrIdForHello/.test(serverSrc),
+  );
+})();
+
 // ─── Final report ────────────────────────────────────────────────────────────
 
 let pass = 0;

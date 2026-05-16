@@ -46,6 +46,8 @@ export interface CreateRequest extends BaseRequest {
   wrapped?: boolean;
   shellPath?: string;
   env?: Record<string, string>;
+  /** AC-1: lifecycle correlation identifier; propagated as CLAWS_TERMINAL_CORR_ID env var to the spawned pty. */
+  correlation_id?: string;
 }
 
 export interface ShowRequest extends BaseRequest {
@@ -175,6 +177,9 @@ export interface HelloRequest extends BaseRequest {
    * Any role (observer/orchestrator/worker) may declare a claim.
    */
   monitorCorrelationId?: string;
+  /** AC-1: worker's lifecycle correlation id, copied from CLAWS_TERMINAL_CORR_ID env var.
+   *  When present, stored on the peer record and emitted in system.peer.connected. */
+  correlation_id?: string;
 }
 
 /** Create a new wave, registering expected sub-worker roles and heartbeat manifest. */
