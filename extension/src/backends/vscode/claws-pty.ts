@@ -231,6 +231,26 @@ export class ClawsPty implements vscode.Pseudoterminal {
 
     const nodePty = loadNodePty(this.opts.logger);
     if (nodePty) {
+      // Warn if spawn-helper is not executable (darwin/linux only — win32 has no spawn-helper).
+      // node-pty uses posix_spawnp to exec spawn-helper; a non-executable file causes
+      // posix_spawnp to fail, degrading every wrapped terminal to pipe-mode silently.
+      // This check does NOT auto-fix the mode — only warns, so the upstream source bug is visible.
+      if (process.platform !== 'win32') {
+        const platKey = `${process.platform}-${process.arch}`;
+        const spawnHelperPath = path.join(__dirname, '..', 'native', 'node-pty', 'prebuilds', platKey, 'spawn-helper');
+        if (fs.existsSync(spawnHelperPath)) {
+          try {
+            const mode = fs.statSync(spawnHelperPath).mode;
+            if ((mode & 0o111) === 0) {
+              this.opts.logger(
+                `[claws-pty] spawn-helper at ${spawnHelperPath} is not executable (mode ${(mode & 0o777).toString(8)}). ` +
+                `node-pty.spawn will fail with posix_spawnp; falling back to pipe-mode. ` +
+                `Fix: chmod +x ${spawnHelperPath} (or rebuild VSIX after AC-1.1).`,
+              );
+            }
+          } catch { /* stat failed — proceed; spawn will surface the error */ }
+        }
+      }
       try {
         const ptyEnv: NodeJS.ProcessEnv = { ...env, CLAWS_WRAPPED: '1', CLAWS_TERMINAL_ID: this.opts.terminalId };
         if (this.opts.correlationId) ptyEnv.CLAWS_TERMINAL_CORR_ID = this.opts.correlationId;

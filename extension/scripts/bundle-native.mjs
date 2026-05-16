@@ -8,7 +8,7 @@
 // CLI flags:
 //   --strict   exit non-zero on any warning (e.g. missing platform dir)
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync, renameSync, chmodSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -67,6 +67,15 @@ function main() {
     copyTree(src, join(staging, 'prebuilds', plat));
     platformsCopied.push(plat);
     log(`  copied prebuilds/${plat}/`);
+    // Preserve executable bit on spawn-helper (darwin/linux only; win32 has no spawn-helper).
+    // node-pty uses posix_spawnp to exec spawn-helper; mode 0644 → posix_spawnp EACCES →
+    // every wrapped terminal falls back to pipe-mode. Guard with existsSync so win32
+    // prebuilds (which have no spawn-helper) never trip a spurious ENOENT.
+    const spawnHelperDest = join(staging, 'prebuilds', plat, 'spawn-helper');
+    if (existsSync(spawnHelperDest)) {
+      chmodSync(spawnHelperDest, 0o755);
+      log(`  chmod +x ${plat}/spawn-helper`);
+    }
   }
 
   // Copy JS runtime (lib/) and metadata files

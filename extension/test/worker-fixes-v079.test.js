@@ -329,6 +329,41 @@ check(
   !/args\.boot_wait_ms\s*\|\|\s*25000/.test(MCP),
 );
 
+// ─── Wave AC-1.1 — spawn-helper executable mode (W8ac-1.1) ───────────────────
+
+(function () {
+  const NATIVE_PREBUILDS = path.join(__dirname, '..', 'native', 'node-pty', 'prebuilds');
+  const BUNDLE_NATIVE = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'bundle-native.mjs'), 'utf8');
+
+  // Belt: verify bundle-native.mjs contains the chmod step so every future VSIX
+  // build ships spawn-helper with the correct mode.
+  check(
+    'W8ac-1.1 bundle-native.mjs chmods spawn-helper to 0o755',
+    /chmodSync/.test(BUNDLE_NATIVE) &&
+    /spawn-helper/.test(BUNDLE_NATIVE) &&
+    /0o755/.test(BUNDLE_NATIVE),
+  );
+
+  // Suspenders: verify the source-tree spawn-helper binaries are actually +x
+  // so the next VSIX rebuild ships a correctly-moded file even if the chmod
+  // step in bundle-native.mjs were ever bypassed.
+  if (process.platform === 'win32') {
+    check('W8ac-1.1 spawn-helper preserved as executable in source tree (skip on win32)', true);
+  } else {
+    const platDirs = fs.existsSync(NATIVE_PREBUILDS)
+      ? fs.readdirSync(NATIVE_PREBUILDS).filter((d) => d.startsWith('darwin-') || d.startsWith('linux-'))
+      : [];
+    const nonExecFiles = platDirs
+      .map((d) => path.join(NATIVE_PREBUILDS, d, 'spawn-helper'))
+      .filter((p) => fs.existsSync(p) && (fs.statSync(p).mode & 0o111) === 0);
+    check(
+      'W8ac-1.1 spawn-helper preserved as executable in source tree',
+      platDirs.length > 0 && nonExecFiles.length === 0,
+      nonExecFiles.length ? `non-executable: ${nonExecFiles.join(', ')}` : '',
+    );
+  }
+})();
+
 // ─── Final report ────────────────────────────────────────────────────────────
 
 let pass = 0;
