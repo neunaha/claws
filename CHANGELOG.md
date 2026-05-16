@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0-alpha] - 2026-05-16
 
+### Tests (Wave AD-2)
+- **AD-2 — paste-gate regression suite**: Static-analysis test `extension/test/paste-gate.test.js` locking in AD-1's invariants: helper `_gatePasteOnClaudeClaim` defined with correct signature referencing `_waitForWorkerReady`; anti-pattern `// best-effort: assume booted, proceed` absent; all three callsites (slow path, fast path, dispatch) each call the helper exactly once with their respective `corrId` variable; `system.worker.boot_failed` payload contains `cause`, `pty_tail`, `timeout_ms`, `correlation_id`; tri-platform `claudeMarkers`/`shellErrorMarkers` regex entries verified; `boot_wait_ms: 8000` unchanged. 18 checks, pure `fs.readFileSync` + regex — no fork, no platform branches, runs identically on darwin/linux/win32.
+
 ### Critical fixes (Wave AD-1)
 - **AD-1 — gate mission paste on confirmed claude pty-claim**: Fixes the Mac regression where a cold-cache claude boot exceeds the 8 s `system.peer.connected` timeout, causing the bracketed-paste mission to land in zsh's input buffer instead of the claude TUI. The three boot-gate try/catch blocks in `mcp_server.js` (`runBlockingWorker` slow path, `claws_worker` fast path, `claws_dispatch_subworker`) previously set `booted = true` unconditionally on timeout — proceeding blind. Replaced with a new `_gatePasteOnClaudeClaim(sock, termId, corrId, opts)` helper that (1) resolves cleanly on event, (2) falls back to pty-log inspection on timeout (tri-platform `claudeMarkers` / `shellErrorMarkers` regexes; no platform branches), and (3) aborts with `system.worker.boot_failed` publication + structured error return if claude clearly did not claim the pty. The standalone `await sleep(200)` at each callsite is consolidated inside the helper (200 ms on event path, 600 ms on pty-log path). Blueprint: `.local/blueprints/v08-ad-paste-gate.md`.
 
