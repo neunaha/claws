@@ -146,11 +146,11 @@ check(
 check(
   'markerScanFrom uses poll-for-settle (NOT a fixed 400ms sleep)',
   // W8k-1 refactor: settle logic moved into _sendAndSubmitMission.
-  // Invariant: submission is verified by a deadline-based polling loop, not a
-  // fixed sleep. We check: (a) helper exists, (b) it uses a deadline variable,
-  // (c) it uses a verified flag instead of a blind wait.
+  // AE-7 update: deadline now uses SUBMIT_CEILING_MS constant (60s) instead of
+  // hardcoded 15000 literal. Invariant: (a) helper exists, (b) uses a deadline
+  // variable, (c) uses a verified flag.
   /_sendAndSubmitMission/.test(MCP) &&
-  /_submitDeadline\s*=\s*Date\.now\(\)\s*\+\s*15000/.test(MCP) &&
+  /_submitDeadline\s*=\s*Date\.now\(\)\s*\+\s*(?:15000|SUBMIT_CEILING_MS)/.test(MCP) &&
   /_submitVerified/.test(MCP),
 );
 

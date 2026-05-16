@@ -175,6 +175,37 @@ check(
   /const ceilingMs\s*=\s*opts\.timeoutMs\s*\|\|\s*(6[0-9]{4}|[1-9][0-9]{5,})/.test(src),
 );
 
+// ─── I6: AE-7 event-driven submit confirmation invariants ────────────────────
+
+// I6.a — _waitForSubmitEvent helper is defined
+check(
+  'I6.a: _waitForSubmitEvent function is defined in mcp_server.js',
+  /async function _waitForSubmitEvent\s*\(/.test(src),
+);
+
+// I6.b — SUBMIT_STRATEGIES array exists, '\r' is first element, and >= 3 entries
+check(
+  "I6.b: SUBMIT_STRATEGIES contains >= 3 entries with '\\r' as first (AE-7 escalating retry)",
+  (function () {
+    const firstIsR = /SUBMIT_STRATEGIES\s*=\s*\[\s*'\\r'/.test(src);
+    const match = src.match(/SUBMIT_STRATEGIES\s*=\s*\[([\s\S]*?)\]/);
+    const count = match ? match[1].split(',').filter(s => s.trim().length > 0).length : 0;
+    return firstIsR && count >= 3;
+  })(),
+);
+
+// I6.c — _sendAndSubmitMission contains NO pty-content regex (● or ⏺ patterns removed)
+check(
+  'I6.c: _sendAndSubmitMission has NO pty-content regex (● and ⏺ patterns absent — AE-7)',
+  (function () {
+    const fnStart = src.indexOf('async function _sendAndSubmitMission');
+    if (fnStart === -1) return false;
+    const nextFn = src.indexOf('\nasync function ', fnStart + 1);
+    const body = nextFn === -1 ? src.slice(fnStart) : src.slice(fnStart, nextFn);
+    return !body.includes('●') && !body.includes('⏺');
+  })(),
+);
+
 // ─── Report ───────────────────────────────────────────────────────────────────
 
 for (const a of assertions) {

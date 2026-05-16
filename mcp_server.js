@@ -262,6 +262,16 @@ let _workerBusCompletedSubscribed = false;
 const _workerReadyWaiters = new Map();
 let _workerPeerConnectedSubscribed = false;
 let _workerTerminalReadySubscribed = false;
+// AE-7: submit event waiters. Keys:
+//   'vehicle-content:<termId>'           — fires on vehicle.<termId>.content bus event
+//   'tool-invoked:<corrId>'              — fires on tool.+.invoked from matching worker peer
+//   'system.terminal.closed:<corrId>'   — lifecycle abort
+//   'system.worker.terminated:<corrId>' — lifecycle abort
+const _submitWaiters = new Map();
+// AE-7: peerId → corrId map, populated on system.peer.connected for tool.invoked routing.
+const _peerIdToCorrId = new Map();
+let _vehicleContentSubscribed = false;
+let _toolInvokedSubscribed = false;
 let _helloInFlight   = null; // Promise | null — deduplicates concurrent hello sends
 
 // Circuit breaker for _pconnEnsureRegistered and _scanAndPublishCLAWSPUB.
@@ -328,12 +338,37 @@ function _pconnHandleData(data) {
             waiterResolve(entry.payload);
           }
         }
+        // AE-7: populate peerId→corrId map on system.peer.connected for tool.invoked routing.
+        if (entry.topic === 'system.peer.connected' && entry.payload
+            && entry.payload.peer_id && entry.payload.correlation_id) {
+          _peerIdToCorrId.set(entry.payload.peer_id, entry.payload.correlation_id);
+        }
         // AE-6.b: fire cancel-key listeners when worker lifecycle ends before boot signal.
         if ((entry.topic === 'system.terminal.closed' || entry.topic === 'system.worker.terminated')
             && entry.payload && entry.payload.correlation_id) {
           const cancelKey = `${entry.topic}:${entry.payload.correlation_id}`;
           const cancelFn = _workerReadyWaiters.get(cancelKey);
           if (cancelFn) cancelFn();
+          // AE-7: also fire submit waiters keyed by lifecycle-end topic + corrId.
+          const submitCancelFn = _submitWaiters.get(cancelKey);
+          if (submitCancelFn) submitCancelFn();
+        }
+        // AE-7: dispatch vehicle.<termId>.content → _submitWaiters for submit confirmation.
+        if (entry.topic && /^vehicle\.[^.]+\.content$/.test(entry.topic)) {
+          const _vcTermId = entry.topic.split('.')[1];
+          const fn = _submitWaiters.get(`vehicle-content:${_vcTermId}`);
+          if (fn) fn(entry.payload);
+        }
+        // AE-7: dispatch tool.+.invoked → _submitWaiters via peerId→corrId lookup.
+        if (entry.topic && /^tool\.[^.]+\.invoked$/.test(entry.topic)) {
+          const _fromPeer = (entry.payload && entry.payload.peerId) || entry.from;
+          if (_fromPeer) {
+            const _toolCorrId = _peerIdToCorrId.get(_fromPeer);
+            if (_toolCorrId) {
+              const fn = _submitWaiters.get(`tool-invoked:${_toolCorrId}`);
+              if (fn) fn(entry.payload);
+            }
+          }
         }
         if (_eventBuffer.ring.length > _eventBuffer.maxSize) {
           _eventBuffer.ring.shift();
@@ -372,6 +407,8 @@ function _pconnHandleClose() {
   _workerBusCompletedSubscribed = false; // reconnect requires re-subscribe
   _workerPeerConnectedSubscribed = false;
   _workerTerminalReadySubscribed = false;
+  _vehicleContentSubscribed = false;
+  _toolInvokedSubscribed = false;
   for (const [, { reject, timer }] of _pconn.pending) {
     clearTimeout(timer);
     reject(new Error('persistent socket closed'));
@@ -1194,7 +1231,82 @@ function _setupDetachWatcher({ sock, termId, corrId, opt, markerScanFrom, hbStat
 //   bracketed-paste (newline:false) → 300ms gap → explicit \r → SUBMITS ✓
 // Using newline:true (internal 30ms CR) fails on Windows ConPTY — mission sits
 // unsubmitted in the prompt buffer until the user manually presses Enter.
-async function _sendAndSubmitMission(sock, termId, payload, launchClaude) {
+// AE-7: escalating submit keystroke strategies — tried in order when the event-driven
+// submit confirmation doesn't arrive within RETRY_INTERVAL_MS. strat 0 ('\r') is sent
+// first and covers Mac + Windows nominal path. strats 1-4 handle edge cases (sticky
+// bracketed-paste mode, Ink readline alt-paths, ConPTY flush variants).
+// Zero platform branches — the same array is used on darwin/linux/win32.
+const SUBMIT_STRATEGIES = [
+  '\r',           // strat 0: baseline CR — correct universal submit key
+  '\r\n',         // strat 1: Windows CRLF variant
+  '\x1b[201~\r',  // strat 2: paste-end marker + CR (unstick stuck bracketed-paste mode)
+  '\n\r',         // strat 3: LF then CR (Ink readline alt-path)
+  '\x1b\r',       // strat 4: ESC + CR (force exit any input mode before submit)
+];
+const RETRY_INTERVAL_MS = 3000;  // wait this long for a bus event before escalating strategy
+const SUBMIT_CEILING_MS = 60000; // true-hang safety net — NOT a submit budget
+
+// AE-7: wait for bus evidence that the worker received and started processing the mission.
+// Returns { kind: 'submitted', signal } | { kind: 'lifecycle_ended' } | { kind: 'timeout' }.
+//
+// 'submitted' signals:
+//   - 'tool.invoked': a tool.+.invoked event from the worker's peer (strongest — mission executing)
+//   - 'vehicle.content': vehicle.<termId>.content fired AND pty log grew past sizeThreshold
+//
+// 'lifecycle_ended': terminal closed or worker terminated — no point retrying.
+// 'timeout': RETRY_INTERVAL_MS elapsed with no event — caller escalates to next strategy.
+async function _waitForSubmitEvent(sock, termId, corrId, sizeThreshold, timeoutMs) {
+  const contentKey  = `vehicle-content:${termId}`;
+  const toolKey     = `tool-invoked:${corrId}`;
+  const termClosedKey  = `system.terminal.closed:${corrId}`;
+  const workerTermKey  = `system.worker.terminated:${corrId}`;
+
+  return new Promise((resolve) => {
+    let resolved = false;
+
+    const finish = (result) => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      _submitWaiters.delete(contentKey);
+      _submitWaiters.delete(toolKey);
+      _submitWaiters.delete(termClosedKey);
+      _submitWaiters.delete(workerTermKey);
+    };
+
+    const timer = setTimeout(() => finish({ kind: 'timeout' }), timeoutMs);
+
+    // vehicle.content: async size check; re-register on miss so it's effectively multi-fire
+    // within the window. Only resolves "submitted" if pty log actually grew past threshold.
+    const handleContent = () => {
+      clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 1024 }).then(snap => {
+        if (resolved) return;
+        const size = (snap.ok && typeof snap.totalSize === 'number') ? snap.totalSize
+          : (snap.ok && typeof snap.bytes === 'string' ? snap.bytes.length : 0);
+        if (size > sizeThreshold) {
+          finish({ kind: 'submitted', signal: 'vehicle.content' });
+        } else {
+          if (!resolved) _submitWaiters.set(contentKey, handleContent);
+        }
+      }).catch(() => { if (!resolved) _submitWaiters.set(contentKey, handleContent); });
+    };
+    _submitWaiters.set(contentKey, handleContent);
+
+    // tool.invoked: strongest confirmation — worker's inner claude is calling MCP tools
+    _submitWaiters.set(toolKey, () => finish({ kind: 'submitted', signal: 'tool.invoked' }));
+
+    // lifecycle ended — terminal died before submission confirmed; no point retrying
+    _submitWaiters.set(termClosedKey, () => finish({ kind: 'lifecycle_ended' }));
+    _submitWaiters.set(workerTermKey, () => finish({ kind: 'lifecycle_ended' }));
+  });
+}
+
+async function _sendAndSubmitMission(sock, termId, corrId, payload, launchClaude) {
   let markerScanFrom = 0;
   if (!payload) return markerScanFrom;
 
@@ -1206,36 +1318,33 @@ async function _sendAndSubmitMission(sock, termId, payload, launchClaude) {
 
     await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: false, paste: true });
     await sleep(300);
-    // AE-6 (reverts AE-4): events.log term 26 (corr 269d37df) showed '\n' wrote literal blank
-    // lines into the prompt buffer — mission text rendered with extra newlines, never submitted.
-    // '\r' is the correct universal submit key. ConPTY accepts '\r'; '\n' was a misdiagnosis.
-    const _submitKey = '\r';
-    await clawsRpc(sock, { cmd: 'send', id: termId, text: _submitKey, newline: false });
+    // AE-6 (reverts AE-4): '\r' is the correct universal submit key.
+    // AE-7: strat 0 of SUBMIT_STRATEGIES — subsequent strategies escalate on timeout.
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: SUBMIT_STRATEGIES[0], newline: false });
 
-    // PASTE-COLLAPSE RECOVERY — Event-driven submit verification; robust against paste-collapse.
-    // Claude TUI collapses pastes >~30 lines into "[Pasted text #N +M lines]"
-    // placeholder — retry CR every 2s up to 5 times over a 15s deadline.
-    // Shared by claws_worker, claws_fleet, AND claws_dispatch_subworker (W8k-2).
-    const _submitDeadline = Date.now() + 15000;
+    // AE-7: event-driven submit confirmation with escalating retry.
+    // Waits up to RETRY_INTERVAL_MS for a bus event proving Claude received the mission.
+    // On timeout, escalates to the next strategy. Safety ceiling prevents true-hang.
+    // No fixed-cadence polling, no pty-content regex — bus events only.
+    const _submitDeadline = Date.now() + SUBMIT_CEILING_MS;
+    let _stratIdx = 0;
     let _submitVerified = false;
-    let _lastNudgeAt = Date.now();
-    let _nudges = 0;
-    while (Date.now() < _submitDeadline) {
-      await sleep(200);
-      const _vs = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
-      const _txt = (_vs.ok && typeof _vs.bytes === 'string') ? _vs.bytes : '';
-      const _grewBig = _txt.length > _preLen + payload.length + 200;
-      const _placeholderGone = !/\[Pasted text #\d+/.test(_txt);
-      const _claudeResponded = /●|⏺|in:\s*\d+/.test(_txt);
-      if (_grewBig || (_placeholderGone && _claudeResponded)) { _submitVerified = true; break; }
-      if (Date.now() - _lastNudgeAt >= 2000 && _nudges < 5) {
-        await clawsRpc(sock, { cmd: 'send', id: termId, text: _submitKey, newline: false });
-        _nudges++;
-        _lastNudgeAt = Date.now();
-      }
+
+    while (Date.now() < _submitDeadline && !_submitVerified) {
+      const evt = await _waitForSubmitEvent(
+        sock, termId, corrId,
+        _preLen + payload.length + 200,
+        RETRY_INTERVAL_MS,
+      );
+      if (evt.kind === 'submitted') { _submitVerified = true; break; }
+      if (evt.kind === 'lifecycle_ended') { break; }
+      // timeout — escalate to next strategy (cycle through if exhausted)
+      _stratIdx = (_stratIdx + 1) % SUBMIT_STRATEGIES.length;
+      await clawsRpc(sock, { cmd: 'send', id: termId, text: SUBMIT_STRATEGIES[_stratIdx], newline: false });
     }
+
     if (!_submitVerified) {
-      log(`_sendAndSubmitMission: submit verification FAILED after 15s — nudges=${_nudges} payload_len=${payload.length}`);
+      log(`_sendAndSubmitMission: submit ceiling hit (${SUBMIT_CEILING_MS}ms) — true hang or all strategies exhausted`);
     }
     // Snapshot post-mission log size for markerScanFrom.
     try {
@@ -1517,7 +1626,7 @@ async function runBlockingWorker(sock, args) {
   // W8k-1: delegate to shared helper — same proven sequence as claws_worker fast path.
   // newline:false + 300ms + explicit \r submits reliably on Mac pty and Windows ConPTY;
   // the old newline:true (internal 30ms CR) left fleet missions unsubmitted on ConPTY.
-  const markerScanFrom = await _sendAndSubmitMission(sock, termId, payload, launchClaude);
+  const markerScanFrom = await _sendAndSubmitMission(sock, termId, _bCorrId, payload, launchClaude);
 
   // 5. Detach shortcut — register background watcher that runs the SAME poll
   // body as the blocking path so [CLAWS_PUB] scanner, system.worker.completed
@@ -1915,6 +2024,19 @@ async function _pconnEnsureRegistered(sockPath) {
     try {
       await _pconnWriteOrThrow({ cmd: 'subscribe', protocol: 'claws/2', topic: 'system.terminal.ready' }, 5000);
       _workerTerminalReadySubscribed = true;
+    } catch { /* non-fatal */ }
+  }
+  // AE-7: subscribe to submit confirmation event topics.
+  if (_pconn.peerId && !_vehicleContentSubscribed) {
+    try {
+      await _pconnWriteOrThrow({ cmd: 'subscribe', protocol: 'claws/2', topic: 'vehicle.+.content' }, 5000);
+      _vehicleContentSubscribed = true;
+    } catch { /* non-fatal */ }
+  }
+  if (_pconn.peerId && !_toolInvokedSubscribed) {
+    try {
+      await _pconnWriteOrThrow({ cmd: 'subscribe', protocol: 'claws/2', topic: 'tool.+.invoked' }, 5000);
+      _toolInvokedSubscribed = true;
     } catch { /* non-fatal */ }
   }
 }
@@ -2575,7 +2697,7 @@ async function _dispatchTool(name, args, sock) {
       : hasCommand ? wrapShellCommand(args.command, termId) : '';
     // W8k-1: delegate to shared helper — this fast path proved the sequence;
     // runBlockingWorker (fleet path) now reuses it verbatim. Returns markerScanFrom.
-    const _fpMarkerScanFrom = await _sendAndSubmitMission(sock, termId, payload, launchClaude);
+    const _fpMarkerScanFrom = await _sendAndSubmitMission(sock, termId, _fpCorrId, payload, launchClaude);
 
     // BUG-24+25: register detach watcher so system.worker.completed is published
     // and auto-close fires when complete_marker is detected — mirrors the
@@ -3080,9 +3202,9 @@ async function _dispatchTool(name, args, sock) {
         }
         // GAP-D1: _dswMission already sanitized above — send as-is.
         // W8k-2: delegate to shared helper — pre-snapshot (BUG-C), bracketed-paste (newline:false),
-        // 300ms gap, explicit \r submit, 15s CR-nudge loop, markerScanFrom snapshot.
+        // 300ms gap, AE-7 event-driven submit confirmation with escalating retry.
         // Restores parity with claws_worker / fleet; newline:true failed on Windows ConPTY.
-        const _dswMarkerScanFrom = await _sendAndSubmitMission(_dswSock, termId, _dswMission, true);
+        const _dswMarkerScanFrom = await _sendAndSubmitMission(_dswSock, termId, _dswCorrId, _dswMission, true);
 
         // BUG-09: register auto-close watcher via shared _setupDetachWatcher helper.
         const _dswStartedAt = Date.now();

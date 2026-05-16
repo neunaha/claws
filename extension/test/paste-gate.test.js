@@ -16,7 +16,8 @@
 //   7. AE-1: regex/pty-log fallback REMOVED from helper body — no claudeMarkers / shellErrorMarkers / pty_tail.
 //   8. AE-1: mcp_server.js main() has eager-hello block guarded on CLAWS_TERMINAL_CORR_ID.
 //   9. AE-6.b: boot_wait_ms is NOT a low time-based DEFAULTS — no sub-10000 hardcoded default.
-//  10. AE-6: _submitKey is '\r' with NO win32 platform branch in _sendAndSubmitMission.
+//  10a. AE-7: SUBMIT_STRATEGIES array starts with '\r' and contains >= 3 distinct keystrokes.
+//  10b. AE-7: _sendAndSubmitMission uses _waitForSubmitEvent (no polling readLog loop).
 //
 // Run: node extension/test/paste-gate.test.js
 // Exits 0 on all-pass, 1 on any failure.
@@ -177,17 +178,28 @@ check(
   !/boot_wait_ms:\s*[0-9]{1,4}\b/.test(src),
 );
 
-// 10. AE-4.1 (reverts AE-4): _submitKey is '\r' with NO win32 platform branch in _sendAndSubmitMission.
+// 10a. AE-7: SUBMIT_STRATEGIES array starts with '\r' as first element and has >= 3 entries.
 check(
-  "AE-4.1: _submitKey is '\\r' and no win32 branch in _sendAndSubmitMission",
+  "AE-7: SUBMIT_STRATEGIES starts with '\\r' and has >= 3 distinct entries",
+  (function () {
+    const firstIsR = /SUBMIT_STRATEGIES\s*=\s*\[\s*'\\r'/.test(src);
+    const match = src.match(/SUBMIT_STRATEGIES\s*=\s*\[([\s\S]*?)\]/);
+    const count = match ? match[1].split(',').filter(s => s.trim().length > 0).length : 0;
+    return firstIsR && count >= 3;
+  })(),
+);
+
+// 10b. AE-7: _sendAndSubmitMission uses _waitForSubmitEvent — no polling readLog inside a while loop.
+check(
+  'AE-7: _sendAndSubmitMission uses _waitForSubmitEvent (event-driven, no polling loop)',
   (function () {
     const fnStart = src.indexOf('async function _sendAndSubmitMission');
     if (fnStart === -1) return false;
     const nextFn = src.indexOf('\nasync function ', fnStart + 1);
     const body = nextFn === -1 ? src.slice(fnStart) : src.slice(fnStart, nextFn);
-    const hasRkey = /const\s+_submitKey\s*=\s*'\\r'\s*;/.test(body);
-    const hasWin32Branch = /process\.platform\s*===\s*['"]win32['"]/.test(body);
-    return hasRkey && !hasWin32Branch;
+    const hasWaiter = /\b_waitForSubmitEvent\b/.test(body);
+    const hasOldPoll = /while\s*\([\s\S]{0,200}readLog/.test(body);
+    return hasWaiter && !hasOldPoll;
   })(),
 );
 
