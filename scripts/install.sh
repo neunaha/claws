@@ -235,6 +235,76 @@ info "Install log: $CLAWS_LOG"
 [ "$TOOLCHAIN_OK" = "0" ] && warn "toolchain issues above — install will still run, but node-pty may not compile"
 echo ""
 
+# ─── Pre-install: Kill stale worker processes from prior sessions ──────────
+# Returns true when a process has CLAWS_TERMINAL_CORR_ID in its environment.
+# Worker children are spawned with that var; the outer orchestrator running
+# this install does NOT have it — only worker children are killed.
+_has_corr_id() {
+  local pid="$1"
+  case "$PLATFORM" in
+    Darwin)
+      # ps -E on macOS appends environment variables after each process line
+      ps -E -p "$pid" 2>/dev/null | grep -q "CLAWS_TERMINAL_CORR_ID" ;;
+    Linux)
+      # /proc/<pid>/environ is NUL-delimited; tr replaces NULs with newlines
+      tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -q "CLAWS_TERMINAL_CORR_ID" ;;
+    *) return 1 ;;
+  esac
+}
+
+_claws_cleanup_stale_workers() {
+  local killed=0 cleared=0
+
+  if command -v pgrep &>/dev/null; then
+    # Kill stale mcp_server.js processes that match the project path + CORR_ID filter
+    if [ "$PROJECT_INSTALL" = "1" ]; then
+      local target_mcp="$PROJECT_ROOT/.claws-bin/mcp_server.js"
+      while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local pid="${line%% *}"
+        local cmdline="${line#* }"
+        # Full path match prevents collateral kills of other projects' MCP servers
+        case "$cmdline" in
+          *"$target_mcp"*) ;;
+          *) continue ;;
+        esac
+        # CORR_ID filter: only kill worker children, not the outer orchestrator
+        _has_corr_id "$pid" || continue
+        info "[claws-clean] kill PID $pid (stale worker mcp_server.js)"
+        kill -TERM "$pid" 2>/dev/null || true
+        sleep 2
+        kill -KILL "$pid" 2>/dev/null || true
+        killed=$((killed + 1))
+      done < <(pgrep -af 'mcp_server\.js' 2>/dev/null || true)
+    fi
+
+    # Kill stale spawn-helper processes (Mac/Linux only — Windows uses winpty/conpty)
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      local pid="${line%% *}"
+      _has_corr_id "$pid" || continue
+      info "[claws-clean] kill spawn-helper PID $pid"
+      kill -TERM "$pid" 2>/dev/null || true
+      killed=$((killed + 1))
+    done < <(pgrep -af 'spawn-helper' 2>/dev/null || true)
+  fi
+
+  # Clear stale .claws/sidecar.pid if the recorded PID is dead
+  if [ "$PROJECT_INSTALL" = "1" ] && [ -f "$PROJECT_ROOT/.claws/sidecar.pid" ]; then
+    local spid
+    spid="$(tr -d '[:space:]' < "$PROJECT_ROOT/.claws/sidecar.pid" 2>/dev/null || true)"
+    if [ -n "$spid" ] && ! kill -0 "$spid" 2>/dev/null; then
+      rm -f "$PROJECT_ROOT/.claws/sidecar.pid"
+      info "[claws-clean] cleared stale sidecar.pid (PID $spid dead)"
+      cleared=$((cleared + 1))
+    fi
+  fi
+
+  ok "[claws-clean] killed $killed stale processes, cleared $cleared stale pid files"
+}
+
+_claws_cleanup_stale_workers
+
 # ─── Step 1: Clone or update ───────────────────────────────────────────────
 step "Fetching Claws source"
 if [ -d "$INSTALL_DIR/.git" ]; then

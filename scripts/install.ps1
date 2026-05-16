@@ -102,6 +102,31 @@ try {
     Write-Host "        After install: VS Code > 'Shell Command: Install code command in PATH'" -ForegroundColor DarkGray
   }
 
+  # Pre-install: kill stale worker mcp_server.js processes from prior sessions.
+  # Only kills node.exe processes whose CommandLine contains the project's
+  # .claws-bin\mcp_server.js path — prevents collateral kills of other projects.
+  # (lib/install.js repeats this check with CLAWS_TERMINAL_CORR_ID env filtering
+  # on platforms where PowerShell env introspection is not needed.)
+  $ClawsCleanKilled = 0
+  $ClawsProjectRoot = (Get-Location).Path
+  $ClawsMcpPath = Join-Path $ClawsProjectRoot ".claws-bin\mcp_server.js"
+  try {
+    $ClawsMyPid = $PID
+    Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ForEach-Object {
+      $proc = $_
+      if ($proc.CommandLine -and $proc.CommandLine.Contains($ClawsMcpPath) -and
+          $proc.ProcessId -ne $ClawsMyPid) {
+        $shortCmd = $proc.CommandLine.Substring(0, [Math]::Min(80, $proc.CommandLine.Length))
+        Write-Host ("  [claws-clean] kill PID " + $proc.ProcessId + ": " + $shortCmd) -ForegroundColor DarkGray
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+        $ClawsCleanKilled++
+      }
+    }
+  } catch {
+    # Non-fatal — cleanup is best-effort; node installer will run regardless
+  }
+  Write-Host ("  [claws-clean] killed " + $ClawsCleanKilled + " stale processes") -ForegroundColor DarkGray
+
   # Delegate to Node installer; lib/install.js owns VSIX build, phases, and final output
   Write-Host "Running installer..." -ForegroundColor White
   $NodeArgs = @($NodeCli, 'install', '--vscode-cli', $CodePath) + $args
