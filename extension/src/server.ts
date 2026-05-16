@@ -981,8 +981,15 @@ export class ClawsServer {
 
   /** True if a root (non-wave) orchestrator is already registered. */
   private hasRootOrchestrator(): boolean {
+    // AE-1.2: a "root" orchestrator is one with no waveId AND no correlation_id.
+    // Wave-orchestrators (waveId) and nested orchestrators (correlation_id, e.g. a
+    // worker's child mcp_server.js that eager-hellos with the worker terminal's
+    // corr_id per AE-1) are NOT roots — they coexist with the user's primary
+    // orchestrator. Without this exclusion, a stale nested orchestrator can
+    // occupy the root slot forever, rejecting every subsequent root hello as
+    // "root orchestrator already registered" and breaking event-driven boot.
     for (const p of this.peers.values()) {
-      if (p.role === 'orchestrator' && !p.waveId) return true;
+      if (p.role === 'orchestrator' && !p.waveId && !p.correlationId) return true;
     }
     return false;
   }
