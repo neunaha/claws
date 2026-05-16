@@ -258,6 +258,10 @@ let _workerTerminatedSubscribed = false;
 // bypassing pty scraping entirely. Map is append-only; entries survive until the MCP server exits.
 const _workerCompletedViaBusSet = new Map();
 let _workerBusCompletedSubscribed = false;
+// W8ac-2: one-shot listeners for _waitForWorkerReady, keyed by "${topic}:${corrId}".
+const _workerReadyWaiters = new Map();
+let _workerPeerConnectedSubscribed = false;
+let _workerTerminalReadySubscribed = false;
 let _helloInFlight   = null; // Promise | null — deduplicates concurrent hello sends
 
 // Circuit breaker for _pconnEnsureRegistered and _scanAndPublishCLAWSPUB.
@@ -314,6 +318,16 @@ function _pconnHandleData(data) {
           _workerCompletedViaBusSet.set(String(_busTermId), { payload: entry.payload, ts: Date.now() });
           log(`Phase 4a: received worker.${_busTermId}.complete via bus, payload: ${JSON.stringify(entry.payload).slice(0, 120)}`);
         }
+        // W8ac-2: resolve _waitForWorkerReady listeners keyed by topic + correlation_id.
+        if ((entry.topic === 'system.peer.connected' || entry.topic === 'system.terminal.ready')
+            && entry.payload && entry.payload.correlation_id) {
+          const waiterKey = `${entry.topic}:${entry.payload.correlation_id}`;
+          const waiterResolve = _workerReadyWaiters.get(waiterKey);
+          if (waiterResolve) {
+            _workerReadyWaiters.delete(waiterKey);
+            waiterResolve(entry.payload);
+          }
+        }
         if (_eventBuffer.ring.length > _eventBuffer.maxSize) {
           _eventBuffer.ring.shift();
           // Emit ring-overflow once per eviction so callers know events were dropped.
@@ -349,6 +363,8 @@ function _pconnHandleClose() {
   _eventBuffer.subscribed = false; // reconnect requires fresh auto-subscribe
   _workerTerminatedSubscribed = false; // reconnect requires re-subscribe
   _workerBusCompletedSubscribed = false; // reconnect requires re-subscribe
+  _workerPeerConnectedSubscribed = false;
+  _workerTerminalReadySubscribed = false;
   for (const [, { reject, timer }] of _pconn.pending) {
     clearTimeout(timer);
     reject(new Error('persistent socket closed'));
@@ -1227,6 +1243,27 @@ async function _sendAndSubmitMission(sock, termId, payload, launchClaude) {
   return markerScanFrom;
 }
 
+// W8ac-2: event-driven boot signal. Resolves when the matching bus event fires for corrId,
+// or rejects after timeoutMs — caller logs + proceeds (best-effort, no abort on version skew).
+// Uses _workerReadyWaiters populated by _pconnHandleData as the one-shot listener store.
+async function _waitForWorkerReady(sock, corrId, opts) {
+  const topic = opts.type === 'claude'
+    ? 'system.peer.connected'
+    : 'system.terminal.ready';
+  const timeoutMs = opts.timeoutMs || (opts.type === 'claude' ? 8000 : 3000);
+  return new Promise((resolve, reject) => {
+    const waiterKey = `${topic}:${corrId}`;
+    const timer = setTimeout(() => {
+      _workerReadyWaiters.delete(waiterKey);
+      reject(new Error(`worker ready timeout (${opts.type}, ${timeoutMs}ms)`));
+    }, timeoutMs);
+    _workerReadyWaiters.set(waiterKey, (event) => {
+      clearTimeout(timer);
+      resolve(event);
+    });
+  });
+}
+
 async function runBlockingWorker(sock, args) {
   const DEFAULTS = {
     timeout_ms: 5 * 60 * 1000,
@@ -1260,14 +1297,14 @@ async function runBlockingWorker(sock, args) {
     : process.cwd();
 
   // 1. Create wrapped terminal
+  const _bCorrId = randomUUID();
   const cr = await clawsRpc(sock, {
     cmd: 'create', name: args.name || 'claws-worker', wrapped: true, show: true,
-    cwd: workerCwd, env: { CLAWS_WORKER: '1' },
+    cwd: workerCwd, env: { CLAWS_WORKER: '1' }, correlation_id: _bCorrId,
   });
   if (!cr.ok) return { status: 'error', error: `create failed: ${_lifecycleErrMsg(cr.error)}` };
   const termId = cr.id;
   _clearStaleCompletionSignals(termId);
-  const _bCorrId = randomUUID();
   const startedAt = Date.now();
 
   // Publish system.worker.spawned — best-effort, never aborts on failure.
@@ -1368,39 +1405,22 @@ async function runBlockingWorker(sock, args) {
   await sleep(400);
 
   // 3. Optional claude boot + detection — single attempt, best-effort.
-  // Sends the launch command ONCE, polls for the boot marker for up to
-  // boot_wait_ms, then proceeds whether or not the marker matched. There is
-  // intentionally no retry: if the boot marker isn't found, sending the launch
-  // command a second time would type "claude ..." into an already-booted
-  // Claude Code TUI as a user prompt, which is harmful and confusing.
+  // Sends the launch command ONCE, waits for system.peer.connected event keyed
+  // by _bCorrId. Falls back after boot_wait_ms with a log — no abort, preserves
+  // best-effort semantics on extension/orchestrator version skew.
   let booted = !launchClaude;
   if (launchClaude) {
     await clawsRpc(sock, {
       cmd: 'send', id: termId,
       text: `${getClaudeBin(args && args.cwd)} --dangerously-skip-permissions --model ${opt.model}`, newline: true,
     });
-    // Event-driven READINESS detection: ❯ alone exits too early — Claude's
-    // React/Ink renders the input prompt before MCP auth + render pipeline
-    // are finalized. Stricter check: require BOTH ❯ AND `cost:$` (cost line
-    // at bottom — only appears when Claude is fully idle and receptive).
-    // Stable for 3 polls (~900ms) before declaring ready.
-    const bootDeadline = Date.now() + opt.boot_wait_ms;
-    let _promptStableCount = 0;
-    while (Date.now() < bootDeadline) {
-      const snap = await clawsRpc(sock, {
-        cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024,
-      });
-      const _bytes = (snap.ok && typeof snap.bytes === 'string') ? snap.bytes : '';
-      // Require: input prompt (❯) AND idle indicator (cost:$ shown only when ready)
-      const _hasPrompt = _bytes.includes('❯');
-      const _hasCostLine = _bytes.includes('cost:$') || _bytes.includes('cost: $');
-      if (_hasPrompt && _hasCostLine) {
-        _promptStableCount++;
-        if (_promptStableCount >= 3) { booted = true; break; }
-      } else {
-        _promptStableCount = 0;
-      }
-      await sleep(300);
+    // W8ac-2: event-driven boot — resolves on system.peer.connected with matching corrId.
+    try {
+      await _waitForWorkerReady(sock, _bCorrId, { type: 'claude', timeoutMs: opt.boot_wait_ms });
+      booted = true;
+    } catch (e) {
+      log(`boot wait timed out for term=${termId} corr=${_bCorrId}: ${e.message}`);
+      booted = true; // best-effort: assume booted, proceed
     }
     // BUG-07: secondary MCP auth check — bypass banner can appear before /mcp auth resolves.
     if (booted) {
@@ -1411,13 +1431,8 @@ async function runBlockingWorker(sock, args) {
         return { status: 'error', error: `boot_marker seen but MCP auth banner active on terminal ${termId} — prompt is blocked. Spawn with minimal MCP config or pre-auth.` };
       }
     }
-    // Proceed even if marker missed — best-effort. Some users may have
-    // customized the Claude Code TUI banner; the actual launch may have worked.
-    // POST-BOOT SETTLE: even after ❯ + cost:$ visible, Claude has a hidden async
-    // window (~5s) during which paste-submit gestures get lost. Manual claws_send
-    // testing proves 18s total wait works; programmatic boot is ~6.5s, so 5000ms
-    // extra settle brings us to ~11s — empirically reliable.
-    await sleep(5000);
+    // 200ms safety buffer (blueprint section 9) — event fires before paste pipeline is fully open.
+    await sleep(200);
   }
 
   // 4. Send the mission AS A USER PROMPT — direct, the way it works in v0.7.4.
@@ -1779,6 +1794,7 @@ async function _pconnEnsureRegistered(sockPath) {
       _helloInFlight = _pconnWrite({
         cmd: 'hello', protocol: 'claws/2',
         role: 'orchestrator', peerName: 'mcp-orchestrator',
+        ...(process.env.CLAWS_TERMINAL_CORR_ID ? { correlation_id: process.env.CLAWS_TERMINAL_CORR_ID } : {}),
       }, 5000).finally(() => { _helloInFlight = null; });
     }
     let hr = await _helloInFlight;
@@ -1795,6 +1811,7 @@ async function _pconnEnsureRegistered(sockPath) {
       if (!_helloInFlight) {
         _helloInFlight = _pconnWrite({
           cmd: 'hello', protocol: 'claws/2', role: 'orchestrator', peerName: 'mcp-orchestrator',
+          ...(process.env.CLAWS_TERMINAL_CORR_ID ? { correlation_id: process.env.CLAWS_TERMINAL_CORR_ID } : {}),
         }, 5000).finally(() => { _helloInFlight = null; });
       }
       hr = await _helloInFlight;
@@ -1831,6 +1848,19 @@ async function _pconnEnsureRegistered(sockPath) {
     try {
       await _pconnWriteOrThrow({ cmd: 'subscribe', protocol: 'claws/2', topic: 'worker.+.complete' }, 5000);
       _workerBusCompletedSubscribed = true;
+    } catch { /* non-fatal */ }
+  }
+  // W8ac-2: subscribe to boot-readiness events so _waitForWorkerReady listeners resolve.
+  if (_pconn.peerId && !_workerPeerConnectedSubscribed) {
+    try {
+      await _pconnWriteOrThrow({ cmd: 'subscribe', protocol: 'claws/2', topic: 'system.peer.connected' }, 5000);
+      _workerPeerConnectedSubscribed = true;
+    } catch { /* non-fatal */ }
+  }
+  if (_pconn.peerId && !_workerTerminalReadySubscribed) {
+    try {
+      await _pconnWriteOrThrow({ cmd: 'subscribe', protocol: 'claws/2', topic: 'system.terminal.ready' }, 5000);
+      _workerTerminalReadySubscribed = true;
     } catch { /* non-fatal */ }
   }
 }
@@ -2016,6 +2046,7 @@ async function _dispatchTool(name, args, sock) {
     const resp = await clawsRpc(sock, {
       cmd: 'create', name: args.name || 'claws',
       cwd: (typeof args.cwd === 'string' && args.cwd.length > 0) ? args.cwd : process.cwd(), wrapped: args.wrapped !== false, show: true,
+      correlation_id: _createCorrId,
     });
     if (!resp.ok) return toolError(`ERROR: ${_lifecycleErrMsg(resp.error)}`);
     const eventsLogPath = _eventsLogPath(sock);
@@ -2366,14 +2397,14 @@ async function _dispatchTool(name, args, sock) {
     const launchClaude = args.launch_claude !== undefined ? !!args.launch_claude : hasMission;
     const workerCwd = typeof args.cwd === 'string' && args.cwd.length > 0 ? args.cwd : process.cwd();
 
+    const _fpCorrId = randomUUID();
     const cr = await clawsRpc(sock, {
       cmd: 'create', name: args.name || 'claws-worker', wrapped: true, show: true, cwd: workerCwd,
-      env: { CLAWS_WORKER: '1' },
+      env: { CLAWS_WORKER: '1' }, correlation_id: _fpCorrId,
     });
     if (!cr.ok) return toolError(`ERROR: create failed: ${_lifecycleErrMsg(cr.error)}`);
     const termId = cr.id;
     _clearStaleCompletionSignals(termId);
-    const _fpCorrId = randomUUID();
     const _fpStartedAt = Date.now();
 
     // BUG-23: publish system.worker.spawned on non-blocking fast path — best-effort.
@@ -2475,27 +2506,15 @@ async function _dispatchTool(name, args, sock) {
         cmd: 'send', id: termId,
         text: `${getClaudeBin(args && args.cwd)} --dangerously-skip-permissions --model ${model}`, newline: true,
       });
-      // CRITICAL FIX (2026-05-02): wait for Claude TUI to be FULLY READY before
-      // sending mission paste. Without this, mission lands in shell prompt while
-      // Claude is still booting and the post-paste \r gets lost — mission sits
-      // in input box forever, never submitted.
-      // Event-driven: poll for ❯ (input prompt) + cost:$ (idle indicator).
-      // Stable for 3 polls (~900ms) before declaring ready, then 5000ms settle.
-      const _fpBootDeadline = Date.now() + (args.boot_wait_ms || 25000);
-      let _fpStable = 0;
-      while (Date.now() < _fpBootDeadline) {
-        const _bs = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
-        const _bytes = (_bs.ok && typeof _bs.bytes === 'string') ? _bs.bytes : '';
-        if (_bytes.includes('❯') && (_bytes.includes('cost:$') || _bytes.includes('cost: $'))) {
-          _fpStable++;
-          if (_fpStable >= 3) break;
-        } else {
-          _fpStable = 0;
-        }
-        await sleep(300);
+      // W8ac-2: event-driven boot — resolves on system.peer.connected with matching corrId.
+      try {
+        await _waitForWorkerReady(sock, _fpCorrId, { type: 'claude', timeoutMs: args.boot_wait_ms || 8000 });
+      } catch (e) {
+        log(`boot wait timed out for term=${termId} corr=${_fpCorrId}: ${e.message}`);
+        // best-effort: assume booted, proceed
       }
-      // Post-readiness settle: Claude has hidden async window after ❯+cost:$.
-      await sleep(5000);
+      // 200ms safety buffer (blueprint section 9) — event fires before paste pipeline is fully open.
+      await sleep(200);
     }
 
     // Phase 4a: one-line completion hint — claws_done() handles the rest.
@@ -2876,15 +2895,15 @@ async function _dispatchTool(name, args, sock) {
       return toolError(`SPAWN REFUSED: wave.not-registered — call claws_wave_create({waveId:'${args.waveId}', manifest:[...]}) first`);
     }
     const workerName = `wave-${args.waveId}-${args.role}`;
+    const _dswCorrId = randomUUID();
     const cr = await clawsRpc(sock, {
       cmd: 'create', name: workerName, wrapped: true, show: true,
       cwd: typeof args.cwd === 'string' && args.cwd.length > 0 ? args.cwd : process.cwd(),
-      waveId: args.waveId, waveRole: args.role, env: { CLAWS_WORKER: '1' },
+      waveId: args.waveId, waveRole: args.role, env: { CLAWS_WORKER: '1' }, correlation_id: _dswCorrId,
     });
     if (!cr.ok) return toolError(`ERROR: create failed: ${_lifecycleErrMsg(cr.error)}`);
     const termId = cr.id;
     _clearStaleCompletionSignals(termId);
-    const _dswCorrId = randomUUID();
 
     // BUG-A: publish system.worker.spawned for sub-workers — best-effort.
     log(`dispatch_subworker: publishing system.worker.spawned for terminal ${termId}`);
@@ -3002,24 +3021,14 @@ async function _dispatchTool(name, args, sock) {
           cmd: 'send', id: termId,
           text: `${getClaudeBin(_dswCwd)} --model claude-sonnet-4-6 --dangerously-skip-permissions`, newline: true,
         });
-        // BUG-F fix: poll for Claude TUI ready state (❯ + cost:$) instead of stale 'trust' substring.
-        // --dangerously-skip-permissions bypasses trust prompt — no '1' send needed.
-        let bootOk = false;
-        let _dswBootStable = 0;
-        const bootDeadline = Date.now() + 25_000;
-        while (Date.now() < bootDeadline) {
-          const _dswBs = await clawsRpc(_dswSock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
-          const _dswBytes = (_dswBs.ok && typeof _dswBs.bytes === 'string') ? _dswBs.bytes : '';
-          if (_dswBytes.includes('❯') && (_dswBytes.includes('cost:$') || _dswBytes.includes('cost: $'))) {
-            _dswBootStable++;
-            if (_dswBootStable >= 3) { bootOk = true; break; }
-          } else {
-            _dswBootStable = 0;
-          }
-          await sleep(300);
+        // W8ac-2: event-driven boot — resolves on system.peer.connected with matching corrId.
+        try {
+          await _waitForWorkerReady(_dswSock, _dswCorrId, { type: 'claude', timeoutMs: 8000 });
+        } catch (e) {
+          log(`claws_dispatch_subworker: boot wait timed out for ${workerName} corr=${_dswCorrId}: ${e.message} — continuing anyway`);
         }
-        if (!bootOk) log(`claws_dispatch_subworker: Claude TUI ready signal not seen for ${workerName} — continuing anyway`);
-        await sleep(5000);
+        // 200ms safety buffer (blueprint section 9) — event fires before paste pipeline is fully open.
+        await sleep(200);
         // GAP-D1: _dswMission already sanitized above — send as-is.
         // W8k-2: delegate to shared helper — pre-snapshot (BUG-C), bracketed-paste (newline:false),
         // 300ms gap, explicit \r submit, 15s CR-nudge loop, markerScanFrom snapshot.

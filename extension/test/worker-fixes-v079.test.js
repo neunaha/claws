@@ -286,6 +286,49 @@ check(
   );
 })();
 
+// ─── Wave AC-2 — event-driven boot via correlation_id (W8ac-2) ───────────────
+
+check(
+  'W8ac-2 _waitForWorkerReady helper exists with topic+timeoutMs',
+  /async function _waitForWorkerReady[\s\S]{0,600}system\.peer\.connected/.test(MCP) &&
+  /async function _waitForWorkerReady[\s\S]{0,600}system\.terminal\.ready/.test(MCP),
+);
+
+check(
+  'W8ac-2 mcp_server.js self-hello includes correlation_id when env set',
+  // Both hello sites must reference the env var
+  (MCP.match(/process\.env\.CLAWS_TERMINAL_CORR_ID/g) || []).length >= 2,
+);
+
+check(
+  'W8ac-2 slow-path boot uses _waitForWorkerReady (no _hasPrompt poll)',
+  // Positive: _waitForWorkerReady is invoked inside runBlockingWorker
+  /async function runBlockingWorker[\s\S]{0,10000}_waitForWorkerReady/.test(MCP) &&
+  // Negative: the ❯+cost:$ polling gate is gone from the file entirely
+  !/\bconst _hasPrompt\b/.test(MCP),
+);
+
+check(
+  'W8ac-2 fast-path boot uses _waitForWorkerReady (no _hasPrompt poll)',
+  // Positive: fast path (claws_worker handler) uses _waitForWorkerReady
+  /if \(name === 'claws_worker'\)[\s\S]{0,12000}_waitForWorkerReady/.test(MCP) &&
+  // Negative: old polling variables are gone
+  !/\b_fpBootDeadline\b/.test(MCP) &&
+  !/\b_fpStable\b/.test(MCP),
+);
+
+check(
+  'W8ac-2 5000ms post-boot settle removed in both paths',
+  // All three boot-context sleep(5000) calls are gone
+  (MCP.match(/await sleep\(5000\)/g) || []).length === 0,
+);
+
+check(
+  'W8ac-2 fast-path boot_wait_ms default aligned to 8000',
+  /args\.boot_wait_ms\s*\|\|\s*8000/.test(MCP) &&
+  !/args\.boot_wait_ms\s*\|\|\s*25000/.test(MCP),
+);
+
 // ─── Final report ────────────────────────────────────────────────────────────
 
 let pass = 0;
