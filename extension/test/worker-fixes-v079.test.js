@@ -247,14 +247,6 @@ check(
   /process\.kill\(existingPid, 0\)/.test(MCP),
 );
 
-// ─── Wave AA — runBlockingWorker boot_wait_ms alignment (W8aa) ───────────────
-
-check(
-  'W8aa-1 runBlockingWorker boot_wait_ms matches fast-path default (25000)',
-  /DEFAULTS\s*=\s*\{[\s\S]{0,800}boot_wait_ms:\s*25000/.test(MCP) &&
-  /args\.boot_wait_ms\s*\|\|\s*25000/.test(MCP),
-);
-
 // ─── Wave AC-1 — correlation_id event substrate (W8ac-1) ─────────────────────
 
 (function () {

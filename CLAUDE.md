@@ -201,6 +201,7 @@ See `.local/README.md` for the full rubric.
 
 ## Conventions
 
+- **Tri-platform from the design phase.** Every code path, env var, helper, shell command, path operation, timing constant, and detection mechanism MUST be designed for darwin + linux + win32 from day one — not patched after a Windows runtime bug. Audits scoped by symptom class do not scale; assume cross-platform divergence by default and branch with `process.platform === 'win32'` (or use `lib/platform.js` / `extension/src/platform.ts` helpers) explicitly at the design phase. Every PR review must answer "does this run identically on all three?" If not, the platform branch must be visible in the diff. Sister-bug rule: when a runtime bug is found on one platform, always verify the fix isn't needed on the others.
 - **Node.js only — zero external dependencies.** The extension, MCP server, CLI, and shell hooks are all pure Node.js/JavaScript.
 - **TypeScript** for extension code. Strict mode. No `any`.
 - **Node 18+** for MCP server and CLI. Zero deps.
