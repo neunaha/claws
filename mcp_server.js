@@ -3223,9 +3223,15 @@ async function main() {
   // for the parent orchestrator's _gatePasteOnClaudeClaim to release on.
   // Without this, hello is lazy (first tool call only) — an idle Claude TUI
   // at the empty prompt never hellos and event-driven boot detection times out.
+  //
+  // AE-1.1: do NOT pre-check fs.existsSync(socket) — on win32 the bus is a
+  // named pipe (\\.\pipe\...) which has no filesystem presence and existsSync
+  // always returns false, silently skipping the eager hello on Windows.
+  // _pconnEnsureRegistered already handles connect failures gracefully via the
+  // circuit breaker; a missing/down bus produces one logged warning, no crash.
   if (process.env.CLAWS_TERMINAL_CORR_ID) {
     const _aeSock = getSocket();
-    if (_aeSock && fs.existsSync(_aeSock)) {
+    if (_aeSock) {
       setImmediate(() => {
         _pconnEnsureRegistered(_aeSock).catch((e) => {
           log(`AE-1: eager hello failed (will retry lazily): ${e && e.message || e}`);
