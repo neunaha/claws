@@ -1264,6 +1264,52 @@ async function _waitForWorkerReady(sock, corrId, opts) {
   });
 }
 
+// AD-1: gate mission paste on confirmed pty-claim. Wraps _waitForWorkerReady with a
+// pty-log fallback so a timed-out boot either recovers gracefully (claude banner present)
+// or aborts cleanly (no banner / shell error) instead of blindly proceeding.
+// Tri-platform: claudeMarkers and shellErrorMarkers cover darwin/linux/win32 — no platform branches.
+async function _gatePasteOnClaudeClaim(sock, termId, corrId, opts) {
+  const timeoutMs = opts.timeoutMs || 8000;
+  try {
+    await _waitForWorkerReady(sock, corrId, { type: 'claude', timeoutMs });
+    await sleep(200); // existing 200ms safety buffer
+    return { booted: true, source: 'event' };
+  } catch (e) {
+    // Fallback pty-log inspection (tri-platform signatures)
+    const snap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
+    const bytes = (snap.ok && typeof snap.bytes === 'string') ? snap.bytes : '';
+    const claudeMarkers = /(bypass permissions|Claude Code v|ClaudeCode v|\? for shortcuts)/i;
+    const shellErrorMarkers = /(command not found|is not recognized as|bad pattern:|cannot execute|No such file or directory)/i;
+
+    if (claudeMarkers.test(bytes) && !shellErrorMarkers.test(bytes.slice(-2048))) {
+      // Slow event but claude clearly took the pty — give it more breathing room.
+      log(`paste-gate term=${termId} corr=${corrId}: event timed out but claude banner present in pty — proceeding with 600ms safety`);
+      await sleep(600);
+      return { booted: true, source: 'pty-log' };
+    }
+
+    // Clearly NOT running — abort.
+    const cause = shellErrorMarkers.test(bytes) ? 'shell_exec_failure' : 'claude_did_not_claim_pty';
+    log(`paste-gate term=${termId} corr=${corrId}: BOOT FAILED cause=${cause}`);
+    try {
+      await _pconnEnsureRegistered(sock);
+      await _pconnWriteOrThrow({
+        cmd: 'publish', protocol: 'claws/2',
+        topic: 'system.worker.boot_failed',
+        payload: {
+          terminal_id: String(termId),
+          correlation_id: corrId,
+          cause,
+          timeout_ms: timeoutMs,
+          pty_tail: bytes.slice(-512),
+          ts: new Date().toISOString(),
+        },
+      });
+    } catch (_pe) { /* best-effort */ }
+    return { booted: false, source: 'aborted', cause, pty_tail: bytes.slice(-512) };
+  }
+}
+
 async function runBlockingWorker(sock, args) {
   const DEFAULTS = {
     timeout_ms: 5 * 60 * 1000,
@@ -1414,14 +1460,13 @@ async function runBlockingWorker(sock, args) {
       cmd: 'send', id: termId,
       text: `${getClaudeBin(args && args.cwd)} --dangerously-skip-permissions --model ${opt.model}`, newline: true,
     });
-    // W8ac-2: event-driven boot — resolves on system.peer.connected with matching corrId.
-    try {
-      await _waitForWorkerReady(sock, _bCorrId, { type: 'claude', timeoutMs: opt.boot_wait_ms });
-      booted = true;
-    } catch (e) {
-      log(`boot wait timed out for term=${termId} corr=${_bCorrId}: ${e.message}`);
-      booted = true; // best-effort: assume booted, proceed
+    // AD-1: gate mission paste on confirmed pty-claim.
+    const _gate = await _gatePasteOnClaudeClaim(sock, termId, _bCorrId, { timeoutMs: opt.boot_wait_ms });
+    if (!_gate.booted) {
+      if (opt.close_on_complete) { try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {} }
+      return { status: 'error', error: `boot failed: ${_gate.cause}`, terminal_id: termId, correlation_id: _bCorrId, pty_tail: _gate.pty_tail };
     }
+    booted = true;
     // BUG-07: secondary MCP auth check — bypass banner can appear before /mcp auth resolves.
     if (booted) {
       const _authSnap = await clawsRpc(sock, { cmd: 'readLog', id: termId, strip: true, limit: 32 * 1024 });
@@ -1431,8 +1476,6 @@ async function runBlockingWorker(sock, args) {
         return { status: 'error', error: `boot_marker seen but MCP auth banner active on terminal ${termId} — prompt is blocked. Spawn with minimal MCP config or pre-auth.` };
       }
     }
-    // 200ms safety buffer (blueprint section 9) — event fires before paste pipeline is fully open.
-    await sleep(200);
   }
 
   // 4. Send the mission AS A USER PROMPT — direct, the way it works in v0.7.4.
@@ -2506,15 +2549,12 @@ async function _dispatchTool(name, args, sock) {
         cmd: 'send', id: termId,
         text: `${getClaudeBin(args && args.cwd)} --dangerously-skip-permissions --model ${model}`, newline: true,
       });
-      // W8ac-2: event-driven boot — resolves on system.peer.connected with matching corrId.
-      try {
-        await _waitForWorkerReady(sock, _fpCorrId, { type: 'claude', timeoutMs: args.boot_wait_ms || 8000 });
-      } catch (e) {
-        log(`boot wait timed out for term=${termId} corr=${_fpCorrId}: ${e.message}`);
-        // best-effort: assume booted, proceed
+      // AD-1: gate mission paste on confirmed pty-claim.
+      const _gate = await _gatePasteOnClaudeClaim(sock, termId, _fpCorrId, { timeoutMs: args.boot_wait_ms || 8000 });
+      if (!_gate.booted) {
+        if (args.close_on_complete !== false) { try { await clawsRpc(sock, { cmd: 'close', id: termId }); } catch {} }
+        return toolError(`boot failed: ${_gate.cause} | terminal_id=${termId} | corr=${_fpCorrId}`);
       }
-      // 200ms safety buffer (blueprint section 9) — event fires before paste pipeline is fully open.
-      await sleep(200);
     }
 
     // Phase 4a: one-line completion hint — claws_done() handles the rest.
@@ -3021,14 +3061,12 @@ async function _dispatchTool(name, args, sock) {
           cmd: 'send', id: termId,
           text: `${getClaudeBin(_dswCwd)} --model claude-sonnet-4-6 --dangerously-skip-permissions`, newline: true,
         });
-        // W8ac-2: event-driven boot — resolves on system.peer.connected with matching corrId.
-        try {
-          await _waitForWorkerReady(_dswSock, _dswCorrId, { type: 'claude', timeoutMs: 8000 });
-        } catch (e) {
-          log(`claws_dispatch_subworker: boot wait timed out for ${workerName} corr=${_dswCorrId}: ${e.message} — continuing anyway`);
+        // AD-1: gate mission paste on confirmed pty-claim.
+        const _gate = await _gatePasteOnClaudeClaim(_dswSock, termId, _dswCorrId, { timeoutMs: 8000 });
+        if (!_gate.booted) {
+          if (_dswCloseOnComplete) { try { await clawsRpc(_dswSock, { cmd: 'close', id: termId }); } catch {} }
+          return; // abort — L2 grace will publish unarmed naturally
         }
-        // 200ms safety buffer (blueprint section 9) — event fires before paste pipeline is fully open.
-        await sleep(200);
         // GAP-D1: _dswMission already sanitized above — send as-is.
         // W8k-2: delegate to shared helper — pre-snapshot (BUG-C), bracketed-paste (newline:false),
         // 300ms gap, explicit \r submit, 15s CR-nudge loop, markerScanFrom snapshot.
