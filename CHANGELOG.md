@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0-alpha] - 2026-05-16
 
+### Tests (Wave AD-1.1)
+- **AD-1.1 — update worker-fixes-v079 to recognize AD-1 paste-gate helper**: The two W8ac-2 assertions that checked for a direct `_waitForWorkerReady` call inside `runBlockingWorker` (slow path) and `claws_worker` (fast path) now accept either the direct call or its AD-1 wrapper `_gatePasteOnClaudeClaim`. The `_hasPrompt`-poll anti-pattern gate is unchanged. Suite passes 42/42.
+
 ### Tests (Wave AD-2)
 - **AD-2 — paste-gate regression suite**: Static-analysis test `extension/test/paste-gate.test.js` locking in AD-1's invariants: helper `_gatePasteOnClaudeClaim` defined with correct signature referencing `_waitForWorkerReady`; anti-pattern `// best-effort: assume booted, proceed` absent; all three callsites (slow path, fast path, dispatch) each call the helper exactly once with their respective `corrId` variable; `system.worker.boot_failed` payload contains `cause`, `pty_tail`, `timeout_ms`, `correlation_id`; tri-platform `claudeMarkers`/`shellErrorMarkers` regex entries verified; `boot_wait_ms: 8000` unchanged. 18 checks, pure `fs.readFileSync` + regex — no fork, no platform branches, runs identically on darwin/linux/win32.
 

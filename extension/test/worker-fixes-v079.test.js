@@ -302,16 +302,18 @@ check(
 
 check(
   'W8ac-2 slow-path boot uses _waitForWorkerReady (no _hasPrompt poll)',
-  // Positive: _waitForWorkerReady is invoked inside runBlockingWorker
-  /async function runBlockingWorker[\s\S]{0,10000}_waitForWorkerReady/.test(MCP) &&
+  // Positive: _waitForWorkerReady or its AD-1 wrapper _gatePasteOnClaudeClaim is invoked inside runBlockingWorker
+  (/async function runBlockingWorker[\s\S]{0,10000}_waitForWorkerReady/.test(MCP) ||
+   /async function runBlockingWorker[\s\S]{0,10000}_gatePasteOnClaudeClaim/.test(MCP)) &&
   // Negative: the ❯+cost:$ polling gate is gone from the file entirely
   !/\bconst _hasPrompt\b/.test(MCP),
 );
 
 check(
   'W8ac-2 fast-path boot uses _waitForWorkerReady (no _hasPrompt poll)',
-  // Positive: fast path (claws_worker handler) uses _waitForWorkerReady
-  /if \(name === 'claws_worker'\)[\s\S]{0,12000}_waitForWorkerReady/.test(MCP) &&
+  // Positive: fast path (claws_worker handler) uses _waitForWorkerReady or its AD-1 wrapper _gatePasteOnClaudeClaim
+  (/if \(name === 'claws_worker'\)[\s\S]{0,12000}_waitForWorkerReady/.test(MCP) ||
+   /if \(name === 'claws_worker'\)[\s\S]{0,12000}_gatePasteOnClaudeClaim/.test(MCP)) &&
   // Negative: old polling variables are gone
   !/\b_fpBootDeadline\b/.test(MCP) &&
   !/\b_fpStable\b/.test(MCP),
