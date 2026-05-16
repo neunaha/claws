@@ -1199,7 +1199,12 @@ async function _sendAndSubmitMission(sock, termId, payload, launchClaude) {
 
     await clawsRpc(sock, { cmd: 'send', id: termId, text: payload, newline: false, paste: true });
     await sleep(300);
-    await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+    // AE-4: ConPTY on Windows does not trigger Ink's Enter handler when '\r' is written
+    // programmatically via pty.write() after a bracketed-paste sequence — manual keyboard
+    // Enter works but '\r' injection does not. '\n' bypasses the ConPTY processing quirk.
+    // See .local/audits/windows-mission-submit-probe.md for full probe methodology.
+    const _submitKey = process.platform === 'win32' ? '\n' : '\r';
+    await clawsRpc(sock, { cmd: 'send', id: termId, text: _submitKey, newline: false });
 
     // PASTE-COLLAPSE RECOVERY — Event-driven submit verification; robust against paste-collapse.
     // Claude TUI collapses pastes >~30 lines into "[Pasted text #N +M lines]"
@@ -1218,7 +1223,7 @@ async function _sendAndSubmitMission(sock, termId, payload, launchClaude) {
       const _claudeResponded = /●|⏺|in:\s*\d+/.test(_txt);
       if (_grewBig || (_placeholderGone && _claudeResponded)) { _submitVerified = true; break; }
       if (Date.now() - _lastNudgeAt >= 2000 && _nudges < 5) {
-        await clawsRpc(sock, { cmd: 'send', id: termId, text: '\r', newline: false });
+        await clawsRpc(sock, { cmd: 'send', id: termId, text: _submitKey, newline: false });
         _nudges++;
         _lastNudgeAt = Date.now();
       }

@@ -175,6 +175,18 @@ check(
   /boot_wait_ms:\s*8000/.test(src),
 );
 
+// 10. AE-4: process.platform === 'win32' branch present in _sendAndSubmitMission for submit keystroke.
+check(
+  'AE-4: win32 submit-key branch present in _sendAndSubmitMission',
+  (function () {
+    const fnStart = src.indexOf('async function _sendAndSubmitMission');
+    if (fnStart === -1) return false;
+    const nextFn = src.indexOf('\nasync function ', fnStart + 1);
+    const body = nextFn === -1 ? src.slice(fnStart) : src.slice(fnStart, nextFn);
+    return /process\.platform\s*===\s*['"]win32['"]/.test(body);
+  })(),
+);
+
 // ── Report ────────────────────────────────────────────────────────────────────
 
 for (const a of assertions) {
